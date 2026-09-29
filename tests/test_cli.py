@@ -16,6 +16,8 @@ a temporary checkout, with POSTINGS_DB pointing into the temporary directory.
 The child replaces `fetch_all` before main() runs, so nothing is ever fetched:
 by default it fails loudly (exit 99), which is how a refusal test proves the
 refusal came before any request. With CANNED_FETCH=1 it returns one posting.
+`polite_session` is replaced too (exit 98), so `discover`, which opens its own
+session rather than going through fetch_all, can never reach the network either.
 """
 
 import os
@@ -66,7 +68,12 @@ async def fetch_all(etags=None, on_status=None, sector=None):
         time.time() - 3600)
     return [posting], {"ok": 1, "not_modified": 0, "error": 0, "new_etags": {}}
 
+def polite_session(**kwargs):
+    print("polite_session was called", file=sys.stderr)
+    raise SystemExit(98)
+
 poller.fetch_all = fetch_all
+poller.polite_session = polite_session
 sys.argv = [script] + sys.argv[3:]
 poller.main()
 """
@@ -172,16 +179,24 @@ class Cli(unittest.TestCase):
         self.script = shutil.copy(poller.__file__, self.checkout)
         self.db = os.path.join(self.data, "postings.db")
 
-    def _run(self, *args, canned=False):
+    def _command(self, *args):
+        """The child's argv: the scraper copy, run with `args`."""
+        return [sys.executable, "-B", "-c", CHILD, TESTS, self.script, *args]
+
+    def _env(self, canned=False):
+        """A clean environment, with the data files in this test's `data/`."""
         env = {k: v for k, v in os.environ.items()
                if k not in SCRAPER_VARIABLES and not k.startswith(SCRAPER_PREFIXES)}
         env.update(PYTHONDONTWRITEBYTECODE="1", POSTINGS_DB=self.db,
                    BOARDS_FILE=os.path.join(self.data, "boards.json"))
         if canned:
             env["CANNED_FETCH"] = "1"
-        return subprocess.run(
-            [sys.executable, "-B", "-c", CHILD, TESTS, self.script, *args],
-            cwd=self.tmp, env=env, capture_output=True, text=True, timeout=60)
+        return env
+
+    def _run(self, *args, canned=False):
+        return subprocess.run(self._command(*args), cwd=self.tmp,
+                              env=self._env(canned), capture_output=True,
+                              text=True, timeout=60)
 
     def _assert_refused(self, result, *phrases):
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -330,6 +345,41 @@ class UpgradeDb(Cli):
         finally:
             conn.close()
         self.assertEqual(tables, {"unrelated"})
+
+
+class Prune(Cli):
+    """P2: no command deletes a row the bot still shows."""
+
+    def setUp(self):
+        super().setUp()
+        os.mkdir(self.data)
+        v2_fixture(self.db)
+
+    def test_a_max_age_inside_the_bot_s_window_is_refused(self):
+        # 0 used to mean "the default"; now it is refused like any number
+        # below 30, rather than quietly read as 30.
+        before = snapshot(self.db)
+        for days in ("0", "7", "29"):
+            with self.subTest(days=days):
+                result = self._run("prune", "--max-age", days)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("30", result.stderr)
+                self.assertEqual(snapshot(self.db), before)
+
+    def test_thirty_days_or_more_is_allowed(self):
+        result = self._run("prune", "--max-age", "30", "--dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("would prune", result.stdout)
+
+    def test_prune_itself_refuses_a_shorter_window(self):
+        # The same floor for any caller in code, not only the command line.
+        conn = sqlite3.connect(self.db)
+        try:
+            with self.assertRaises(ValueError):
+                poller.prune(conn, days=29)
+        finally:
+            conn.close()
+        self.assertEqual(snapshot(self.db)["counts"][1], (3, 4))
 
 
 if __name__ == "__main__":

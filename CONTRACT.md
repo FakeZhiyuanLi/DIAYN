@@ -86,7 +86,7 @@ prefix of every name, so it would block everything.
 | P2 | `seen` is never pruned. `postings` is pruned only by `prune()`, with `prune_days >= 30`. `prune --max-age` below 30 is refused. | The bootstrap guard reads `MIN(seen.first_seen)`, and the bot's window is 30 days. |
 | P3 | Rowids stay stable: no `VACUUM`, no `VACUUM INTO`, no `.dump` rebuild, and no `INSERT OR REPLACE` or `REPLACE` into `postings`. | The rowid is the `/internships info` autocomplete value and the bot's group-map key. |
 | P4 | A failed sweep rolls back, and the process carries on. | Rows committed later would carry a stale `first_seen` below users' cursors, and would never be alerted. |
-| P5 | Exactly one sweeper. `watch` holds the lock for its whole life; `sweep`, `prune` and `upgrade-db` hold it while they run. | Prevents double traffic to the job boards and a second writer. |
+| P5 | Exactly one sweeper. `watch` holds the lock for its whole life; `sweep`, `prune`, `upgrade-db`, `llm-diff`, `discover` and `list --llm` hold it while they run. A command that finds it held exits 3 and changes nothing. | Prevents double traffic to the job boards and a second writer. |
 | P6 | The scraper never creates a database silently. `sweep` and `watch` refuse a missing file, or an empty `seen`, unless given `--init`. No other command creates one at all. | A new, empty file is a false bootstrap: its first sweep records every open posting as new. |
 | P7 | `llm_usage.day` is the local date in `llm_day_tz`. | The bot's quota panel says the budget "resets at midnight Pacific". |
 | P8 | The contract tables are refreshed at start-up and inside every sweep's transaction. | Keeps the bot's copy of the blocklist and the board registry current. |

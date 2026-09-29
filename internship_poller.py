@@ -35,6 +35,16 @@ CONTRACT.md; contract/ holds their machine-readable half. Nothing creates the
 file unasked: `sweep` and `watch` refuse a missing file, or an empty ledger,
 without --init.
 
+Exactly one process writes it. `watch` holds <POSTINGS_DB>.lock for as long as
+it runs; sweep, prune, upgrade-db, llm-diff, discover and list --llm hold it
+while they run; and any of them exits 3, having done nothing, if another
+process has it. stats, verify, config and plain `list` only read, and never
+wait on it. Under pm2, `watch` outlives a failed sweep and, when restarted,
+waits until the next sweep is due rather than sweeping at once.
+
+Salary and descriptions are not fetched here: the bot fetches them itself, for
+the one role a user asks about.
+
 Sectors: tech, finance, healthcare, defense, industrial, retail, energy.
 
 To stop hearing from a company entirely, add its name to BLOCKED_COMPANIES
@@ -53,8 +63,9 @@ WORKDAY NOTE
 
 import argparse
 import asyncio
+import contextlib
+import fcntl
 import hashlib
-import html
 import os
 import json
 import re
@@ -66,6 +77,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 
@@ -105,8 +117,9 @@ class Settings:
     postings_db: str = os.path.join(DATA_DIR, "postings.db")
     boards_file: str = os.path.join(DATA_DIR, "boards.json")
     yc_cache: str = os.path.join(DATA_DIR, "yc_cache.json")
-    # Who the owners of the boards can write to about this traffic. `config`
-    # shows it; the User-Agent (UA, below) does not carry it yet.
+    # Who the owners of the boards can write to about this traffic. Every
+    # request carries it in its User-Agent (user_agent, below), and `config`
+    # shows it.
     contact: str = ""
     # The per-host politeness gate; see _HostGate.
     host_concurrency: int = 4
@@ -141,7 +154,7 @@ class Settings:
     llm_max_batch_failures: int = 3
     # The quota day. The free tier's daily cap resets at midnight Pacific, and
     # the bot's quota panel says so; scraper_meta publishes this for it, and
-    # llm_usage.day is meant to be the date in this zone (CONTRACT.md, P7).
+    # llm_usage.day is the date in this zone (quota_day; CONTRACT.md, P7).
     llm_day_tz: str = "America/Los_Angeles"
 
 
@@ -162,7 +175,7 @@ SETTINGS_FROM_ENV = (
     ("llm_max_attempts", "GEMINI_MAX_ATTEMPTS", int),
     ("llm_http_timeout", "GEMINI_HTTP_TIMEOUT", float),
     ("llm_max_batch_failures", "GEMINI_MAX_BATCH_FAILURES", int),
-    ("llm_day_tz", "LLM_DAY_TZ", str),
+    ("llm_day_tz", "LLM_DAY_TZ", ZoneInfo),
 )
 # `config` says whether these are set, and never what they are.
 SECRET_VARIABLES = frozenset({"GEMINI_API_KEY"})
@@ -178,8 +191,17 @@ def _parse(var, raw, kind):
     A count below 1 is refused rather than obeyed: POLL_HOST_CONCURRENCY=0 is
     a semaphore nobody can acquire, and every request would wait forever with
     no error. A seconds value may be 0 (no gap, no deadline) but not negative.
+    A time zone is checked here and kept as its name, so a misspelt one stops
+    the start instead of failing every later ask for today's quota day.
     """
     if kind is str:
+        return raw
+    if kind is ZoneInfo:
+        try:
+            ZoneInfo(raw)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ConfigError(f"{var}={raw!r} is not a time zone "
+                              "(for example America/Los_Angeles)") from None
         return raw
     try:
         value = kind(raw)
@@ -339,7 +361,6 @@ def polite_session(**kw):
     sess._request = gated
     return sess
 TIMEOUT = aiohttp.ClientTimeout(total=30)
-UA = "internship-poller/0.4 (personal project; contact: you@example.com)"
 MAX_AGE_DAYS = 30   # postings older than this are ignored; override with --max-age
 PRUNE_DAYS = 30     # rows older than this are deleted from `postings` on each sweep
 SCHEMA_VERSION = 2
@@ -351,6 +372,21 @@ CONTRACT_VERSION = "1"
 BUSY_TIMEOUT_MS = 5000
 # `watch`'s gap between sweeps, in seconds, unless --interval says otherwise.
 DEFAULT_INTERVAL_S = 900
+# Where the traffic comes from, named in every request.
+PROJECT_URL = "https://github.com/FakeZhiyuanLi/DIAYN"
+
+
+def user_agent(contact) -> str:
+    """The User-Agent of every request: the project, and `contact` if set.
+
+    Honest rather than a browser's, so a board's owner can tell this traffic
+    apart and knows where to write about it. Takes the contact rather than
+    reading SETTINGS, so resolve_boards.py can send the very same agent. The
+    version is MAJOR.MINOR of __version__.
+    """
+    version = ".".join(__version__.split(".")[:2])
+    reach = f"; contact: {contact}" if contact else ""
+    return f"DIAYN/{version} (+{PROJECT_URL}{reach})"
 
 # --------------------------------------------------------------------------
 # Board registry. Every entry below was probed live on 2026-07-31.
@@ -847,8 +883,8 @@ async def fetch_icims(sess, slug, company, sector, etag):
     iCIMS renders everything client-side, so there is no listings API and no
     JSON-LD to scrape. What IS public is the sitemap: it enumerates every job
     URL, and each URL carries the requisition id and a slugified title. That
-    is enough for the title/level/field prefilter; `fetch_details` then pulls
-    the description from the job page's iframe view.
+    is enough for the title/level/field prefilter; the bot, when a user asks
+    about a role, pulls its description from the job page's iframe view.
 
     Locations are not in the sitemap, so postings come back with an empty
     location, the same as Parsons' blank-location Workday postings.
@@ -1045,157 +1081,6 @@ ADAPTERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever,
             "ashby": fetch_ashby, "workday": fetch_workday,
             "icims": fetch_icims, "eightfold": fetch_eightfold,
             "taleo": fetch_taleo}
-
-# --------------------------------------------------------------------------
-# Detail fetch — salary + full description for ONE posting, on demand. The
-# sweep never stores these (they would bloat the DB and the list endpoints
-# mostly omit them); frontends call this when a user asks about a role.
-# --------------------------------------------------------------------------
-
-GH_JOB_URL_RE = re.compile(r"greenhouse\.io/([a-z0-9_-]+)/jobs/(\d+)", re.I)
-LEVER_JOB_URL_RE = re.compile(r"jobs\.lever\.co/([a-z0-9_-]+)/([0-9a-f-]{16,})", re.I)
-ASHBY_JOB_URL_RE = re.compile(r"jobs\.ashbyhq\.com/([^/?#]+)/", re.I)
-WD_JOB_URL_RE = re.compile(
-    r"https://([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com/([^/]+)(/job/.+)$", re.I)
-
-SALARY_TEXT_RE = re.compile(
-    r"(?:\$|USD\s?|€|£)\s?\d{1,3}(?:[,.]\d{3})*(?:\.\d{2})?\s?(?:k\b)?"
-    r"(?:\s*(?:[-–—]|to\s)\s*(?:\$|USD\s?|€|£)?\s?\d{1,3}(?:[,.]\d{3})*"
-    r"(?:\.\d{2})?\s?(?:k\b)?)?"
-    r"(?:\s*(?:per|/)\s*(?:hour|hr|year|yr|annum|month|week))?", re.I)
-
-
-def strip_html(s: str) -> str:
-    """Best-effort HTML -> readable plain text, no external deps."""
-    s = html.unescape(s or "")  # Greenhouse escapes its whole content field
-    s = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", s, flags=re.S | re.I)
-    s = re.sub(r"</?(?:p|br|li|ul|ol|div|h[1-6]|tr|table)[^>]*>", "\n", s, flags=re.I)
-    s = re.sub(r"<[^>]+>", " ", s)
-    s = re.sub(r"[ \t\f\v]+", " ", s)
-    s = re.sub(r"\s*\n\s*", "\n", s)
-    return s.strip()
-
-
-def find_salary_in_text(text) -> Optional[str]:
-    """Fallback for boards without structured pay data: first believable
-    money figure in the description. Demands a range, a 'k', a per-period,
-    or a 5+ digit amount so a bare '$5' can't match."""
-    for m in SALARY_TEXT_RE.finditer(text or ""):
-        s = m.group(0).strip()
-        if (re.search(r"[-–—]|\bto\s", s) or re.search(r"\dk\b", s, re.I)
-                or re.search(r"per|/", s) or re.search(r"\d[\d,]{4,}", s)):
-            return s
-    return None
-
-
-async def fetch_details(platform, url, external_id) -> dict:
-    """{'salary': str|None, 'description': str|None} for one posting.
-
-    Best-effort by design: any HTTP failure, unrecognized URL, or missing
-    field just leaves the value None — callers treat both as optional.
-    """
-    out = {"salary": None, "description": None}
-    async with polite_session(timeout=aiohttp.ClientTimeout(total=20),
-                              headers={"User-Agent": UA}) as sess:
-        if platform == "greenhouse":
-            m = GH_JOB_URL_RE.search(url or "")
-            if not m:
-                return out
-            slug, jid = m.groups()
-            async with sess.get("https://boards-api.greenhouse.io/v1/boards/"
-                                f"{slug}/jobs/{jid}") as r:
-                if r.status != 200:
-                    return out
-                d = await r.json(content_type=None)
-            out["description"] = strip_html(d.get("content") or "")
-            parts = []
-            for pr in d.get("pay_input_ranges") or []:
-                lo, hi = pr.get("min_cents"), pr.get("max_cents")
-                if lo is None or hi is None:
-                    continue
-                sym = "$" if (pr.get("currency_type") or "USD") == "USD" \
-                    else f"{pr['currency_type']} "
-                rng = f"{sym}{lo / 100:,.0f}–{sym}{hi / 100:,.0f}"
-                if pr.get("title"):
-                    rng += f" ({pr['title']})"
-                parts.append(rng)
-            out["salary"] = "; ".join(parts) or None
-
-        elif platform == "lever":
-            m = LEVER_JOB_URL_RE.search(url or "")
-            if not m:
-                return out
-            slug, pid = m.groups()
-            async with sess.get(
-                    f"https://api.lever.co/v0/postings/{slug}/{pid}") as r:
-                if r.status != 200:
-                    return out
-                d = await r.json(content_type=None)
-            pieces = [d.get("descriptionPlain")
-                      or strip_html(d.get("description") or "")]
-            for sec in d.get("lists") or []:
-                pieces.append(f"{sec.get('text', '')}\n"
-                              f"{strip_html(sec.get('content') or '')}")
-            out["description"] = "\n".join(x for x in pieces if x).strip()
-            sr = d.get("salaryRange") or {}
-            if sr.get("min") is not None and sr.get("max") is not None:
-                sym = "$" if (sr.get("currency") or "USD") == "USD" \
-                    else f"{sr['currency']} "
-                iv = (sr.get("interval") or "").replace("-", " ")
-                out["salary"] = (f"{sym}{sr['min']:,}–{sym}{sr['max']:,}"
-                                 + (f" {iv}" if iv else ""))
-
-        elif platform == "ashby":
-            m = ASHBY_JOB_URL_RE.search(url or "")
-            if not m:
-                return out
-            async with sess.get("https://api.ashbyhq.com/posting-api/job-board/"
-                                f"{m.group(1)}?includeCompensation=true") as r:
-                if r.status != 200:
-                    return out
-                d = await r.json(content_type=None)
-            job = next((j for j in d.get("jobs", [])
-                        if str(j.get("id")) == str(external_id)), None)
-            if not job:
-                return out
-            out["description"] = strip_html(job.get("descriptionHtml")
-                                            or job.get("descriptionPlain") or "")
-            comp = job.get("compensation") or {}
-            out["salary"] = (job.get("compensationTierSummary")
-                             or comp.get("compensationTierSummary")
-                             or comp.get("scrapeableCompensationSalarySummary"))
-
-        elif platform == "icims":
-            # The plain job page is a 4KB JS shell; the ?in_iframe=1 view is
-            # server-rendered and carries the full posting text.
-            sep = "&" if "?" in (url or "") else "?"
-            async with sess.get(f"{url}{sep}in_iframe=1") as r:
-                if r.status != 200:
-                    return out
-                out["description"] = strip_html(await r.text())
-
-        elif platform == "workday":
-            m = WD_JOB_URL_RE.match(url or "")
-            if not m:
-                return out
-            tenant, wd, site, path = m.groups()
-            api = (f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/"
-                   f"{tenant}/{site}{path}")
-            async with sess.get(api, headers={"Accept": "application/json"}) as r:
-                if r.status != 200:
-                    return out
-                d = await r.json(content_type=None)
-            info = d.get("jobPostingInfo") or {}
-            out["description"] = strip_html(info.get("jobDescription") or "")
-
-    # Everything above came from a structured pay field — trustworthy. Mark it
-    # so callers know whether the value needs LLM confirmation.
-    out["salary_certain"] = out["salary"] is not None
-    if not out["salary"] and out["description"]:
-        # Regex guess, used only when nothing better is available (e.g. the
-        # /internships path, which makes no LLM call).
-        out["salary"] = find_salary_in_text(out["description"])
-    return out
 
 # --------------------------------------------------------------------------
 # Classifier — pure function
@@ -1399,6 +1284,20 @@ def posting_hash(p):
         f"{p.title}|{p.location}".encode("utf-8")).hexdigest()[:32]
 
 
+def quota_day(at=None) -> str:
+    """The quota day, YYYY-MM-DD in SETTINGS.llm_day_tz: now, or at epoch `at`.
+
+    The key of llm_usage (CONTRACT.md, P7). The free tier's daily cap resets
+    at midnight Pacific, and the bot's quota panel reads today's row by the
+    date in that zone; counting by the box's own zone would start a new row
+    in the afternoon, Pacific time, on a UTC server, hours before Gemini
+    resets anything.
+    """
+    zone = ZoneInfo(SETTINGS.llm_day_tz)
+    moment = datetime.now(zone) if at is None else datetime.fromtimestamp(at, zone)
+    return moment.strftime("%Y-%m-%d")
+
+
 class LlmBudget:
     """Rate limiter for the free AI Studio tier: requests/min, tokens/min, and
     a requests/day counter persisted in sqlite.
@@ -1422,7 +1321,7 @@ class LlmBudget:
         self.rpd = SETTINGS.llm_rpd if rpd is None else rpd
         self.calls = []          # timestamps of recent requests
         self.tokens = []         # (timestamp, est_tokens) of recent requests
-        self.day = datetime.now().strftime("%Y-%m-%d")
+        self.day = quota_day()
         row = conn.execute("SELECT n FROM llm_usage WHERE day=?",
                            (self.day,)).fetchone()
         self.used = row[0] if row else 0
@@ -1700,7 +1599,8 @@ async def fetch_all(etags=None, on_status=None, sector=None):
         if on_status:
             on_status(plat, slug, company, "ok", len(posts))
 
-    async with polite_session(timeout=TIMEOUT, headers={"User-Agent": UA}) as s:
+    async with polite_session(timeout=TIMEOUT,
+                              headers={"User-Agent": user_agent(SETTINGS.contact)}) as s:
         await asyncio.gather(*(one(s, *b) for b in boards))
     return out, stats
 
@@ -1914,7 +1814,7 @@ async def cmd_discover(min_interns, include_workday, use_cc, use_yc,
     async with polite_session(
             timeout=aiohttp.ClientTimeout(total=90),
             connector=aiohttp.TCPConnector(limit=25),
-            headers={"User-Agent": UA}) as sess:
+            headers={"User-Agent": user_agent(SETTINGS.contact)}) as sess:
         print("mining slugs from repo listings...")
         cands, nbytes = await mine_repos(sess)
         if use_cc:
@@ -2039,6 +1939,15 @@ class DatabaseRefused(RuntimeError):
     """
 
 
+class LockHeld(RuntimeError):
+    """Another process holds the sweeper lock. main() prints it and exits 3."""
+
+
+# The exit status of a command refused by the sweeper lock. Not 1, so a pm2
+# log or a cron wrapper can tell "another sweeper is running" from "failed".
+LOCK_HELD_EXIT = 3
+
+
 # The whole schema. contract/postings_v1.sql is its published copy: the bot
 # builds its fixtures from that file, and tests/test_contract.py requires the
 # two to match. Every table is IF NOT EXISTS, so opening a file never changes
@@ -2110,9 +2019,55 @@ def _open(path, create):
     except sqlite3.OperationalError:
         if os.path.exists(path):
             raise
-        raise DatabaseRefused(
-            f"{path}: no such database. Only `sweep --init` or `watch --init` "
-            "creates one.") from None
+        raise _no_such_database(path) from None
+
+
+def _no_such_database(path) -> DatabaseRefused:
+    return DatabaseRefused(f"{path}: no such database. Only `sweep --init` or "
+                           "`watch --init` creates one.")
+
+
+def lock_path(db_path) -> str:
+    return f"{db_path}.lock"
+
+
+@contextlib.contextmanager
+def sweeper_lock(db_path, create=False):
+    """Hold <db_path>.lock for the block, or raise LockHeld at once (P5).
+
+    Exactly one process writes postings.db: two would double the traffic to
+    every board and race on the ledger the bot reads. flock rather than a pid
+    file, because the kernel drops it when its holder dies, however it dies,
+    so a crashed `watch` never leaves a stale lock for pm2's restart to trip
+    over. LOCK_NB, because a second sweeper that queued for its turn would
+    still double the traffic, only later. The file stays after release:
+    deleting it would let a process holding the old file and one creating a
+    new one both believe they hold the lock.
+
+    Without `create` a missing database is refused here, before the lock file
+    is made, so a wrong POSTINGS_DB leaves nothing behind (P6). `create` is for
+    --init, and for `discover`, which never opens the database at all.
+    Yields the lock file's path.
+    """
+    if not create and not os.path.exists(db_path):
+        raise _no_such_database(db_path)
+    path = lock_path(db_path)
+    fd = os.open(_parent_made(path) if create else path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise LockHeld(
+            f"{path} is held by another process: a `watch`, or a one-shot command "
+            f"that writes. Only one process may write {db_path} at a time "
+            "(CONTRACT.md, P5), so this one did nothing.") from None
+    except OSError:
+        os.close(fd)
+        raise
+    try:
+        yield path
+    finally:
+        os.close(fd)
 
 
 def _prepare(conn):
@@ -2310,14 +2265,42 @@ def prune(conn, days=PRUNE_DAYS, dry_run=False):
     old, and deleting them would only lose data we already have.
 
     Uncommitted: the caller commits. A sweep's prune lands with the rest of
-    that sweep or not at all (P4).
+    that sweep or not at all (P4). `days` below PRUNE_DAYS is refused, from
+    any caller: the bot shows postings that young (P2).
     """
+    if days < PRUNE_DAYS:
+        raise ValueError(f"prune: {days} days is inside the bot's "
+                         f"{PRUNE_DAYS}-day window")
     cutoff = time.time() - days * 86400
     q = ("published IS NOT NULL AND unbounded=0 AND published < ?", (cutoff,))
     n = conn.execute(f"SELECT COUNT(*) FROM postings WHERE {q[0]}", q[1]).fetchone()[0]
     if not dry_run and n:
         conn.execute(f"DELETE FROM postings WHERE {q[0]}", q[1])
     return n
+
+
+def log(line, file=None):
+    """Print one timestamped line, flushed at once.
+
+    pm2 reads stdout through a pipe, and Python holds piped output back until
+    its buffer fills: unflushed, a quiet day's log would show nothing at all.
+    """
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {line}",
+          file=file or sys.stdout, flush=True)
+
+
+@dataclass(frozen=True)
+class SweepResult:
+    """What one sweep did: the postings worth announcing, and its log line."""
+    fresh: tuple
+    summary: str
+
+
+def sweep_summary(stats, new, pruned, seconds) -> str:
+    """A sweep in one line: what it fetched, what was new, how long it took."""
+    pr = f" · pruned {pruned}" if pruned else ""
+    return (f"{stats['ok']} fetched · {stats['not_modified']} unchanged · "
+            f"{stats['error']} errors · {new} new{pr} · {seconds:.1f}s")
 
 
 async def cmd_sweep(conn, quiet=False, use_llm=False, interval=DEFAULT_INTERVAL_S):
@@ -2328,7 +2311,8 @@ async def cmd_sweep(conn, quiet=False, use_llm=False, interval=DEFAULT_INTERVAL_
     nothing awaits between taking `now` and that commit (CONTRACT.md, P1).
     With `use_llm`, llm_classify commits its cache before that transaction
     begins. `interval` is what scraper_meta tells the bot to expect between
-    sweeps.
+    sweeps. Unless `quiet`, prints its summary and each new posting; either
+    way, returns them as a SweepResult.
     """
     t0 = time.time()
     etags = {(r[0], r[1]): r[2]
@@ -2393,17 +2377,15 @@ async def cmd_sweep(conn, quiet=False, use_llm=False, interval=DEFAULT_INTERVAL_
     publish_registry(conn, interval)
     conn.commit()
 
+    summary = sweep_summary(stats, len(fresh), pruned, now - t0)
     if not quiet:
-        pr = f" · pruned {pruned}" if pruned else ""
-        print(f"[{datetime.now():%H:%M:%S}] {stats['ok']} fetched · "
-              f"{stats['not_modified']} unchanged · {stats['error']} errors · "
-              f"{len(fresh)} new{pr} · {now-t0:.1f}s")
+        log(summary)
         for p, c in fresh:
             print(f"  [{p.sector}] {p.company} — {p.title}")
             print(f"    {p.location} · {c['category']} · {c['region']} · "
                   f"posted {age_str(p)} ago")
             print(f"    {p.url}")
-    return fresh
+    return SweepResult(tuple(fresh), summary)
 
 
 def cmd_stats(conn):
@@ -2442,9 +2424,10 @@ def cmd_stats(conn):
     cached = conn.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0]
     if cached:
         today = conn.execute("SELECT n FROM llm_usage WHERE day=?",
-                             (datetime.now().strftime("%Y-%m-%d"),)).fetchone()
+                             (quota_day(),)).fetchone()
         print(f"\nllm cache: {cached} classified · {today[0] if today else 0} "
-              f"api calls today (budget {SETTINGS.llm_rpd}/day on {SETTINGS.gemini_model})")
+              f"api calls today in {SETTINGS.llm_day_tz} "
+              f"(budget {SETTINGS.llm_rpd}/day on {SETTINGS.gemini_model})")
 
     print("\nrecent sweeps:")
     for s in conn.execute("SELECT started, duration, not_modified, errors, "
@@ -2502,14 +2485,58 @@ async def cmd_llm_diff(conn, limit):
     print("--llm. Where it is wrong, tighten the prompt, not the regex.")
 
 
-async def cmd_watch(conn, interval, use_llm=False):
-    print(f"watching {len(BOARDS)} boards every {interval//60}m. Ctrl-C to stop.\n")
+def seconds_until_due(conn, interval, now) -> float:
+    """How long until the next sweep is due: MAX(sweeps.started) + interval.
+
+    0 for a ledger that has never been swept, or a sweep overdue. Never more
+    than one interval, so a sweep stamped in the future — the clock set back
+    since — cannot stall the loop for longer than one gap.
+    """
+    last = conn.execute("SELECT MAX(started) FROM sweeps").fetchone()[0]
+    if last is None:
+        return 0.0
+    return min(float(interval), max(0.0, last + interval - now))
+
+
+def _roll_back(conn) -> str:
+    """Roll back what a failed sweep left open, and say how that went."""
+    try:
+        conn.rollback()
+    except sqlite3.Error as e:
+        return f"rollback failed too: {e}"
+    return "rolled back"
+
+
+async def cmd_watch(conn, interval, use_llm=False, sleep=asyncio.sleep,
+                    clock=time.time):
+    """Sweep every `interval` seconds until stopped; never exit over a sweep.
+
+    pm2 restarts a process that exits, at once. A loop that swept as soon as
+    it started would sweep every ATS host on every restart of a crash loop,
+    so the first sweep waits until one is due. A sweep that raises is rolled
+    back — otherwise its rows would stay pending, holding the write lock, and
+    ride in on the next sweep's commit — logged, and followed a full interval
+    later by the next. Anything that is not an Exception, Ctrl-C among them,
+    still stops the loop.
+
+    One log line per sweep, to stdout, or to stderr when it failed. The new
+    postings are the bot's to announce, not the log's. `sleep` and `clock`
+    are for the tests.
+    """
+    log(f"watching {len(BOARDS)} boards every {interval}s. Ctrl-C to stop.")
+    wait = seconds_until_due(conn, interval, clock())
+    if wait:
+        log(f"next sweep due in {wait:.0f}s")
+        await sleep(wait)
     while True:
         try:
-            await cmd_sweep(conn, use_llm=use_llm, interval=interval)
+            result = await cmd_sweep(conn, quiet=True, use_llm=use_llm,
+                                     interval=interval)
+            log(f"sweep: {result.summary}")
         except Exception as e:
-            print(f"sweep failed: {e}", file=sys.stderr)
-        await asyncio.sleep(interval)
+            log(f"sweep failed, {_roll_back(conn)}: {type(e).__name__}: {e}",
+                file=sys.stderr)
+        await sleep(interval)
 
 
 def cmd_config(settings, env_file):
@@ -2531,7 +2558,7 @@ def boot() -> Optional[str]:
     return env_file
 
 
-def main():
+def arguments() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["verify", "list", "sweep", "watch", "stats",
                                     "prune", "discover", "llm-diff", "upgrade-db",
@@ -2543,7 +2570,9 @@ def main():
     ap.add_argument("--all-roles", action="store_true",
                     help="include non-technical internships")
     ap.add_argument("--max-age", type=int, default=MAX_AGE_DAYS,
-                    help=f"ignore postings older than N days (default {MAX_AGE_DAYS}; 0 = no limit)")
+                    help=f"ignore postings older than N days (default {MAX_AGE_DAYS}; "
+                         f"0 = no limit). prune: delete rows older than N days, "
+                         f"N at least {PRUNE_DAYS}")
     ap.add_argument("--strict", action="store_true",
                     help="also drop postings with unknown or unbounded dates")
     ap.add_argument("--dry-run", action="store_true", help="prune: count only")
@@ -2569,41 +2598,74 @@ def main():
     ap.add_argument("--init", action="store_true",
                     help="sweep/watch: create postings.db if it is missing, and "
                          "allow a first sweep into an empty ledger")
-    a = ap.parse_args()
+    return ap
 
+
+# The commands that write, and so take the sweeper lock (P5): postings.db, or
+# for `discover` boards.json and yc_cache.json. `list` joins them with --llm,
+# which writes llm_cache and llm_usage. The rest — stats, verify, config and
+# plain `list` — only read, and never wait on a sweeper.
+WRITING_COMMANDS = frozenset({"sweep", "watch", "prune", "upgrade-db",
+                              "llm-diff", "discover"})
+
+
+def lock_for(a):
+    """The sweeper lock command `a` must hold while it runs, or a no-op."""
+    if a.cmd not in WRITING_COMMANDS and not (a.cmd == "list" and a.llm):
+        return contextlib.nullcontext()
+    create = a.cmd == "discover" or (a.init and a.cmd in ("sweep", "watch"))
+    return sweeper_lock(SETTINGS.postings_db, create=create)
+
+
+def run(a, env_file):
+    """Run command `a`, with SETTINGS and BOARDS bound and any lock held."""
+    if a.cmd == "config":
+        cmd_config(SETTINGS, env_file)
+    elif a.cmd == "discover":
+        asyncio.run(cmd_discover(a.min_interns, a.workday, a.common_crawl,
+                                 a.yc, a.yc_limit, a.yc_recheck))
+    elif a.cmd == "verify":
+        asyncio.run(cmd_verify(a.sector))
+    elif a.cmd == "list":
+        asyncio.run(cmd_list(a.us, a.dupes, a.category, a.sector, a.all_roles,
+                             a.max_age, a.strict, a.llm))
+    elif a.cmd == "stats":
+        cmd_stats(db_init())
+    elif a.cmd == "prune":
+        conn = db_init()
+        n = prune(conn, a.max_age, a.dry_run)
+        conn.commit()
+        print(f"{'would prune' if a.dry_run else 'pruned'} {n} rows older than "
+              f"{a.max_age}d · dedup ledger untouched")
+    elif a.cmd == "sweep":
+        conn = open_for_sweeping(a.init, a.interval)
+        asyncio.run(cmd_sweep(conn, use_llm=a.llm, interval=a.interval))
+    elif a.cmd == "llm-diff":
+        asyncio.run(cmd_llm_diff(db_init(), a.limit))
+    elif a.cmd == "upgrade-db":
+        cmd_upgrade_db(a.interval)
+    else:
+        conn = open_for_sweeping(a.init, a.interval)
+        try:
+            asyncio.run(cmd_watch(conn, a.interval, use_llm=a.llm))
+        except KeyboardInterrupt:
+            print("\nstopped.")
+
+
+def main():
+    ap = arguments()
+    a = ap.parse_args()
+    if a.cmd == "prune" and a.max_age < PRUNE_DAYS:
+        ap.error(f"prune --max-age {a.max_age}: the bot shows postings up to "
+                 f"{PRUNE_DAYS} days old, so prune never deletes a younger row. "
+                 f"Pass {PRUNE_DAYS} or more.")
     try:
         env_file = boot()
-        if a.cmd == "config":
-            cmd_config(SETTINGS, env_file)
-        elif a.cmd == "discover":
-            asyncio.run(cmd_discover(a.min_interns, a.workday, a.common_crawl,
-                                     a.yc, a.yc_limit, a.yc_recheck))
-        elif a.cmd == "verify":
-            asyncio.run(cmd_verify(a.sector))
-        elif a.cmd == "list":
-            asyncio.run(cmd_list(a.us, a.dupes, a.category, a.sector, a.all_roles,
-                                 a.max_age, a.strict, a.llm))
-        elif a.cmd == "stats":
-            cmd_stats(db_init())
-        elif a.cmd == "prune":
-            conn = db_init()
-            n = prune(conn, a.max_age or PRUNE_DAYS, a.dry_run)
-            conn.commit()
-            print(f"{'would prune' if a.dry_run else 'pruned'} {n} rows older than "
-                  f"{a.max_age or PRUNE_DAYS}d · dedup ledger untouched")
-        elif a.cmd == "sweep":
-            conn = open_for_sweeping(a.init, a.interval)
-            asyncio.run(cmd_sweep(conn, use_llm=a.llm, interval=a.interval))
-        elif a.cmd == "llm-diff":
-            asyncio.run(cmd_llm_diff(db_init(), a.limit))
-        elif a.cmd == "upgrade-db":
-            cmd_upgrade_db(a.interval)
-        else:
-            conn = open_for_sweeping(a.init, a.interval)
-            try:
-                asyncio.run(cmd_watch(conn, a.interval, use_llm=a.llm))
-            except KeyboardInterrupt:
-                print("\nstopped.")
+        with lock_for(a):
+            run(a, env_file)
+    except LockHeld as e:
+        print(e, file=sys.stderr)
+        sys.exit(LOCK_HELD_EXIT)
     except (ConfigError, SchemaMismatch, DatabaseRefused) as e:
         print(e, file=sys.stderr)
         sys.exit(1)

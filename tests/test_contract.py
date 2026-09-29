@@ -26,6 +26,7 @@ import ast
 import asyncio
 import contextlib
 import glob
+import io
 import json
 import os
 import re
@@ -34,6 +35,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -508,6 +510,81 @@ class LlmCache(TempDirTest):
         conn.close()
         self.assertEqual(len(payload), 1)
         self.assertEqual(json.loads(payload[0][0])["category"], "swe")
+
+
+# Noon UTC on 30 September 2026: already 1 October at UTC+14, still the early
+# hours of 30 September at UTC-11. No box's own zone gives both answers.
+MOMENT = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+ZONE_DAYS = {"Pacific/Kiritimati": "2026-10-01", "Pacific/Pago_Pago": "2026-09-30"}
+
+
+class FixedNow(datetime):
+    """`datetime` with its clock stopped at MOMENT, in whatever zone is asked."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return MOMENT.astimezone(tz) if tz else MOMENT.astimezone().replace(tzinfo=None)
+
+
+class QuotaDay(TempDirTest):
+    """P7: llm_usage.day is the date in llm_day_tz, not the box's own zone.
+
+    The free tier's daily cap resets at midnight Pacific, and the bot's quota
+    panel reads today's row by the date in that zone. A scraper counting by
+    the VPS's zone (UTC) would start a new row in the afternoon, Pacific
+    time, and the panel would show a budget reset hours before Gemini's.
+    """
+
+    @staticmethod
+    def _usage(conn):
+        """Calls on two days: 7 on 1 October, 40 on 30 September."""
+        conn.execute("DELETE FROM llm_usage")
+        conn.executemany("INSERT INTO llm_usage(day, n) VALUES(?, ?)",
+                         [("2026-10-01", 7), ("2026-09-30", 40)])
+        conn.commit()
+
+    def test_the_day_is_the_date_in_the_configured_zone(self):
+        for zone, day in ZONE_DAYS.items():
+            with self.subTest(zone=zone), scraper(self.dir, LLM_DAY_TZ=zone):
+                self.assertEqual(poller.quota_day(MOMENT.timestamp()), day)
+
+    def test_the_budget_counts_the_calls_of_that_day(self):
+        for zone, (day, used) in {"Pacific/Kiritimati": ("2026-10-01", 7),
+                                  "Pacific/Pago_Pago": ("2026-09-30", 40)}.items():
+            with self.subTest(zone=zone), scraper(self.dir, LLM_DAY_TZ=zone):
+                conn = poller.db_init(create=True)
+                self._usage(conn)
+                with mock.patch.object(poller, "datetime", FixedNow):
+                    budget = poller.LlmBudget(conn)
+                conn.close()
+                self.assertEqual((budget.day, budget.used), (day, used))
+
+    def test_stats_reports_the_calls_of_that_day(self):
+        with scraper(self.dir, LLM_DAY_TZ="Pacific/Kiritimati"):
+            conn = poller.db_init(create=True)
+            self._usage(conn)
+            # stats reports the day's calls only once something is cached.
+            conn.execute("INSERT INTO llm_cache(hash, payload, created) "
+                         "VALUES('abc', '{}', 0)")
+            conn.commit()
+            out = io.StringIO()
+            with mock.patch.object(poller, "datetime", FixedNow), \
+                    contextlib.redirect_stdout(out):
+                poller.cmd_stats(conn)
+            conn.close()
+        self.assertIn("7 api calls today", out.getvalue())
+
+
+class DetailsLeftToTheBot(unittest.TestCase):
+    def test_the_scraper_fetches_no_single_posting(self):
+        # Salary and description are fetched by the bot, on demand, for the
+        # one role a user asks about. The scraper only sweeps list endpoints.
+        for name in ("fetch_details", "strip_html", "find_salary_in_text",
+                     "SALARY_TEXT_RE", "GH_JOB_URL_RE", "LEVER_JOB_URL_RE",
+                     "ASHBY_JOB_URL_RE", "WD_JOB_URL_RE"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(poller, name))
+        self.assertTrue(callable(poller.polite_session))
 
 
 class CompanyNorm(unittest.TestCase):

@@ -21,20 +21,37 @@ Only validated entries are emitted.
 
 Supported: greenhouse, lever, ashby, workday (already pollable today) and
 icims (needs the adapter in internship_poller.fetch_icims).
+
+It sends the scraper's own User-Agent, with POLL_CONTACT from the scraper's
+.env, rather than posing as a browser. A careers site that turns that away is
+one to look up by hand.
 """
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from urllib.parse import urlparse
 
 import aiohttp
 
-UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-HEADERS = {"User-Agent": UA,
-           "Accept": "text/html,application/json;q=0.9,*/*;q=0.8"}
+import internship_poller as poller
+
+ACCEPT = "text/html,application/json;q=0.9,*/*;q=0.8"
+
+
+def agent_headers() -> dict:
+    """Request headers carrying the scraper's User-Agent, contact and all.
+
+    The contact is read the way the scraper's own main() reads it: its .env
+    (POLLER_ENV_FILE, else the checkout's, never the working directory's),
+    under whatever the environment already sets. Raises poller.ConfigError
+    on a setting the scraper would refuse too.
+    """
+    poller.load_env_file()
+    contact = poller.configure(os.environ).contact
+    return {"User-Agent": poller.user_agent(contact), "Accept": ACCEPT}
 
 # ATS fingerprints, checked against the final URL and the page HTML.
 FINGERPRINTS = [
@@ -186,9 +203,15 @@ async def main():
         print(__doc__.strip(), file=sys.stderr)
         sys.exit(2)
 
+    try:
+        headers = agent_headers()
+    except poller.ConfigError as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+
     conn = aiohttp.TCPConnector(limit=6)
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=40),
-                                     connector=conn, headers=HEADERS) as sess:
+                                     connector=conn, headers=headers) as sess:
         sem = asyncio.Semaphore(6)
 
         async def one(u, n):

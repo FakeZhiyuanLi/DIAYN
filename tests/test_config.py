@@ -18,6 +18,7 @@ never read. python-dotenv is only on boxes that installed requirements.txt;
 the tests that need it to load a file are skipped without it.
 """
 
+import asyncio
 import dataclasses
 import importlib.util
 import json
@@ -66,14 +67,16 @@ runpy.run_path(script, run_name="__main__")
 
 # The child process for the import check: everything the module imports is
 # loaded first, so the only code running while `open` is watched is the
-# module's own top level. Prints what it saw as JSON.
+# module's own top level. zoneinfo among them: importing it reads the
+# interpreter's build settings, which on macOS opens a system plist.
+# Prints what it saw as JSON.
 IMPORT_SCRIPT = """
 import builtins, json, os, runpy, sys
 tests, script = sys.argv[1], sys.argv[2]
 sys.path.insert(0, tests)
 from aiohttp_stub import stub_aiohttp
 stub_aiohttp()
-import aiohttp
+import aiohttp, zoneinfo
 before = dict(os.environ)
 opened = []
 real_open = builtins.open
@@ -162,6 +165,15 @@ class Configure(unittest.TestCase):
         with self.assertRaises(poller.ConfigError):
             poller.configure({"POLL_HOST_MIN_INTERVAL": "-1"})
 
+    def test_the_quota_day_s_zone_must_be_a_real_zone(self):
+        # Refused at start-up, not at the first --llm sweep or `stats`, where
+        # an unknown zone would fail every time it was asked for today's date.
+        self.assertEqual(poller.configure({"LLM_DAY_TZ": "UTC"}).llm_day_tz, "UTC")
+        for raw in ("Mars/Olympus_Mons", "../../etc/passwd", "Pacific Time"):
+            with self.subTest(raw=raw), self.assertRaises(poller.ConfigError) as caught:
+                poller.configure({"LLM_DAY_TZ": raw})
+            self.assertIn("LLM_DAY_TZ", str(caught.exception))
+
     def test_configure_reads_only_the_mapping_it_is_given(self):
         with mock.patch.dict(os.environ, {"GEMINI_RPD": "999"}):
             self.assertEqual(poller.configure({}).llm_rpd, 250)
@@ -219,6 +231,58 @@ class ConfigLines(unittest.TestCase):
         self.assertEqual(shown(out, "GEMINI_API_KEY"), "not set")
         self.assertEqual(shown(out, "POLL_CONTACT"), "(not set)")
         self.assertTrue(shown(out, "env file").startswith("none"))
+
+
+class UserAgent(unittest.TestCase):
+    """Every request says who is asking, and how to reach them.
+
+    The owners of these boards should be able to tell the traffic apart and
+    write to someone about it. The agent names the project, and POLL_CONTACT
+    when it is set; resolve_boards.py sends the same one rather than posing as
+    a browser.
+    """
+
+    PROJECT = "https://github.com/FakeZhiyuanLi/DIAYN"
+
+    def test_it_names_the_project_and_the_contact(self):
+        self.assertEqual(poller.user_agent("ops@example.org"),
+                         f"DIAYN/1.0 (+{self.PROJECT}; contact: ops@example.org)")
+
+    def test_an_unset_contact_is_left_out(self):
+        self.assertEqual(poller.user_agent(""), f"DIAYN/1.0 (+{self.PROJECT})")
+
+    def test_every_sweep_sends_it_with_the_configured_contact(self):
+        sessions = []
+
+        class Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        def polite_session(**kwargs):
+            sessions.append(kwargs)
+            return Session()
+
+        settings = poller.configure({"POLL_CONTACT": "ops@example.org"})
+        with mock.patch.object(poller, "SETTINGS", settings), \
+                mock.patch.object(poller, "BOARDS", ()), \
+                mock.patch.object(poller, "polite_session", polite_session):
+            asyncio.run(poller.fetch_all())
+        self.assertEqual(sessions[0]["headers"]["User-Agent"],
+                         poller.user_agent("ops@example.org"))
+
+    def test_resolve_boards_sends_the_same_agent(self):
+        import resolve_boards
+        # The contact comes from the scraper's own settings. load_env_file is
+        # replaced, so no .env on this box is read.
+        with mock.patch.object(poller, "load_env_file", return_value=None), \
+                mock.patch.dict(os.environ, {"POLL_CONTACT": "ops@example.org"}):
+            headers = resolve_boards.agent_headers()
+        self.assertEqual(headers["User-Agent"], poller.user_agent("ops@example.org"))
+        with open(resolve_boards.__file__, encoding="utf-8") as f:
+            self.assertNotIn("Mozilla", f.read())
 
 
 class Cli(unittest.TestCase):
