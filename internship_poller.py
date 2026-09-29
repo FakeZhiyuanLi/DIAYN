@@ -12,6 +12,7 @@ Internship poller. Covers Greenhouse, Lever, Ashby, Workday.
     python internship_poller.py stats
     python internship_poller.py llm-diff            # compare regex vs Gemini on stored rows
     python internship_poller.py sweep --llm         # classify new postings with Gemini
+    python internship_poller.py config              # the settings a run would use
 
     export GEMINI_API_KEY=...               # required for --llm
     export GEMINI_MODEL=gemini-3.5-flash-lite   # or gemini-3.6-flash
@@ -19,6 +20,10 @@ Internship poller. Covers Greenhouse, Lever, Ashby, Workday.
     python internship_poller.py discover            # mine + validate ~2k boards -> boards.json
     python internship_poller.py discover --yc       # + probe YC's 6k company dataset (slow)
     python internship_poller.py prune --dry-run     # see what the retention rule removes
+
+Settings come from the environment, filled in from the scraper's own .env:
+the file POLLER_ENV_FILE names, else the one in this checkout — never the
+working directory's. Every variable, and its default, is in Settings below.
 
 Rows older than 30 days are deleted from `postings` on every sweep. A separate
 `seen` table keeps every id forever, so pruned roles are never re-announced.
@@ -50,24 +55,213 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
 import aiohttp
 
-# All data files live next to this script, never in the CWD — the Discord bot
-# imports this module from client/ and must see the same DB and board registry
-# as the CLI.
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# --------------------------------------------------------------------------
+# Configuration. Read once, by main(), after the scraper's own .env has loaded
+# — never while this module is imported. Importing it reads no file and
+# changes nothing in os.environ: until main() runs, SETTINGS holds the code
+# defaults below and BOARDS is empty. Every default, and the variable that can
+# change it, is in this block and nowhere else; `config` prints what a run
+# would actually use.
+# --------------------------------------------------------------------------
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(_HERE, ".env"), override=True)
-except ImportError:
-    pass  # .env loading is optional; plain env vars still work
+# The checkout this file lives in. The data files and the .env default to
+# paths under it, never under the working directory: pm2 starts the scraper
+# from wherever it was told to, and the bot's checkout has a .env and a
+# postings.db of its own that must never be mistaken for these.
+CHECKOUT = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(CHECKOUT, "data")
 
-DB_PATH = os.path.join(_HERE, "postings.db")
+
+class ConfigError(RuntimeError):
+    """A setting the scraper cannot start with. main() prints it and exits 1."""
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Everything the environment can change, bound once by main() as SETTINGS.
+
+    Frozen because a `watch` process reads it on every sweep for as long as it
+    runs: a value that could change underneath would let two sweeps in one
+    process disagree about their own limits. SETTINGS_FROM_ENV maps each field
+    to its variable.
+    """
+
+    # Data files. Each can point outside the checkout, so the scraper and the
+    # bot can share one data directory.
+    postings_db: str = os.path.join(DATA_DIR, "postings.db")
+    boards_file: str = os.path.join(DATA_DIR, "boards.json")
+    yc_cache: str = os.path.join(DATA_DIR, "yc_cache.json")
+    # Who the owners of the boards can write to about this traffic. `config`
+    # shows it; the User-Agent (UA, below) does not carry it yet.
+    contact: str = ""
+    # The per-host politeness gate; see _HostGate.
+    host_concurrency: int = 4
+    host_min_interval: float = 0.12
+    # repr=False, so a traceback or a stray print of the settings never shows
+    # the key.
+    gemini_key: Optional[str] = field(default=None, repr=False)
+    # One model, one budget. A fallback chain across several models used to
+    # live here, sized for a workload that classified full job descriptions
+    # every few hours. That consumer is gone; what remains classifies
+    # newly-seen postings by title — a handful of calls on a busy day — which
+    # fits one model's daily cap.
+    gemini_model: str = "gemini-3.5-flash-lite"
+    llm_batch: int = 25
+    # Free AI Studio tier: flash-lite is 15 RPM / 500 RPD, flash is 5 RPM / 250
+    # RPD; both are 250k TPM. Defaults here are the conservative flash numbers
+    # so a model switch can't silently exceed the limit — .env raises them for
+    # flash-lite. Check your own dashboard; the published tables go stale.
+    llm_rpm: int = 5
+    llm_rpd: int = 250
+    llm_tpm: int = 250000
+    # How many times one Gemini request may be attempted before the batch
+    # gives up and leaves its postings to the regex classifier. 3 = the call
+    # plus 2 retries.
+    llm_max_attempts: int = 3
+    # Per-request client deadline for Gemini calls, in seconds.
+    llm_http_timeout: float = 150.0
+    # Circuit breaker: consecutive BATCHES that fail every attempt before the
+    # run gives up and leaves the rest to the regex classifier. Each unit here
+    # is a fully exhausted retry chain, so 3 is a much stronger signal of a
+    # real outage than it was when one timeout counted as a failure.
+    llm_max_batch_failures: int = 3
+
+
+# (field, variable, type), in the order `config` prints them.
+SETTINGS_FROM_ENV = (
+    ("postings_db", "POSTINGS_DB", str),
+    ("boards_file", "BOARDS_FILE", str),
+    ("yc_cache", "YC_CACHE", str),
+    ("contact", "POLL_CONTACT", str),
+    ("host_concurrency", "POLL_HOST_CONCURRENCY", int),
+    ("host_min_interval", "POLL_HOST_MIN_INTERVAL", float),
+    ("gemini_key", "GEMINI_API_KEY", str),
+    ("gemini_model", "GEMINI_MODEL", str),
+    ("llm_batch", "GEMINI_BATCH", int),
+    ("llm_rpm", "GEMINI_RPM", int),
+    ("llm_rpd", "GEMINI_RPD", int),
+    ("llm_tpm", "GEMINI_TPM", int),
+    ("llm_max_attempts", "GEMINI_MAX_ATTEMPTS", int),
+    ("llm_http_timeout", "GEMINI_HTTP_TIMEOUT", float),
+    ("llm_max_batch_failures", "GEMINI_MAX_BATCH_FAILURES", int),
+)
+# `config` says whether these are set, and never what they are.
+SECRET_VARIABLES = frozenset({"GEMINI_API_KEY"})
+_LABEL_WIDTH = max(len(var) for _, var, _ in SETTINGS_FROM_ENV) + 2
+
+# The code defaults, until main() binds what the environment asks for.
+SETTINGS = Settings()
+
+
+def _parse(var, raw, kind):
+    """`raw` as a `kind`, or a ConfigError naming `var`.
+
+    A count below 1 is refused rather than obeyed: POLL_HOST_CONCURRENCY=0 is
+    a semaphore nobody can acquire, and every request would wait forever with
+    no error. A seconds value may be 0 (no gap, no deadline) but not negative.
+    """
+    if kind is str:
+        return raw
+    try:
+        value = kind(raw)
+    except ValueError:
+        raise ConfigError(f"{var}={raw!r} is not a number") from None
+    floor = 1 if kind is int else 0
+    if value < floor:
+        raise ConfigError(f"{var}={raw!r} must be at least {floor}")
+    return value
+
+
+def configure(environ) -> Settings:
+    """The settings `environ` asks for, over the code defaults.
+
+    Reads only the mapping it is given — main() passes os.environ once the
+    .env has loaded, tests pass a dict — and an unset or empty variable keeps
+    its default, so `POSTINGS_DB=` in a .env switches the line off rather than
+    naming a database "" in the working directory. A value that cannot be used
+    raises ConfigError, naming its variable, before anything is swept.
+    """
+    changes = {}
+    for name, var, kind in SETTINGS_FROM_ENV:
+        raw = (environ.get(var) or "").strip()
+        if raw:
+            changes[name] = _parse(var, raw, kind)
+    return Settings(**changes)
+
+
+def env_file_path(environ=os.environ, checkout=CHECKOUT) -> str:
+    """Where the scraper's .env is: POLLER_ENV_FILE, else the checkout's own.
+
+    Never the working directory and never the data directory, so a scraper
+    started from the bot's checkout, or sharing the bot's data directory, can
+    never pick up the bot's .env.
+    """
+    return environ.get("POLLER_ENV_FILE") or os.path.join(checkout, ".env")
+
+
+def load_env_file() -> Optional[str]:
+    """Load the scraper's .env into os.environ; return its path, or None.
+
+    override=False: a variable already in the environment — pm2's env block,
+    an export in the shell — is the operator's last word, and the file only
+    fills in what is unset. No file at the default path is normal; plain
+    environment variables work alone. A POLLER_ENV_FILE naming no file, or a
+    file with no python-dotenv to read it, is a ConfigError instead of the old
+    silent skip: either way the run would go ahead on settings nobody chose.
+    """
+    path = env_file_path()
+    if not os.path.isfile(path):
+        if os.environ.get("POLLER_ENV_FILE"):
+            raise ConfigError(f"POLLER_ENV_FILE={path}: no such file")
+        return None
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        raise ConfigError(
+            f"{path} exists, but python-dotenv is not installed to read it "
+            "(pip install python-dotenv, or export the variables instead)"
+        ) from None
+    load_dotenv(path, override=False)
+    return path
+
+
+def _shown(var, value) -> str:
+    """One setting's value as `config` prints it: a secret only as set or not."""
+    if var in SECRET_VARIABLES:
+        return "set" if value else "not set"
+    return "(not set)" if value in ("", None) else str(value)
+
+
+def config_lines(settings, env_file) -> list:
+    """What `config` prints: the .env used, then every setting by its variable.
+
+    The key is shown as set or not set, never as a value, so the output can be
+    pasted into an issue or a chat as it stands.
+    """
+    used = env_file or f"none (no {os.path.join(CHECKOUT, '.env')})"
+    return ([f"{'env file':<{_LABEL_WIDTH}}{used}"]
+            + [f"{var:<{_LABEL_WIDTH}}{_shown(var, getattr(settings, name))}"
+               for name, var, _ in SETTINGS_FROM_ENV])
+
+
+def _parent_made(path) -> str:
+    """`path`, once the directory it goes in exists.
+
+    The data files default to <checkout>/data/, which a fresh checkout does
+    not have (it is gitignored), and neither open() nor sqlite creates it.
+    """
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return path
+
+
 CONCURRENCY = 20
 
 # --------------------------------------------------------------------------
@@ -78,8 +272,8 @@ CONCURRENCY = 20
 # sweep looks like steady background traffic instead of a scrape.
 # --------------------------------------------------------------------------
 
-HOST_CONCURRENCY = int(os.environ.get("POLL_HOST_CONCURRENCY", "4"))
-HOST_MIN_INTERVAL = float(os.environ.get("POLL_HOST_MIN_INTERVAL", "0.12"))
+# Its limits are SETTINGS.host_concurrency and host_min_interval, set by
+# POLL_HOST_CONCURRENCY and POLL_HOST_MIN_INTERVAL.
 _host_sems: dict = {}
 _host_last: dict = {}
 _host_locks: dict = {}
@@ -98,11 +292,11 @@ class _HostGate:
 
     async def __aenter__(self):
         sem = _host_sems.setdefault(
-            self.host, asyncio.Semaphore(HOST_CONCURRENCY))
+            self.host, asyncio.Semaphore(SETTINGS.host_concurrency))
         await sem.acquire()
         lock = _host_locks.setdefault(self.host, asyncio.Lock())
         async with lock:
-            wait = HOST_MIN_INTERVAL - (time.time() - _host_last.get(self.host, 0))
+            wait = SETTINGS.host_min_interval - (time.time() - _host_last.get(self.host, 0))
             if wait > 0:
                 await asyncio.sleep(wait)
             _host_last[self.host] = time.time()
@@ -216,9 +410,9 @@ SEED_BOARDS = [
     ("ashby",      "weaviate",           "Weaviate",             "tech"),
 ]
 
-# Discovered boards live in boards.json (written by `discover`). The seed list
-# above is the hand-curated fallback so the tool works with no setup.
-BOARDS_FILE = os.path.join(_HERE, "boards.json")
+# Discovered boards live in boards.json (SETTINGS.boards_file, written by
+# `discover`). The seed list above is the hand-curated fallback so the tool
+# works with no setup.
 
 
 def _norm(x):
@@ -270,7 +464,7 @@ def is_blocked_company(name) -> bool:
     Anything that is not a string is not a company name: never blocked, and
     never an error. `load_boards` already drops rows that are not all strings,
     so this is the second line of defence rather than the first — but it runs
-    while the module is imported, where a raise is a bot that will not start.
+    at start-up, where a raise is a scraper that will not start.
     """
     if not isinstance(name, str):
         return False
@@ -305,14 +499,15 @@ def _as_board(entry):
 def load_boards():
     """boards.json, plus every seed board it does not mention, minus the blocked.
 
-    Runs while the module is imported, and discord_bot.py loads this module at
-    import with no try around it — so nothing boards.json can hold may raise
-    here. A file that will not parse falls back to the seed boards, and a row
-    that is not a board is dropped. Both are named on stderr; neither stops the
-    bot, and neither stops a sweep.
+    Runs at start-up, before any command (main), and reads SETTINGS.boards_file
+    — so nothing boards.json can hold may raise here: a raise is a scraper that
+    will not start, and under pm2 a restart loop. A file that will not parse
+    falls back to the seed boards, and a row that is not a board is dropped.
+    Both are named on stderr; neither stops the start, and neither stops a
+    sweep.
     """
     try:
-        with open(BOARDS_FILE) as f:
+        with open(SETTINGS.boards_file) as f:
             listed = json.load(f)
     except FileNotFoundError:
         listed = []
@@ -344,7 +539,9 @@ def load_boards():
             if not (is_blocked_company(r[1]) or is_blocked_company(r[2]))]
 
 
-BOARDS = load_boards()
+# Bound by main() to `load_boards()`, after the settings. Functions read it
+# when they run, never at import, so it is empty until then.
+BOARDS = ()
 
 # --------------------------------------------------------------------------
 # Discovery — the registry is the bottleneck, not the poller. This mines ATS
@@ -1072,29 +1269,10 @@ def classify(p: "Posting") -> dict:
 # high-throughput tier and the right default for classification;
 # gemini-3.6-flash is the stronger workhorse. Note the mixed versioning —
 # Flash-Lite stayed on the 3.5 line in the same release. Free-tier RPM/RPD
-# vary by project; check your own AI Studio rate-limit view and set the env
-# vars below to match, since the published tables go stale.
+# vary by project; check your own AI Studio rate-limit view and set GEMINI_RPM,
+# GEMINI_RPD and GEMINI_TPM to match, since the published tables go stale. The
+# key, the model and every limit are in Settings, at the top of this file.
 # --------------------------------------------------------------------------
-
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
-# One model, one budget. A fallback chain across several models used to live
-# here, sized for a workload that classified full job descriptions every few
-# hours. That consumer is gone; what remains classifies newly-seen postings by
-# title — a handful of calls on a busy day — which fits one model's daily cap.
-
-# How many times one Gemini request may be attempted before the batch gives up
-# and leaves its postings to the regex classifier. 3 = the call plus 2 retries.
-LLM_MAX_ATTEMPTS = int(os.environ.get("GEMINI_MAX_ATTEMPTS", "3"))
-
-# Per-request client deadline for Gemini calls.
-LLM_HTTP_TIMEOUT = float(os.environ.get("GEMINI_HTTP_TIMEOUT", "150"))
-
-# Circuit breaker: consecutive BATCHES that fail every attempt before the run
-# gives up and leaves the rest to the regex classifier. Each unit here is a
-# fully exhausted retry chain, so 3 is a much stronger signal of a real outage
-# than it was when one timeout counted as a failure.
-LLM_MAX_BATCH_FAILURES = int(os.environ.get("GEMINI_MAX_BATCH_FAILURES", "3"))
 
 # Failures worth retrying: the request never produced an answer, and the same
 # request may well succeed moments later. Timeouts dominate here — a batch of 8
@@ -1120,14 +1298,6 @@ def llm_backoff(attempt: int) -> float:
 
 GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{model}:generateContent")
-LLM_BATCH = int(os.environ.get("GEMINI_BATCH", "25"))
-# Free AI Studio tier: flash-lite is 15 RPM / 500 RPD, flash is 5 RPM / 250
-# RPD; both are 250k TPM. Defaults here are the conservative flash numbers so
-# a model switch can't silently exceed the limit — .env raises them for
-# flash-lite. Check your own dashboard; the published tables go stale.
-LLM_RPM = int(os.environ.get("GEMINI_RPM", "5"))
-LLM_RPD = int(os.environ.get("GEMINI_RPD", "250"))
-LLM_TPM = int(os.environ.get("GEMINI_TPM", "250000"))
 
 LLM_PROMPT = """You classify job postings for a tech-internship alert bot.
 
@@ -1205,12 +1375,16 @@ class LlmBudget:
     ceiling, not bill against it.
     """
 
-    def __init__(self, conn, rpm=LLM_RPM, rpd=LLM_RPD, tpm=LLM_TPM):
-        self.conn, self.rpm, self.tpm = conn, rpm, tpm
+    def __init__(self, conn, rpm=None, rpd=None, tpm=None):
+        # Unset limits come from SETTINGS when the budget is made, not when
+        # this class was defined, which was before main() had read them.
+        self.conn = conn
+        self.rpm = SETTINGS.llm_rpm if rpm is None else rpm
+        self.tpm = SETTINGS.llm_tpm if tpm is None else tpm
         # GEMINI_RPD is the daily cap of the one model we call, and llm_usage
         # counts calls to that same model, so the running total compares
         # against this ceiling directly.
-        self.rpd = rpd
+        self.rpd = SETTINGS.llm_rpd if rpd is None else rpd
         self.calls = []          # timestamps of recent requests
         self.tokens = []         # (timestamp, est_tokens) of recent requests
         self.day = datetime.now().strftime("%Y-%m-%d")
@@ -1298,8 +1472,8 @@ async def _llm_call(sess, budget, batch):
                              "responseSchema": LLM_SCHEMA,
                              "temperature": 0},
     }
-    url = GEMINI_URL.format(model=GEMINI_MODEL)
-    for attempt in range(LLM_MAX_ATTEMPTS):
+    url = GEMINI_URL.format(model=SETTINGS.gemini_model)
+    for attempt in range(SETTINGS.llm_max_attempts):
         # The first attempt's slot was taken above; every RETRY is another
         # real API call and must take its own, or retries spend quota
         # invisibly and overrun the daily budget.
@@ -1308,7 +1482,7 @@ async def _llm_call(sess, budget, batch):
             return {}
         try:
             async with sess.post(url, json=body,
-                                 headers={"x-goog-api-key": GEMINI_KEY}) as r:
+                                 headers={"x-goog-api-key": SETTINGS.gemini_key}) as r:
                 if r.status == 429:
                     await asyncio.sleep(llm_backoff(attempt))
                     continue
@@ -1321,9 +1495,9 @@ async def _llm_call(sess, budget, batch):
                     return {}
                 d = await r.json(content_type=None)
         except TRANSIENT_LLM_ERRORS as e:
-            last = attempt == LLM_MAX_ATTEMPTS - 1
+            last = attempt == SETTINGS.llm_max_attempts - 1
             print(f"  llm: {type(e).__name__} "
-                  f"(attempt {attempt + 1}/{LLM_MAX_ATTEMPTS})"
+                  f"(attempt {attempt + 1}/{SETTINGS.llm_max_attempts})"
                   + (" — falling back to regex" if last else
                      f" — retrying in {llm_backoff(attempt):.0f}s"),
                   file=sys.stderr)
@@ -1364,14 +1538,15 @@ async def llm_classify(conn, postings, verbose=True):
 
     if not todo:
         return out
-    if not GEMINI_KEY:
+    if not SETTINGS.gemini_key:
         if verbose:
             print("  llm: GEMINI_API_KEY not set — using regex classifier",
                   file=sys.stderr)
         return out
 
     budget = LlmBudget(conn)
-    batches = [todo[i:i + LLM_BATCH] for i in range(0, len(todo), LLM_BATCH)]
+    size = SETTINGS.llm_batch
+    batches = [todo[i:i + size] for i in range(0, len(todo), size)]
     need = len(batches)
     if need > budget.remaining():
         if verbose:
@@ -1381,18 +1556,18 @@ async def llm_classify(conn, postings, verbose=True):
         batches = batches[:budget.remaining()]
     if verbose and batches:
         print(f"  llm: {len(todo)} uncached postings -> {len(batches)} calls "
-              f"({GEMINI_MODEL})")
+              f"({SETTINGS.gemini_model})")
 
     fails = 0
     async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=LLM_HTTP_TIMEOUT)) as sess:
+            timeout=aiohttp.ClientTimeout(total=SETTINGS.llm_http_timeout)) as sess:
         for batch in batches:
             # Circuit breaker: a bad key or a dead endpoint would otherwise
             # burn one daily-quota slot per batch before giving up. Each
             # "failure" is now an exhausted retry chain, not a single blip.
-            if fails >= LLM_MAX_BATCH_FAILURES:
+            if fails >= SETTINGS.llm_max_batch_failures:
                 if verbose:
-                    print(f"  llm: {LLM_MAX_BATCH_FAILURES} consecutive failed "
+                    print(f"  llm: {SETTINGS.llm_max_batch_failures} consecutive failed "
                           "batches — aborting, regex for the rest",
                           file=sys.stderr)
                 break
@@ -1553,7 +1728,6 @@ def select(posts, us_only, category, tech_only=True,
 # --------------------------------------------------------------------------
 
 YC_DATASET = "https://yc-oss.github.io/api/companies/all.json"
-YC_CACHE = os.path.join(_HERE, "yc_cache.json")
 
 # Slugs that are real boards but belong to somebody else. Anything short or
 # dictionary-ish collides; require positive proof for these rather than
@@ -1632,7 +1806,7 @@ async def mine_yc(sess, limit=None, concurrency=6, recheck=False):
         return set()
 
     try:
-        cache = {} if recheck else json.load(open(YC_CACHE))
+        cache = {} if recheck else json.load(open(SETTINGS.yc_cache))
     except (FileNotFoundError, json.JSONDecodeError):
         cache = {}
 
@@ -1680,7 +1854,7 @@ async def mine_yc(sess, limit=None, concurrency=6, recheck=False):
     try:
         await asyncio.gather(*(probe(c) for c in todo))
     finally:
-        with open(YC_CACHE, "w") as f:
+        with open(_parent_made(SETTINGS.yc_cache), "w") as f:
             json.dump(cache, f)
 
     hits = [v for v in cache.values() if v]
@@ -1742,11 +1916,11 @@ async def cmd_discover(min_interns, include_workday, use_cc, use_yc,
         await asyncio.gather(*(check(p, s) for p, s in sorted(cands)))
 
     keep.sort(key=lambda r: -r[4])
-    with open(BOARDS_FILE, "w") as f:
+    with open(_parent_made(SETTINGS.boards_file), "w") as f:
         json.dump([r[:4] for r in keep], f, indent=1)
     print(f"\n{live}/{len(cands)} boards live · {len(keep)} with >={min_interns} "
           f"fresh tech internship(s)")
-    print(f"wrote {len(keep)} to {BOARDS_FILE} (+{len(SEED_BOARDS)} seed merged at load)")
+    print(f"wrote {len(keep)} to {SETTINGS.boards_file} (+{len(SEED_BOARDS)} seed merged at load)")
     print("\ntop boards:")
     for plat, slug, _, _, n in keep[:20]:
         print(f"  {n:>3} fresh  {plat:<11}{slug}")
@@ -1816,13 +1990,13 @@ class SchemaMismatch(RuntimeError):
 
 
 def db_init():
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(_parent_made(SETTINGS.postings_db))
     ver = c.execute("PRAGMA user_version").fetchone()[0]
     if ver and ver != SCHEMA_VERSION:
         # Raise instead of sys.exit: the CLI turns this into exit(1), while the
         # Discord bot disables the tracker rather than dying at import.
         raise SchemaMismatch(
-            f"db schema v{ver} != v{SCHEMA_VERSION}. Delete {DB_PATH} and re-sweep.")
+            f"db schema v{ver} != v{SCHEMA_VERSION}. Delete {SETTINGS.postings_db} and re-sweep.")
     c.executescript(f"""
         -- Permanent dedup ledger. Never pruned. ~40 bytes/row, so a decade of
         -- postings costs a few MB. This is what makes pruning safe: `postings`
@@ -1984,7 +2158,7 @@ def cmd_stats(conn):
         today = conn.execute("SELECT n FROM llm_usage WHERE day=?",
                              (datetime.now().strftime("%Y-%m-%d"),)).fetchone()
         print(f"\nllm cache: {cached} classified · {today[0] if today else 0} "
-              f"api calls today (budget {LLM_RPD}/day on {GEMINI_MODEL})")
+              f"api calls today (budget {SETTINGS.llm_rpd}/day on {SETTINGS.gemini_model})")
 
     print("\nrecent sweeps:")
     for s in conn.execute("SELECT * FROM sweeps ORDER BY started DESC LIMIT 10"):
@@ -2050,10 +2224,28 @@ async def cmd_watch(conn, interval, use_llm=False):
         await asyncio.sleep(interval)
 
 
+def cmd_config(settings, env_file):
+    print("\n".join(config_lines(settings, env_file)))
+
+
+def boot() -> Optional[str]:
+    """What runs before any command, in this order; returns the .env it used.
+
+    The .env first, so the settings see it; the settings next, so load_boards
+    reads the BOARDS_FILE they name; the boards last. Each is bound once, here,
+    and every function reads SETTINGS and BOARDS when it runs.
+    """
+    global SETTINGS, BOARDS
+    env_file = load_env_file()
+    SETTINGS = configure(os.environ)
+    BOARDS = load_boards()
+    return env_file
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["verify", "list", "sweep", "watch", "stats",
-                                    "prune", "discover", "llm-diff"])
+                                    "prune", "discover", "llm-diff", "config"])
     ap.add_argument("--us", action="store_true", help="US/remote only")
     ap.add_argument("--dupes", action="store_true", help="show collapsed duplicates")
     ap.add_argument("--category", help="swe|quant|hardware|data-ml|pm|other")
@@ -2085,7 +2277,10 @@ def main():
     a = ap.parse_args()
 
     try:
-        if a.cmd == "discover":
+        env_file = boot()
+        if a.cmd == "config":
+            cmd_config(SETTINGS, env_file)
+        elif a.cmd == "discover":
             asyncio.run(cmd_discover(a.min_interns, a.workday, a.common_crawl,
                                      a.yc, a.yc_limit, a.yc_recheck))
         elif a.cmd == "verify":
@@ -2109,7 +2304,7 @@ def main():
                 asyncio.run(cmd_watch(db_init(), a.interval, use_llm=a.llm))
             except KeyboardInterrupt:
                 print("\nstopped.")
-    except SchemaMismatch as e:
+    except (ConfigError, SchemaMismatch) as e:
         print(e, file=sys.stderr)
         sys.exit(1)
 

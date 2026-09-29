@@ -1,7 +1,7 @@
 """
 The company blocklist: companies whose jobs the tracker never shows.
 
-    python3 -m unittest discover -s client     # no install needed
+    python3 -m unittest discover -s tests      # no install needed
 
 Two halves, and both are needed for a block to actually hold:
 
@@ -12,44 +12,28 @@ Two halves, and both are needed for a block to actually hold:
     of that table filters them out rather than waiting for the pruner.
 
 `internship_poller` imports aiohttp at module scope and a box running the
-suite with bare `python3` has none, so it is stubbed with the surface the
-import touches. Nothing here makes a request.
+suite with bare `python3` has none, so it is stubbed (tests/aiohttp_stub.py)
+with the surface the import touches. Nothing here makes a request.
 """
 
 import asyncio
 import contextlib
-import importlib.util
 import io
 import json
 import os
-import shutil
 import sys
 import tempfile
-import types
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+TESTS = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(TESTS)
+for _path in (ROOT, TESTS):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
+from aiohttp_stub import stub_aiohttp  # noqa: E402
 
-def _stub_aiohttp() -> bool:
-    """Fakes `aiohttp`, unless the real one is installed."""
-    try:
-        import aiohttp  # noqa: F401
-        return False
-    except ModuleNotFoundError:
-        pass
-    aiohttp = types.ModuleType("aiohttp")
-    aiohttp.ClientError = type("ClientError", (Exception,), {})
-    aiohttp.ClientTimeout = lambda **kwargs: None
-    aiohttp.ClientSession = object
-    aiohttp.TCPConnector = lambda **kwargs: None
-    sys.modules["aiohttp"] = aiohttp
-    return True
-
-
-_stub_aiohttp()
+stub_aiohttp()
 
 import internship_poller as poller  # noqa: E402
 
@@ -76,8 +60,8 @@ class BlockedNames(unittest.TestCase):
     def test_something_that_is_not_a_name_is_never_blocked(self):
         # boards.json is edited by hand, so a column can hold anything JSON can.
         # Not a string means not a company name: never blocked, and never an
-        # exception — a raise here, reached from `load_boards` while the module
-        # is imported, is a bot that will not start.
+        # exception — a raise here, reached from `load_boards` at start-up, is
+        # a scraper that will not start.
         for value in (12345, 3.5, True, ["Rocket Lab"], {"company": "Rocket Lab"}):
             with self.subTest(value=value):
                 self.assertFalse(poller.is_blocked_company(value))
@@ -115,7 +99,8 @@ def boards_from(rows=None, raw=None):
     wrote, so a test that reads it tests the box rather than the code: it goes
     red on a healthy deploy the day `discover` records a seed company under its
     slug, and CLAUDE.md's stop-on-red rule then halts that deploy for a fault
-    that is not in the code.
+    that is not in the code. The temporary file reaches `load_boards` the way
+    a deploy's does, through `configure`, and the settings are put back after.
     """
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "boards.json")
@@ -125,12 +110,12 @@ def boards_from(rows=None, raw=None):
         elif rows is not None:
             with open(path, "w") as f:
                 json.dump(rows, f)
-        original = poller.BOARDS_FILE
-        poller.BOARDS_FILE = path
+        original = poller.SETTINGS
+        poller.SETTINGS = poller.configure({"BOARDS_FILE": path})
         try:
             return poller.load_boards()
         finally:
-            poller.BOARDS_FILE = original
+            poller.SETTINGS = original
 
 
 class Registry(unittest.TestCase):
@@ -206,12 +191,10 @@ class Registry(unittest.TestCase):
                           if b[1] in ("rocketlabusa", 99, "rocketlabinc")], [])
 
     def test_an_unreadable_boards_json_falls_back_to_the_seed_boards(self):
-        # A trailing comma is the classic hand edit. This runs while the module
-        # is imported and discord_bot.py loads it at import with no try, so a
-        # raise here would stop the whole bot — the puzzle included — over a
-        # file the tracker can run without. puzzle_admins.py already describes
-        # boards.json this way: it "falls back to a seed list". A top level that
-        # is not a list — an object, null, a bare number — gets the same.
+        # A trailing comma is the classic hand edit. This runs at start-up,
+        # before any command, so a raise here would stop the scraper — under
+        # pm2, a restart loop — over a file it can run without. A top level
+        # that is not a list — an object, null, a bare number — gets the same.
         for raw in ('[["greenhouse", "acme", "Acme", "tech"],]', "",
                     '{"boards": []}', "null", "5"):
             with self.subTest(raw=raw):
@@ -223,44 +206,38 @@ class Registry(unittest.TestCase):
 
 
 class Boot(unittest.TestCase):
-    """The poller imports whatever state boards.json is in.
+    """The scraper starts whatever state boards.json is in.
 
-    What this pins is not a wrong answer but a bot that will not start.
-    `BOARDS = load_boards()` runs while the module is imported, and
-    discord_bot.py loads this module at import with no try around it, so an
-    exception there takes every command down with it, the puzzle included.
-    Each test loads the poller the way the bot does — exec_module on a copy
-    with a hand-edited boards.json beside it — under a name of its own, so the
-    module the rest of this file tests is left alone. This imports the poller
-    only; the bot itself was checked by hand.
+    What this pins is not a wrong answer but a scraper that will not start.
+    Importing the module reads nothing; `main()` runs `configure()` and then
+    `load_boards()` before any command, so an exception there stops every
+    command, and under pm2 it is a restart loop rather than a sweep. Each test
+    boots the way `main()` does, against a temporary BOARDS_FILE, and checks
+    that a hand-edited file costs the bad rows — named on stderr — not the
+    start.
     """
 
-    def _import_with(self, text):
-        with tempfile.TemporaryDirectory() as d:
-            shutil.copy(poller.__file__, d)
-            with open(os.path.join(d, "boards.json"), "w") as f:
-                f.write(text)
-            spec = importlib.util.spec_from_file_location(
-                "internship_poller_import_check",
-                os.path.join(d, "internship_poller.py"))
-            module = importlib.util.module_from_spec(spec)
-            with contextlib.redirect_stderr(io.StringIO()):
-                spec.loader.exec_module(module)
-        return module
+    def _boot_with(self, text):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            boards = boards_from(raw=text)
+        return boards, err.getvalue()
 
-    def test_the_poller_still_imports_with_a_malformed_boards_json(self):
-        module = self._import_with(json.dumps(
+    def test_the_scraper_still_boots_with_a_malformed_boards_json(self):
+        boards, err = self._boot_with(json.dumps(
             [["greenhouse", "acme"], ["greenhouse", "acmetwo", 7, "tech"],
              ["lever", 12345, "Some Co", "misc"], [], 5,
              ["greenhouse", "rocketlabusa", "rocketlabusa", "unknown"],
              ["greenhouse", "anduril", "anduril", "unknown"]]))
-        self.assertIn(("greenhouse", "anduril", "anduril", "unknown"), module.BOARDS)
-        self.assertFalse([b for b in module.BOARDS
+        self.assertIn(("greenhouse", "anduril", "anduril", "unknown"), boards)
+        self.assertFalse([b for b in boards
                           if b[1] in ("acme", "acmetwo", 12345, "rocketlabusa")])
+        self.assertIn("['greenhouse', 'acme']", err)
 
-    def test_the_poller_still_imports_with_a_boards_json_that_will_not_parse(self):
-        module = self._import_with('[["greenhouse", "acme", "Acme", "tech"],]')
-        self.assertEqual(len(module.BOARDS), len(module.SEED_BOARDS) - 1)
+    def test_the_scraper_still_boots_with_a_boards_json_that_will_not_parse(self):
+        boards, err = self._boot_with('[["greenhouse", "acme", "Acme", "tech"],]')
+        self.assertEqual(len(boards), len(poller.SEED_BOARDS) - 1)
+        self.assertIn("using the seed boards only", err)
 
 
 class Sweep(unittest.TestCase):
