@@ -7,12 +7,14 @@ Internship poller. Covers Greenhouse, Lever, Ashby, Workday.
     python internship_poller.py list --us           # all open US internships
     python internship_poller.py list --sector finance
     python internship_poller.py list --category swe
+    python internship_poller.py sweep --init        # first sweep of a new postings.db
     python internship_poller.py sweep               # store + print what's new
     python internship_poller.py watch               # every 15 min until Ctrl-C
     python internship_poller.py stats
     python internship_poller.py llm-diff            # compare regex vs Gemini on stored rows
     python internship_poller.py sweep --llm         # classify new postings with Gemini
     python internship_poller.py config              # the settings a run would use
+    python internship_poller.py upgrade-db          # a v2 postings.db, up to CONTRACT.md
 
     export GEMINI_API_KEY=...               # required for --llm
     export GEMINI_MODEL=gemini-3.5-flash-lite   # or gemini-3.6-flash
@@ -27,6 +29,11 @@ working directory's. Every variable, and its default, is in Settings below.
 
 Rows older than 30 days are deleted from `postings` on every sweep. A separate
 `seen` table keeps every id forever, so pruned roles are never re-announced.
+
+postings.db is read by the BaronChairStair bot, under the promises in
+CONTRACT.md; contract/ holds their machine-readable half. Nothing creates the
+file unasked: `sweep` and `watch` refuse a missing file, or an empty ledger,
+without --init.
 
 Sectors: tech, finance, healthcare, defense, industrial, retail, energy.
 
@@ -58,6 +65,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote
 
 import aiohttp
 
@@ -131,6 +139,10 @@ class Settings:
     # is a fully exhausted retry chain, so 3 is a much stronger signal of a
     # real outage than it was when one timeout counted as a failure.
     llm_max_batch_failures: int = 3
+    # The quota day. The free tier's daily cap resets at midnight Pacific, and
+    # the bot's quota panel says so; scraper_meta publishes this for it, and
+    # llm_usage.day is meant to be the date in this zone (CONTRACT.md, P7).
+    llm_day_tz: str = "America/Los_Angeles"
 
 
 # (field, variable, type), in the order `config` prints them.
@@ -150,6 +162,7 @@ SETTINGS_FROM_ENV = (
     ("llm_max_attempts", "GEMINI_MAX_ATTEMPTS", int),
     ("llm_http_timeout", "GEMINI_HTTP_TIMEOUT", float),
     ("llm_max_batch_failures", "GEMINI_MAX_BATCH_FAILURES", int),
+    ("llm_day_tz", "LLM_DAY_TZ", str),
 )
 # `config` says whether these are set, and never what they are.
 SECRET_VARIABLES = frozenset({"GEMINI_API_KEY"})
@@ -330,6 +343,14 @@ UA = "internship-poller/0.4 (personal project; contact: you@example.com)"
 MAX_AGE_DAYS = 30   # postings older than this are ignored; override with --max-age
 PRUNE_DAYS = 30     # rows older than this are deleted from `postings` on each sweep
 SCHEMA_VERSION = 2
+# The release, and the read contract it keeps (CONTRACT.md). MAJOR moves with
+# CONTRACT_VERSION, and both are published in scraper_meta for the bot to check.
+__version__ = "1.0.0"
+CONTRACT_VERSION = "1"
+# How long a connection waits out another's lock before failing, in ms.
+BUSY_TIMEOUT_MS = 5000
+# `watch`'s gap between sweeps, in seconds, unless --interval says otherwise.
+DEFAULT_INTERVAL_S = 900
 
 # --------------------------------------------------------------------------
 # Board registry. Every entry below was probed live on 2026-07-31.
@@ -434,9 +455,20 @@ def _norm(x):
 # --------------------------------------------------------------------------
 
 BLOCKED_COMPANIES = {"Rocket Lab"}
-# Empties dropped deliberately: "" is a prefix of everything, so one blank
-# entry here would block the entire registry.
-_BLOCKED_NORM = {n for n in (_norm(c) for c in BLOCKED_COMPANIES) if n}
+
+
+def _blocked_norm(names) -> frozenset:
+    """The normalised prefixes `names` block.
+
+    Empties dropped deliberately: "" is a prefix of everything, so one blank
+    entry would block the entire registry. The bot applies the same rule to
+    the blocked_companies table (CONTRACT.md, B7), and
+    contract/company_norm_cases.json pins the two together.
+    """
+    return frozenset(n for n in (_norm(c) for c in names) if n)
+
+
+_BLOCKED_NORM = _blocked_norm(BLOCKED_COMPANIES)
 
 
 def is_blocked_company(name) -> bool:
@@ -542,6 +574,9 @@ def load_boards():
 # Bound by main() to `load_boards()`, after the settings. Functions read it
 # when they run, never at import, so it is empty until then.
 BOARDS = ()
+# When this process booted, for scraper_meta.started_at. Bound by main(), like
+# BOARDS; a process that never booted (a test) reports when it published.
+STARTED_AT: Optional[float] = None
 
 # --------------------------------------------------------------------------
 # Discovery — the registry is the bottleneck, not the poller. This mines ATS
@@ -1585,9 +1620,16 @@ async def llm_classify(conn, postings, verbose=True):
                        "region": f.get("region") or "unknown"}
                 h = posting_hash(p)
                 out[h] = rec
-                conn.execute("INSERT OR REPLACE INTO llm_cache VALUES(?,?,?)",
-                             (h, json.dumps(rec), time.time()))
-    conn.commit()
+                # An upsert, because another run may have cached the same
+                # posting since the lookup above.
+                conn.execute(
+                    "INSERT INTO llm_cache(hash, payload, created) VALUES(?,?,?) "
+                    "ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload, "
+                    "created=excluded.created", (h, json.dumps(rec), time.time()))
+            # Committed batch by batch: LlmBudget can sleep up to a minute
+            # before the next request, and rows left uncommitted across that
+            # sleep hold the write lock, so every other writer would wait.
+            conn.commit()
     return out
 
 
@@ -1989,72 +2031,308 @@ class SchemaMismatch(RuntimeError):
     """postings.db was created by a different SCHEMA_VERSION."""
 
 
-def db_init():
-    c = sqlite3.connect(_parent_made(SETTINGS.postings_db))
-    ver = c.execute("PRAGMA user_version").fetchone()[0]
-    if ver and ver != SCHEMA_VERSION:
-        # Raise instead of sys.exit: the CLI turns this into exit(1), while the
-        # Discord bot disables the tracker rather than dying at import.
-        raise SchemaMismatch(
-            f"db schema v{ver} != v{SCHEMA_VERSION}. Delete {SETTINGS.postings_db} and re-sweep.")
-    c.executescript(f"""
-        -- Permanent dedup ledger. Never pruned. ~40 bytes/row, so a decade of
-        -- postings costs a few MB. This is what makes pruning safe: `postings`
-        -- can be emptied without a single role being re-announced.
-        CREATE TABLE IF NOT EXISTS seen(
-          platform TEXT, external_id TEXT, first_seen REAL,
-          PRIMARY KEY(platform, external_id));
+class DatabaseRefused(RuntimeError):
+    """postings.db is not a file this command will use as it stands.
 
-        -- Prunable detail table. Only holds rows inside the retention window.
-        CREATE TABLE IF NOT EXISTS postings(
-          platform TEXT, external_id TEXT, company TEXT, sector TEXT, title TEXT,
-          location TEXT, url TEXT, category TEXT, term TEXT, region TEXT,
-          is_intern INT, is_tech INT, published REAL, unbounded INT,
-          first_seen REAL, PRIMARY KEY(platform, external_id));
-        CREATE INDEX IF NOT EXISTS idx_pub ON postings(published);
+    Missing, an empty ledger without --init, a failed integrity check, or an
+    upgrade that did not keep every row. main() prints it and exits 1.
+    """
 
-        CREATE TABLE IF NOT EXISTS llm_cache(
-          hash TEXT PRIMARY KEY, payload TEXT, created REAL);
-        CREATE TABLE IF NOT EXISTS llm_usage(day TEXT PRIMARY KEY, n INT);
-        CREATE TABLE IF NOT EXISTS etags(
-          platform TEXT, slug TEXT, etag TEXT, PRIMARY KEY(platform, slug));
-        CREATE TABLE IF NOT EXISTS sweeps(
-          started REAL, duration REAL, not_modified INT, errors INT,
-          new_rows INT, pruned INT);
-        PRAGMA user_version = {SCHEMA_VERSION};
-    """)
-    # Token accounting, added after llm_usage shipped. Additive ALTERs rather
-    # than a SCHEMA_VERSION bump: a bump would force users to delete
-    # postings.db and throw away every cached Gemini verdict, which costs real
-    # quota to rebuild. Old rows keep NULL and read as 0.
-    for _col in ("prompt_tokens", "output_tokens"):
-        try:
-            c.execute(f"ALTER TABLE llm_usage ADD COLUMN {_col} INT DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass          # already migrated
-    c.commit()
-    return c
+
+# The whole schema. contract/postings_v1.sql is its published copy: the bot
+# builds its fixtures from that file, and tests/test_contract.py requires the
+# two to match. Every table is IF NOT EXISTS, so opening a file never changes
+# one that is there — the last three, the contract's own, were added that way,
+# and a scraper from before them opens the file unharmed.
+SCHEMA = f"""
+    -- Permanent dedup ledger. Never pruned. ~40 bytes/row, so a decade of
+    -- postings costs a few MB. This is what makes pruning safe: `postings`
+    -- can be emptied without a single role being re-announced.
+    CREATE TABLE IF NOT EXISTS seen(
+      platform TEXT, external_id TEXT, first_seen REAL,
+      PRIMARY KEY(platform, external_id));
+
+    -- Prunable detail table. Only holds rows inside the retention window.
+    -- No INTEGER PRIMARY KEY, so its rowids are SQLite's own, and the bot
+    -- keys on them: never VACUUM, rebuild, or replace a row (CONTRACT.md, P3).
+    CREATE TABLE IF NOT EXISTS postings(
+      platform TEXT, external_id TEXT, company TEXT, sector TEXT, title TEXT,
+      location TEXT, url TEXT, category TEXT, term TEXT, region TEXT,
+      is_intern INT, is_tech INT, published REAL, unbounded INT,
+      first_seen REAL, PRIMARY KEY(platform, external_id));
+    CREATE INDEX IF NOT EXISTS idx_pub ON postings(published);
+
+    CREATE TABLE IF NOT EXISTS llm_cache(
+      hash TEXT PRIMARY KEY, payload TEXT, created REAL);
+    CREATE TABLE IF NOT EXISTS llm_usage(
+      day TEXT PRIMARY KEY, n INT, prompt_tokens INT DEFAULT 0,
+      output_tokens INT DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS etags(
+      platform TEXT, slug TEXT, etag TEXT, PRIMARY KEY(platform, slug));
+    CREATE TABLE IF NOT EXISTS sweeps(
+      started REAL, duration REAL, not_modified INT, errors INT,
+      new_rows INT, pruned INT);
+
+    -- The contract tables, rewritten by publish_registry.
+    CREATE TABLE IF NOT EXISTS scraper_meta(key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE IF NOT EXISTS boards(
+      platform TEXT, slug TEXT, company TEXT, sector TEXT,
+      PRIMARY KEY(platform, slug));
+    CREATE TABLE IF NOT EXISTS blocked_companies(name TEXT PRIMARY KEY);
+    PRAGMA user_version = {SCHEMA_VERSION};
+"""
+
+# The tables that hold data, as opposed to the contract tables, which are
+# rewritten whole. upgrade-db must leave each one's count and MAX(rowid) as
+# it found them.
+LEDGER_TABLES = ("seen", "postings", "sweeps", "etags", "llm_cache", "llm_usage")
+
+
+def _journal_mode(conn) -> str:
+    return conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+
+def _open(path, create):
+    """A connection to `path`, which must already exist unless `create` is set.
+
+    mode=rw rather than a plain sqlite3.connect, which creates a file that is
+    not there. An empty file at the wrong path — a typo in POSTINGS_DB, a
+    volume not mounted yet — is an empty ledger, and its first sweep records
+    every open posting as new (CONTRACT.md, P6). Only `create` makes the
+    file, and its directory with it.
+    """
+    if create:
+        _parent_made(path)
+    mode = "rwc" if create else "rw"
+    try:
+        return sqlite3.connect(f"file:{quote(os.path.abspath(path))}?mode={mode}",
+                               uri=True)
+    except sqlite3.OperationalError:
+        if os.path.exists(path):
+            raise
+        raise DatabaseRefused(
+            f"{path}: no such database. Only `sweep --init` or `watch --init` "
+            "creates one.") from None
+
+
+def _prepare(conn):
+    """`conn`, with the schema in place, in WAL mode and waiting on locks.
+
+    WAL so the bot's reads and the scraper's writes never block each other,
+    and a reader only ever sees committed sweeps. The switch needs the file to
+    itself, so it is made only when the file is not WAL already; the busy
+    timeout is set first, so the switch and every write after it wait out
+    another connection's lock rather than failing on it. Closes `conn` and
+    raises if the file is another schema version.
+    """
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        if ver and ver != SCHEMA_VERSION:
+            # Raise instead of sys.exit: the CLI turns this into exit(1).
+            raise SchemaMismatch(
+                f"db schema v{ver} != v{SCHEMA_VERSION}. The bot reads this file "
+                "too: see CONTRACT.md before changing either side.")
+        if _journal_mode(conn) != "wal":
+            conn.execute("PRAGMA journal_mode = WAL")
+        conn.executescript(SCHEMA)
+        # Token accounting, added after llm_usage shipped. Additive ALTERs for
+        # files from before it, rather than a SCHEMA_VERSION bump: a bump
+        # would force users to delete postings.db and throw away every cached
+        # Gemini verdict, which costs real quota to rebuild. Old rows keep
+        # NULL and read as 0.
+        for _col in ("prompt_tokens", "output_tokens"):
+            try:
+                conn.execute(f"ALTER TABLE llm_usage ADD COLUMN {_col} INT DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass          # already migrated
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def db_init(create=False):
+    """postings.db, ready to use. Raises DatabaseRefused if it does not exist.
+
+    Every command opens the database through this, and only `create` —
+    `sweep --init` and `watch --init` — may make a new one.
+    """
+    return _prepare(_open(SETTINGS.postings_db, create))
+
+
+def open_for_sweeping(init, interval=DEFAULT_INTERVAL_S):
+    """db_init for `sweep` and `watch`: refuse what P6 refuses, then publish.
+
+    An empty `seen` is refused as firmly as a missing file. The first sweep
+    into it records every open posting as new, which makes it a bootstrap,
+    and a bootstrap is something the operator asks for with --init — never
+    what a wrong path or a file restored empty does by accident. The registry
+    is published here, at start-up (P8), so the bot sees this process's
+    boards, blocklist and settings before its first sweep commits.
+    """
+    conn = db_init(create=init)
+    if not init and conn.execute("SELECT 1 FROM seen LIMIT 1").fetchone() is None:
+        conn.close()
+        raise DatabaseRefused(
+            f"{SETTINGS.postings_db}: the seen ledger is empty, so this sweep would "
+            "record every open posting as new. Pass --init if this is the first "
+            "sweep of a new database.")
+    publish_registry(conn, interval)
+    conn.commit()
+    return conn
+
+
+def scraper_meta(db_path, interval) -> dict:
+    """The scraper_meta rows: exactly the keys CONTRACT.md lists, all as text.
+
+    A new key is additive and needs no contract bump; removing or renaming
+    one does.
+    """
+    started = STARTED_AT if STARTED_AT is not None else time.time()
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "scraper_version": __version__,
+        "db_path": db_path,
+        "prune_days": str(PRUNE_DAYS),
+        "sweep_interval_s": str(interval),
+        "gemini_model": SETTINGS.gemini_model,
+        "llm_rpd": str(SETTINGS.llm_rpd),
+        "llm_rpm": str(SETTINGS.llm_rpm),
+        "llm_tpm": str(SETTINGS.llm_tpm),
+        "llm_day_tz": SETTINGS.llm_day_tz,
+        "started_at": str(started),
+    }
+
+
+def publish_registry(conn, interval=DEFAULT_INTERVAL_S):
+    """Rewrite the three contract tables from what this process runs with (P8).
+
+    `boards` is the registry after the blocklist, `blocked_companies` the
+    blocklist as written, `scraper_meta` what the bot checks and shows. Each
+    is rewritten whole, so a board dropped from boards.json leaves the table
+    too. db_path is read off the connection itself, so it names the file
+    actually opened, symlinks resolved.
+
+    Uncommitted: the caller's transaction. cmd_sweep calls this just before
+    its commit, so the tables change with a sweep or not at all, and in WAL
+    mode the bot never reads them half-written.
+    """
+    opened = conn.execute("PRAGMA database_list").fetchone()[2]
+    conn.execute("DELETE FROM boards")
+    # OR IGNORE: boards.json is edited by hand. A board listed twice is
+    # polled twice, harmlessly; a publish that raised on it would fail every
+    # sweep.
+    conn.executemany(
+        "INSERT OR IGNORE INTO boards(platform, slug, company, sector) "
+        "VALUES(?,?,?,?)", BOARDS)
+    conn.execute("DELETE FROM blocked_companies")
+    # A name that normalises to nothing blocks nothing here, and in the bot's
+    # prefix rule it would block everything.
+    conn.executemany("INSERT INTO blocked_companies(name) VALUES(?)",
+                     [(n,) for n in sorted(BLOCKED_COMPANIES) if _norm(n)])
+    conn.execute("DELETE FROM scraper_meta")
+    conn.executemany(
+        "INSERT INTO scraper_meta(key, value) VALUES(?,?)",
+        sorted(scraper_meta(os.path.realpath(opened), interval).items()))
+
+
+def census(conn) -> dict:
+    """{table: (rows, MAX(rowid))} for each of LEDGER_TABLES the file has."""
+    present = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    return {t: conn.execute(f"SELECT COUNT(*), MAX(rowid) FROM {t}").fetchone()
+            for t in LEDGER_TABLES if t in present}
+
+
+def _census_line(table, before, after) -> str:
+    def shown(c):
+        return "absent" if c is None else f"{c[0]} rows, max rowid {c[1]}"
+    return f"{table}: {shown(before)} -> {shown(after)}"
+
+
+def _refuse_to_upgrade(conn, path):
+    """Raise, having changed nothing, unless `conn` is a sound v2 postings.db."""
+    problems = [r[0] for r in conn.execute("PRAGMA integrity_check")]
+    if problems != ["ok"]:
+        raise DatabaseRefused(f"{path}: integrity_check failed, nothing was "
+                              "changed: " + "; ".join(problems[:5]))
+    print("integrity_check: ok")
+    ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    if ver != SCHEMA_VERSION:
+        raise DatabaseRefused(
+            f"{path}: user_version {ver}, not {SCHEMA_VERSION}. upgrade-db only "
+            f"upgrades a v{SCHEMA_VERSION} postings.db; nothing was changed.")
+
+
+def cmd_upgrade_db(interval=DEFAULT_INTERVAL_S):
+    """Bring the live v2 postings.db up to the contract without moving a row.
+
+    For the file the bot has been sweeping until now: it switches the file to
+    WAL, adds the contract tables and writes scraper_meta, so the bot's
+    contract check (B2) passes before this scraper's first sweep. A file that
+    fails PRAGMA integrity_check or is not user_version 2 is refused before
+    anything is written. Each ledger table's count and MAX(rowid) is printed
+    before and after, and must not change: the rowids are the bot's
+    autocomplete values (P3). Safe to run again.
+    """
+    path = SETTINGS.postings_db
+    conn = _open(path, create=False)
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        _refuse_to_upgrade(conn, path)
+        mode, before = _journal_mode(conn), census(conn)
+        _prepare(conn)
+        publish_registry(conn, interval)
+        conn.commit()
+        after = census(conn)
+        print(f"journal_mode: {mode} -> {_journal_mode(conn)}")
+        for table in LEDGER_TABLES:
+            if table in before or table in after:
+                print(_census_line(table, before.get(table), after.get(table)))
+        moved = [t for t in before if after.get(t) != before[t]]
+        if moved:
+            raise DatabaseRefused(
+                f"{path}: {', '.join(moved)} changed during the upgrade. Restore "
+                "the backup before anything sweeps.")
+        print(f"scraper_meta: contract_version {CONTRACT_VERSION}, "
+              f"db_path {os.path.realpath(path)}")
+    finally:
+        conn.close()
 
 
 def prune(conn, days=PRUNE_DAYS, dry_run=False):
-    """Delete rows older than `days` from `postings`.
+    """Delete rows older than `days` from `postings`; return how many.
 
     Never touches `seen`, so pruned roles stay deduped. Rows with no date, and
     Workday's unbounded "30d+" bucket, are left alone — we can't prove they're
     old, and deleting them would only lose data we already have.
+
+    Uncommitted: the caller commits. A sweep's prune lands with the rest of
+    that sweep or not at all (P4).
     """
     cutoff = time.time() - days * 86400
     q = ("published IS NOT NULL AND unbounded=0 AND published < ?", (cutoff,))
     n = conn.execute(f"SELECT COUNT(*) FROM postings WHERE {q[0]}", q[1]).fetchone()[0]
     if not dry_run and n:
         conn.execute(f"DELETE FROM postings WHERE {q[0]}", q[1])
-        conn.commit()
     return n
 
 
-async def cmd_sweep(conn, quiet=False, use_llm=False):
+async def cmd_sweep(conn, quiet=False, use_llm=False, interval=DEFAULT_INTERVAL_S):
+    """One sweep: fetch every board, store what is new, prune, publish.
+
+    The sweep's own writes — etags, seen, postings, the prune, the sweeps row
+    and the contract tables — are one transaction, committed at the end, and
+    nothing awaits between taking `now` and that commit (CONTRACT.md, P1).
+    With `use_llm`, llm_classify commits its cache before that transaction
+    begins. `interval` is what scraper_meta tells the bot to expect between
+    sweeps.
+    """
     t0 = time.time()
-    etags = {(r[0], r[1]): r[2] for r in conn.execute("SELECT * FROM etags")}
+    etags = {(r[0], r[1]): r[2]
+             for r in conn.execute("SELECT platform, slug, etag FROM etags")}
     posts, stats = await fetch_all(etags)
 
     # Dedup against `seen`, never against `postings` — postings gets pruned.
@@ -2073,8 +2351,9 @@ async def cmd_sweep(conn, quiet=False, use_llm=False):
             llm = await llm_classify(conn, cand, verbose=not quiet)
 
     for (plat, slug), et in stats["new_etags"].items():
-        conn.execute("INSERT INTO etags VALUES(?,?,?) ON CONFLICT(platform,slug) "
-                     "DO UPDATE SET etag=excluded.etag", (plat, slug, et))
+        conn.execute("INSERT INTO etags(platform, slug, etag) VALUES(?,?,?) "
+                     "ON CONFLICT(platform, slug) DO UPDATE SET etag=excluded.etag",
+                     (plat, slug, et))
 
     now, fresh, seen_rows, posting_rows = time.time(), [], [], []
     for p in posts:
@@ -2097,14 +2376,21 @@ async def cmd_sweep(conn, quiet=False, use_llm=False):
             fresh.append((p, c))
     # OR IGNORE: a concurrent CLI/bot sweep racing on the same DB loses the
     # duplicate row instead of aborting the whole sweep with IntegrityError.
-    conn.executemany("INSERT OR IGNORE INTO seen VALUES(?,?,?)", seen_rows)
+    # Named columns throughout: a positional INSERT breaks, or writes the
+    # wrong column, the day its table gains one.
+    conn.executemany("INSERT OR IGNORE INTO seen(platform, external_id, first_seen) "
+                     "VALUES(?,?,?)", seen_rows)
     conn.executemany(
-        "INSERT OR IGNORE INTO postings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR IGNORE INTO postings(platform, external_id, company, sector, "
+        "title, location, url, category, term, region, is_intern, is_tech, "
+        "published, unbounded, first_seen) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         posting_rows)
     pruned = prune(conn)
-    conn.execute("INSERT INTO sweeps VALUES(?,?,?,?,?,?)",
+    conn.execute("INSERT INTO sweeps(started, duration, not_modified, errors, "
+                 "new_rows, pruned) VALUES(?,?,?,?,?,?)",
                  (t0, now - t0, stats["not_modified"], stats["error"],
                   len(fresh), pruned))
+    publish_registry(conn, interval)
     conn.commit()
 
     if not quiet:
@@ -2161,7 +2447,9 @@ def cmd_stats(conn):
               f"api calls today (budget {SETTINGS.llm_rpd}/day on {SETTINGS.gemini_model})")
 
     print("\nrecent sweeps:")
-    for s in conn.execute("SELECT * FROM sweeps ORDER BY started DESC LIMIT 10"):
+    for s in conn.execute("SELECT started, duration, not_modified, errors, "
+                          "new_rows, pruned FROM sweeps "
+                          "ORDER BY started DESC LIMIT 10"):
         print(f"  {datetime.fromtimestamp(s[0]):%m-%d %H:%M}  {s[1]:5.1f}s  "
               f"304s={s[2]:<3} err={s[3]:<3} new={s[4]:<4} pruned={s[5] or 0}")
 
@@ -2218,7 +2506,7 @@ async def cmd_watch(conn, interval, use_llm=False):
     print(f"watching {len(BOARDS)} boards every {interval//60}m. Ctrl-C to stop.\n")
     while True:
         try:
-            await cmd_sweep(conn, use_llm=use_llm)
+            await cmd_sweep(conn, use_llm=use_llm, interval=interval)
         except Exception as e:
             print(f"sweep failed: {e}", file=sys.stderr)
         await asyncio.sleep(interval)
@@ -2235,7 +2523,8 @@ def boot() -> Optional[str]:
     reads the BOARDS_FILE they name; the boards last. Each is bound once, here,
     and every function reads SETTINGS and BOARDS when it runs.
     """
-    global SETTINGS, BOARDS
+    global SETTINGS, BOARDS, STARTED_AT
+    STARTED_AT = time.time()
     env_file = load_env_file()
     SETTINGS = configure(os.environ)
     BOARDS = load_boards()
@@ -2245,7 +2534,8 @@ def boot() -> Optional[str]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["verify", "list", "sweep", "watch", "stats",
-                                    "prune", "discover", "llm-diff", "config"])
+                                    "prune", "discover", "llm-diff", "upgrade-db",
+                                    "config"])
     ap.add_argument("--us", action="store_true", help="US/remote only")
     ap.add_argument("--dupes", action="store_true", help="show collapsed duplicates")
     ap.add_argument("--category", help="swe|quant|hardware|data-ml|pm|other")
@@ -2273,7 +2563,12 @@ def main():
                     help="classify with Gemini instead of regex (needs GEMINI_API_KEY)")
     ap.add_argument("--limit", type=int, default=200,
                     help="llm-diff: how many stored postings to compare")
-    ap.add_argument("--interval", type=int, default=900)
+    ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_S,
+                    help="watch: seconds between sweeps, which scraper_meta tells "
+                         f"the bot to expect (default {DEFAULT_INTERVAL_S})")
+    ap.add_argument("--init", action="store_true",
+                    help="sweep/watch: create postings.db if it is missing, and "
+                         "allow a first sweep into an empty ledger")
     a = ap.parse_args()
 
     try:
@@ -2293,18 +2588,23 @@ def main():
         elif a.cmd == "prune":
             conn = db_init()
             n = prune(conn, a.max_age or PRUNE_DAYS, a.dry_run)
+            conn.commit()
             print(f"{'would prune' if a.dry_run else 'pruned'} {n} rows older than "
                   f"{a.max_age or PRUNE_DAYS}d · dedup ledger untouched")
         elif a.cmd == "sweep":
-            asyncio.run(cmd_sweep(db_init(), use_llm=a.llm))
+            conn = open_for_sweeping(a.init, a.interval)
+            asyncio.run(cmd_sweep(conn, use_llm=a.llm, interval=a.interval))
         elif a.cmd == "llm-diff":
             asyncio.run(cmd_llm_diff(db_init(), a.limit))
+        elif a.cmd == "upgrade-db":
+            cmd_upgrade_db(a.interval)
         else:
+            conn = open_for_sweeping(a.init, a.interval)
             try:
-                asyncio.run(cmd_watch(db_init(), a.interval, use_llm=a.llm))
+                asyncio.run(cmd_watch(conn, a.interval, use_llm=a.llm))
             except KeyboardInterrupt:
                 print("\nstopped.")
-    except (ConfigError, SchemaMismatch) as e:
+    except (ConfigError, SchemaMismatch, DatabaseRefused) as e:
         print(e, file=sys.stderr)
         sys.exit(1)
 

@@ -1,0 +1,38 @@
+{
+  "about": [
+    "Contract v1: one postings.url per platform, in the exact shape that platform's adapter stores, with the board slug that produced it.",
+    "Greenhouse, Lever, Ashby and iCIMS store the URL the board itself returns (absolute_url, hostedUrl, jobUrl, the sitemap's <loc>). Workday, Eightfold and Taleo store a URL the adapter builds from the board slug and the job's id.",
+    "It exists because the bot's posting_details matches postings.url with regexes, and those must keep matching what the adapters store. DIAYN's tests/test_contract.py runs every adapter on a canned response and requires these URLs exactly.",
+    "Workday boards on the other host shape, slug 'wdN/tenant/Site@site', store https://wdN.myworkdaysite.com/recruiting/tenant/Site/job/..., which posting_details has never matched."
+  ],
+  "platforms": {
+    "greenhouse": {
+      "slug": "acme",
+      "url": "https://job-boards.greenhouse.io/acme/jobs/4567890"
+    },
+    "lever": {
+      "slug": "acme",
+      "url": "https://jobs.lever.co/acme/0f8a4c7e-2b1d-4e6a-9c3f-5d7b8a9e1f20"
+    },
+    "ashby": {
+      "slug": "acme",
+      "url": "https://jobs.ashbyhq.com/acme/6b1e2f3a-4c5d-4e7f-8a9b-0c1d2e3f4a5b"
+    },
+    "workday": {
+      "slug": "acme/wd1/Acme_Careers",
+      "url": "https://acme.wd1.myworkdayjobs.com/Acme_Careers/job/Irvine-CA/Software-Engineering-Intern_R12345"
+    },
+    "icims": {
+      "slug": "careers-acme.icims.com",
+      "url": "https://careers-acme.icims.com/jobs/12345/software-engineering-intern/job"
+    },
+    "eightfold": {
+      "slug": "acme|acme.com",
+      "url": "https://acme.eightfold.ai/careers/job/563000123456789"
+    },
+    "taleo": {
+      "slug": "acme|101430233",
+      "url": "https://acme.taleo.net/careersection/ex/jobdetail.ftl?job=2400123"
+    }
+  }
+}
