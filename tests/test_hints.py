@@ -14,16 +14,21 @@ copied. What is pinned here:
 - a venv's python, a symlink to the Python it was made from, stays the venv's;
 - a checkout reached through a symlinked directory is still the checkout;
 - the requirements go in with the running Python's own pip inside a venv, and
-  into a new .venv, as the quick start makes one, outside any.
+  into a new .venv, as the quick start makes one, outside any;
+- a Python older than 3.10 is refused naming both versions and the interpreter,
+  and a script checking it first exits 1.
 
 Nothing here runs an interpreter or touches the checkout: every path is built
 in a temporary directory, or never looked at.
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
@@ -136,6 +141,40 @@ class ThePortal(unittest.TestCase):
                       "Server Members Intent"):
             with self.subTest(named=named):
                 self.assertIn(named, hints.INTENT_HOW)
+
+
+
+class AnOldPython(unittest.TestCase):
+    OLD = (3, 9, 6, "final", 0)
+
+    def test_is_refused_naming_both_versions_and_the_interpreter(self):
+        said = hints.python_refusal(self.OLD, executable=f"{CHECKOUT}/.venv/bin/python",
+                                    checkout=CHECKOUT)
+        first, second = said.splitlines()
+        self.assertEqual(first, "DIAYN needs Python 3.10 or newer; this is 3.9.6")
+        self.assertTrue(second.startswith(".venv/bin/python is that Python."), second)
+        self.assertIn("quick start", second)
+
+    def test_3_10_and_newer_pass(self):
+        for version in ((3, 10, 0), (3, 12, 7), (3, 14, 2), (4, 0, 0)):
+            with self.subTest(version=version):
+                self.assertIsNone(hints.python_refusal(version))
+        self.assertIsNone(hints.python_refusal())
+
+    def test_a_script_that_checks_first_says_why_and_exits_1(self):
+        err = io.StringIO()
+        with mock.patch.object(sys, "version_info", self.OLD), \
+                contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            hints.exit_if_old_python()
+        self.assertEqual(caught.exception.code, 1)
+        self.assertEqual(err.getvalue().splitlines()[0],
+                         "DIAYN needs Python 3.10 or newer; this is 3.9.6")
+
+    def test_on_a_new_enough_python_the_check_does_nothing(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(hints.exit_if_old_python((3, 10, 0)))
+        self.assertEqual(err.getvalue(), "")
 
 
 if __name__ == "__main__":

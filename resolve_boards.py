@@ -34,9 +34,16 @@ import re
 import sys
 from urllib.parse import urlparse
 
-import aiohttp
+import hints
 
-import internship_poller as poller
+# The Python version first, as the scraper checks it: aiohttp and the scraper need
+# 3.10, and on 3.9 they die as they are imported, before anything could say why.
+if __name__ == "__main__":
+    hints.exit_if_old_python()
+
+import aiohttp  # noqa: E402
+
+import internship_poller as poller  # noqa: E402
 
 ACCEPT = "text/html,application/json;q=0.9,*/*;q=0.8"
 

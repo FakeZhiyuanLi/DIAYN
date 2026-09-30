@@ -18,6 +18,7 @@ import ast
 import contextlib
 import io
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,12 @@ BUILT = ("import-legacy", "grant", "revoke", "run", "setup", "doctor")
 # The modules diayn.py imports from its checkout, besides the scraper's.
 DIAYN_FILES = ("diayn.py", "hints.py", "host_checks.py", "discord_portal.py")
 USAGE_ERROR, FAILED, LOCK_HELD = 2, 1, 3
+# The scripts the README runs on their own, besides diayn.py, which check the Python
+# version as diayn.py does, before importing what needs 3.10.
+RUN_ALONE = ("internship_poller.py", "resolve_boards.py")
+# What those scripts import that Python 3.9 cannot: aiohttp is not installed there,
+# llm's annotations raise a TypeError, and resolve_boards imports the scraper.
+NEEDS_3_10 = ("aiohttp", "llm", "internship_poller")
 
 # The child: the temporary checkout first on the path, so `import diayn` and
 # its `import internship_poller` find the copies. The requests are replaced
@@ -106,7 +113,8 @@ class DiaynsOwn(unittest.TestCase):
 
 class AnOldPython(unittest.TestCase):
     """On Python 3.9, macOS's own python3, the scraper and host_checks die with a
-    TypeError as they are imported, so diayn.py checks the version before either."""
+    TypeError as they are imported, so diayn.py checks the version before either, and
+    the scripts run on their own check it before their own imports."""
 
     #: What diayn.py imports before its check, so what must parse and run on 3.9.
     CHECKED_FIRST = ("diayn.py", "hints.py")
@@ -126,8 +134,8 @@ class AnOldPython(unittest.TestCase):
     def test_3_10_and_newer_pass(self):
         for version in ((3, 10, 0), (3, 12, 7), (3, 14, 2), (4, 0, 0)):
             with self.subTest(version=version):
-                self.assertIsNone(diayn.python_refusal(version))
-        self.assertIsNone(diayn.python_refusal())
+                self.assertIsNone(hints.python_refusal(version))
+        self.assertIsNone(hints.python_refusal())
 
     def sources(self):
         for name in self.CHECKED_FIRST:
@@ -156,6 +164,46 @@ class AnOldPython(unittest.TestCase):
                     with self.subTest(file=name, line=annotation.lineno):
                         self.assertFalse(any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
                                              for n in ast.walk(annotation)))
+
+    def test_the_scripts_run_alone_refuse_it_before_importing_what_needs_it(self):
+        # aiohttp, llm and the scraper cannot be imported here, so a check that came
+        # after any of them would fail with ModuleNotFoundError, not exit 1.
+        for name in RUN_ALONE:
+            err = io.StringIO()
+            with self.subTest(script=name), \
+                    mock.patch.object(sys, "version_info", (3, 9, 6, "final", 0)), \
+                    mock.patch.dict(sys.modules, dict.fromkeys(NEEDS_3_10)), \
+                    mock.patch.object(sys, "argv", [name, "config"]), \
+                    contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as caught:
+                runpy.run_path(os.path.join(ROOT, name), run_name="__main__")
+            self.assertEqual(caught.exception.code, FAILED)
+            self.assertEqual(err.getvalue().splitlines()[0],
+                             "DIAYN needs Python 3.10 or newer; this is 3.9.6")
+
+    def test_the_scripts_run_alone_parse_as_python_3_9(self):
+        # A SyntaxError is raised before the first line runs, check and all.
+        for name in RUN_ALONE:
+            with self.subTest(file=name), \
+                    open(os.path.join(ROOT, name), encoding="utf-8") as f:
+                ast.parse(f.read(), filename=name, feature_version=(3, 9))
+
+    def test_the_scripts_run_alone_import_only_what_3_9_runs_before_the_check(self):
+        for name in RUN_ALONE:
+            with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+                body = ast.parse(f.read()).body
+            checks = [i for i, node in enumerate(body) if isinstance(node, ast.If)
+                      and "exit_if_old_python" in ast.unparse(node)]
+            with self.subTest(script=name):
+                self.assertEqual(len(checks), 1)
+                self.assertIn("__name__ == '__main__'", ast.unparse(body[checks[0]].test))
+                imported = set()
+                for node in body[:checks[0]]:
+                    if isinstance(node, ast.Import):
+                        imported.update(alias.name.split(".")[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom):
+                        imported.add((node.module or "").split(".")[0])
+                self.assertEqual(imported - set(sys.stdlib_module_names), {"hints"})
 
     def test_nothing_else_of_the_checkout_is_imported_at_the_top(self):
         # The scraper, host_checks and bot/ are imported only after the check.

@@ -80,10 +80,18 @@ from typing import Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import aiohttp
-
 import hints
-import llm
+
+# Run on its own, the scraper checks the Python version before it imports aiohttp
+# and llm: on 3.9, macOS's own python3, llm's annotations raise a TypeError as it is
+# imported. Everything above is the standard library, or hints, which 3.9 runs.
+# Imported, it checks nothing: diayn.py has checked already.
+if __name__ == "__main__":
+    hints.exit_if_old_python()
+
+import aiohttp  # noqa: E402
+
+import llm  # noqa: E402
 
 # --------------------------------------------------------------------------
 # Configuration. Read once, by main(), after the scraper's own .env has loaded

@@ -43,7 +43,8 @@ You need Python 3.10 or newer, on Linux or macOS, and a Discord account.
    macOS's own `python3` is 3.9, and pip then fails to find python-dotenv
    without saying why. Install a newer Python (python.org or Homebrew) and make
    the venv with it, as in `python3.12 -m venv .venv`. `diayn.py` names both
-   versions if the venv's Python is too old.
+   versions if the venv's Python is too old, and so do `internship_poller.py`
+   and `resolve_boards.py` run on their own.
 
 3. **Configure:** `cp example.env .env && chmod 600 .env`, then set
    `DISCORD_TOKEN` and `POLL_CONTACT` in it.

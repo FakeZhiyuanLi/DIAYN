@@ -60,7 +60,7 @@ OK, WARN, NOTE, FAIL = "ok", "warn", "note", "fail"
 FAILED_EXIT = 1
 #: The data directory's mode: users.db in it holds Discord ids and profiles.
 PRIVATE_MODE = 0o700
-MIN_PYTHON = (3, 10)
+MIN_PYTHON = hints.MIN_PYTHON
 #: What DIAYN needs that only a POSIX system has, and what for.
 POSIX_MODULES = (("fcntl", "the sweeper lock"), ("resource", "the resume reader's limits"))
 PLATFORM_NAMES = {"linux": "Linux", "darwin": "macOS"}

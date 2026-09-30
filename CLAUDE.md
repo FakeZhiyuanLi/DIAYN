@@ -19,7 +19,10 @@ your report.**
   `host_checks.py` and `discord_portal.py` are what `setup` and `doctor` do.
   `hints.py` spells every command a message tells someone to type with the
   Python that is running (`.venv/bin/python diayn.py setup`), never bare
-  `python`, which stock macOS and Ubuntu do not have.
+  `python`, which stock macOS and Ubuntu do not have. It also holds the Python
+  version check that `diayn.py`, `internship_poller.py` and `resolve_boards.py`
+  make before their own imports, so it must stay within what Python 3.9 runs;
+  `tests/test_diayn.py` checks that.
 - `bot/` is the Discord bot: `app.py`, the client; `access.py`, who may use it;
   `intern_fit.py`, the Gemini fit check; and the finder's other modules. They
   use bare imports with `bot/` on `sys.path`, and `bot/` has no `__init__.py`
