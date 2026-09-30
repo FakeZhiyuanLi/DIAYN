@@ -146,6 +146,22 @@ class ExampleEnv(unittest.TestCase):
             with self.subTest(var=var):
                 self.assertEqual(self.found[var], [""])
 
+    def test_a_copy_leaves_exactly_the_two_blanks_every_host_fills_in(self):
+        # `cp example.env .env`, then fill in these two, as the quick start says.
+        # Everything else stays commented out, following the code's default.
+        text = read("example.env")
+        assignments = [ln for ln in text.splitlines() if ASSIGNMENT.match(ln)]
+        uncommented = [ln for ln in assignments if not ln.startswith("#")]
+        self.assertEqual(uncommented, ["DISCORD_TOKEN=", "POLL_CONTACT="])
+        self.assertEqual(assignments[:2], uncommented)
+
+    def test_is_written_for_one_bot_on_its_own_host(self):
+        # Not for a scraper beside another bot, with an .env of its own.
+        text = read("example.env").lower()
+        for gone in ("the bot's .env", "bot's checkout", "server's .env"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, text)
+
 
 class Requirements(unittest.TestCase):
     def test_pins_exactly_the_runtime_dependencies(self):
