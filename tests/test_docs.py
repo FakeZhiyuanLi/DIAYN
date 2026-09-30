@@ -64,7 +64,18 @@ ALLOWED_PATHS = (
     "contract/company_norm_cases.json", "contract/sample_urls.json",
     "tests/test_contract.py", "tests/aiohttp_stub.py", "LICENSE",
     "bot/README.md", "tests/bot/__init__.py", "tests/bot/test_bot_path.py",
+    ".gitleaks.toml",
 )
+
+# The fake secrets the tests use, each saying so in its own value: the gitleaks
+# allowlist must pass every one. And values a narrow allowlist must still refuse,
+# because they only come near the marker.
+FAKE_SECRETS = (
+    "not-a-real-token", "not-a-real-token.for-these-tests", "not-a-real-gemini-key",
+    "sk-not-a-real-key-123", "MTIzNDU2Nzg5MDEyMzQ1Njc4.not-a-real-token",
+    "test-key-not-real",
+)
+NEAR_MISSES = ("a-real-value", "notarealvalue", "not-a-realm", "really-not-realistic")
 
 
 # The quick start, in the order a stranger types it.
@@ -401,6 +412,58 @@ class TrackedFileGuard(unittest.TestCase):
         for path in ALLOWED_PATHS:
             with self.subTest(path=path):
                 self.assertIsNone(self.pattern.search(path))
+
+
+
+def ci_job(name) -> str:
+    """The text of one job of CI's workflow, up to the next job or the end."""
+    ci = read(os.path.join(".github", "workflows", "ci.yml"))
+    start = ci.index(f"\n  {name}:\n")
+    following = re.search(r"\n  [a-z][\w-]*:\n", ci[start + 1:])
+    return ci[start:start + 1 + following.start()] if following else ci[start:]
+
+
+class Gitleaks(unittest.TestCase):
+    """CI's secret scan: every commit of the history, by a pinned binary whose checksum is
+    checked before it runs, with the default rules and one narrow allowlist."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.guards = ci_job("guards")
+        cls.config = read(".gitleaks.toml")
+
+    def test_pins_a_version_and_its_checksum(self):
+        self.assertRegex(self.guards, r"GITLEAKS_VERSION: \d+\.\d+\.\d+\n")
+        self.assertRegex(self.guards, r"GITLEAKS_SHA256: [0-9a-f]{64}\n")
+        self.assertNotIn("latest", self.guards)
+
+    def test_checks_the_download_before_unpacking_or_running_it(self):
+        checked = self.guards.index("sha256sum --check --strict")
+        self.assertLess(self.guards.index("curl "), checked)
+        self.assertLess(checked, self.guards.index("tar -xzf"))
+        self.assertLess(checked, self.guards.index('/gitleaks" git '))
+
+    def test_scans_the_whole_history_redacted_with_this_config(self):
+        self.assertIn('/gitleaks" git --config .gitleaks.toml --redact ', self.guards)
+        self.assertIn("fetch-depth: 0", self.guards)
+
+    def test_the_config_keeps_every_default_rule(self):
+        self.assertRegex(self.config, r"(?m)^\[extend\]\nuseDefault = true$")
+        # No rule of its own, and no allowlist by path, commit or rule: those would
+        # hide real findings. The allowlist's regexes see the secret alone.
+        self.assertNotRegex(self.config, r"(?m)^\[\[rules")
+        self.assertNotRegex(self.config,
+                            r"(?m)^(paths|commits|stopwords|targetRules|regexTarget) *=")
+
+    def test_the_allowlist_passes_the_fake_secrets_and_nothing_near_them(self):
+        allowed = [re.compile(r) for r in re.findall(r"'''(.+?)'''", self.config)]
+        self.assertTrue(allowed)
+        for fake in FAKE_SECRETS:
+            with self.subTest(fake=fake):
+                self.assertTrue(any(r.search(fake) for r in allowed))
+        for near in NEAR_MISSES:
+            with self.subTest(near=near):
+                self.assertFalse(any(r.search(near) for r in allowed))
 
 
 if __name__ == "__main__":

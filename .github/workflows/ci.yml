@@ -8,9 +8,10 @@
 # to a full commit SHA, because a tag can be moved to other code after review.
 # To check a pin: git ls-remote https://github.com/actions/checkout refs/tags/v4.2.2
 #
-# Not here yet: a gitleaks scan of the whole history, at a pinned version with
-# its release checksum verified. That checksum has to be fetched and checked by
-# hand before it goes in.
+# gitleaks is pinned the same way: a version, and the sha256 of its release
+# tarball, checked before the binary is unpacked. To move the pin, take the new
+# checksum from the release's gitleaks_<version>_checksums.txt and confirm it
+# against the digest GitHub shows for the asset.
 name: CI
 
 on:
@@ -106,6 +107,23 @@ jobs:
             printf '%s\n' "$tracked"
             exit 1
           fi
+      - name: No secrets in the tree or the history (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          # gitleaks_8.30.1_linux_x64.tar.gz, from the release's checksums file,
+          # matching the digest GitHub reports for the asset.
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+          # Every commit on every ref: the checkout above fetched the whole
+          # history. .gitleaks.toml keeps every default rule and passes only the
+          # tests' marked fakes. --redact keeps a real finding out of the log.
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner --verbose .
       - name: The history has only its known roots
         env:
           # The commit GitHub made with the repository: .gitignore, LICENSE
