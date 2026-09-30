@@ -7,7 +7,8 @@ code and this file disagree, one of them has a bug.
 
 The machine-readable half lives in [`contract/`](contract/). The bot vendors
 those files into `client/fixtures/`, each with a header line naming the DIAYN
-tag it came from, and tests its own code against them. DIAYN's
+tag it came from (or, before the first tag, the commit), and tests its own
+code against them. DIAYN's
 `tests/test_contract.py` and `tests/test_cli.py` pin the scraper to the same
 files.
 
@@ -25,7 +26,8 @@ files.
 - The file's absolute path is `POSTINGS_DB`. The variable has the same name in
   both repositories' `.env` files.
 - The sweeper lock is `<POSTINGS_DB>.lock`, taken with `fcntl.flock` as
-  `LOCK_EX|LOCK_NB`.
+  `LOCK_EX|LOCK_NB`. What it holds, the time the last sweep began, is the
+  scraper's own; the bot never reads it.
 - `postings` has no `INTEGER PRIMARY KEY`, so its rowids are SQLite's own, and
   they are part of this contract (P3).
 
@@ -86,8 +88,8 @@ prefix of every name, so it would block everything.
 | P2 | `seen` is never pruned. `postings` is pruned only by `prune()`, with `prune_days >= 30`. `prune --max-age` below 30 is refused. | The bootstrap guard reads `MIN(seen.first_seen)`, and the bot's window is 30 days. |
 | P3 | Rowids stay stable: no `VACUUM`, no `VACUUM INTO`, no `.dump` rebuild, and no `INSERT OR REPLACE` or `REPLACE` into `postings`. | The rowid is the `/internships info` autocomplete value and the bot's group-map key. |
 | P4 | A failed sweep rolls back, and the process carries on. | Rows committed later would carry a stale `first_seen` below users' cursors, and would never be alerted. |
-| P5 | Exactly one sweeper. `watch` holds the lock for its whole life; `sweep`, `prune`, `upgrade-db`, `llm-diff`, `discover` and `list --llm` hold it while they run. A command that finds it held exits 3 and changes nothing. | Prevents double traffic to the job boards and a second writer. |
-| P6 | The scraper never creates a database silently. `sweep` and `watch` refuse a missing file, or an empty `seen`, unless given `--init`. No other command creates one at all. | A new, empty file is a false bootstrap: its first sweep records every open posting as new. |
+| P5 | Exactly one sweeper. `watch` holds the lock for its whole life; `sweep`, `prune`, `upgrade-db`, `llm-diff`, `discover` and `list --llm` hold it while they run. A command that finds it held exits 3 and changes nothing. The rest never write: `stats` opens the file `mode=ro`, and `verify`, `config` and plain `list` do not open it. | Prevents double traffic to the job boards and a second writer. |
+| P6 | The scraper never creates a database silently, and never adopts one it did not make. `sweep` and `watch` refuse a missing file, or an empty `seen`, unless given `--init`. No other command creates one at all. Every command refuses, having written nothing, a file whose `user_version` is not 2, and `--init` adopts only a file with no schema in it. | A new, empty file is a false bootstrap: its first sweep records every open posting as new. A `POSTINGS_DB` naming another database would have the postings schema written into it. |
 | P7 | `llm_usage.day` is the local date in `llm_day_tz`. | The bot's quota panel says the budget "resets at midnight Pacific". |
 | P8 | The contract tables are refreshed at start-up and inside every sweep's transaction. | Keeps the bot's copy of the blocklist and the board registry current. |
 
@@ -115,6 +117,11 @@ The B3 guard is safe for four reasons:
 
 - **Additive changes need no bump**: a new table, a new nullable column, a new
   `scraper_meta` key.
+- **No new column in `seen`, `postings`, `sweeps`, `etags` or `llm_cache`**
+  until the bot's in-process sweep is retired (stage 3 in DEPLOY.md). Rolling
+  back to it runs the bot's frozen copy of the old scraper, which inserts into
+  those tables by position and fails on any column it does not know. A new
+  table or `scraper_meta` key is still fine.
 - **Removing or renaming** a contract table or column, or breaking any of
   P1-P8, bumps `contract_version`. A bot release that accepts both the old and
   the new value ships and deploys first.

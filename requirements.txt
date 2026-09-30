@@ -1,0 +1,8 @@
+# DIAYN's runtime dependencies, for Python 3.10 or newer (CI runs 3.10 and 3.12).
+# Pinned, so an install on the server never upgrades anything unasked: bump a
+# pin in a change of its own, and let CI run it first.
+# python-dotenv is needed only to read a .env; exported variables work without
+# it. The suite runs without either: it stubs aiohttp, and skips the few tests
+# that need python-dotenv.
+aiohttp==3.13.5
+python-dotenv==1.2.2
