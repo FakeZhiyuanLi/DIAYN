@@ -30,6 +30,11 @@ nothing from postings.db, so the delivery loop starts whenever the finder is
 on, runs it in a `try` of its own, and only skips alerts and quiet notes while
 postings.db is down (a change to spec 5.1, which gated the loop on both).
 
+**Only those the bot is open to are DMed.** Each tick reads the grants once
+(`intern_ui.dm_access`) and hands delivery the answer, so a revocation stops
+alerts and notes at the next tick. Grants that cannot be read stop the DMs,
+and never the deletions.
+
 **A bootstrap is never news.** The scraper sweeps, not the bot, so the bot
 never sees the first sweep happen. Every delivery tick therefore starts from
 the ledger itself: reopen postings.db if it was replaced, raise every cursor to
@@ -243,7 +248,8 @@ async def _alerts(db: sqlite3.Connection, now: float) -> None:
     _guard_bootstrap(db, intern_ui.pconn)
     report = await intern_delivery.run_tick(db, load_window=intern_ui.window,
                                             send_dm=intern_ui.send_dm, now=now,
-                                            companies_watched=intern_ui.companies_watched())
+                                            companies_watched=intern_ui.companies_watched(),
+                                            allowed=intern_ui.dm_access())
     for key, value in zip(REPORT_KEYS, (now, report.due, report.sent, report.empty,
                                          report.forbidden)):
         intern_store.set_meta(db, key, value)
@@ -253,7 +259,8 @@ async def _notices(db: sqlite3.Connection, now: float, tracker: bool) -> None:
     # Without postings.db there is no window: expiry warnings still go, quiet notes wait.
     await intern_delivery.run_notices(db, load_window=intern_ui.window if tracker else None,
                                       send_dm=intern_ui.send_dm, now=now,
-                                      companies_watched=intern_ui.companies_watched())
+                                      companies_watched=intern_ui.companies_watched(),
+                                      allowed=intern_ui.dm_access())
 
 
 async def _heartbeat(now: float) -> None:

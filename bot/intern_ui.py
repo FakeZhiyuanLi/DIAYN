@@ -174,6 +174,14 @@ def has_access(user_id: int, guild_id: int | None = None) -> bool:
     return access.allowed(access.grants(db), user_id, guild_id, _member_of(user_id))
 
 
+def dm_access() -> Callable[[int], bool]:
+    """Who may be DMed now: `access.allowed` as in a DM, against one read of the grants,
+    for a delivery tick to ask about each person in turn. Raises sqlite3.Error, so a
+    tick that cannot read the grants sends nothing."""
+    granted = access.grants(db)
+    return lambda user_id: access.allowed(granted, user_id, None, _member_of(user_id))
+
+
 def may_use(user_id: int, guild_id: int | None = None) -> bool:
     """`has_access`, failing closed: when the grants cannot be read, only the owner may.
     Never raises; a failure is logged by type."""

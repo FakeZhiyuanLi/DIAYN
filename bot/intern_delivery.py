@@ -8,11 +8,18 @@ The bot's five-minute delivery loop calls `run_tick` (alerts), `run_notices`
 (the quiet-period note and the expiry warning) and, once a day in DIAYN_TZ,
 `run_housekeeping`. Everything that decides who is due and what a send, a
 refusal or a network failure changes lives here; the loop only supplies
-`send_dm` and `load_window`. Split from the Discord modules for the reason
-`intern_store` is: those two arrive as arguments, so a test drives a real tick
-with fakes under bare `python3`.
+`send_dm`, `load_window` and `allowed`. Split from the Discord modules for the
+reason `intern_store` is: those arrive as arguments, so a test drives a real
+tick with fakes under bare `python3`.
 
-Three rules shape it.
+Four rules shape it.
+
+**Only those the bot is open to are DMed.** `allowed(user_id)` says whether
+someone may use the bot (`access.allowed`, as in a DM), and every entry point
+must be given it. Someone without access is never due and never sent a note;
+their cursor stays where it was, so access given back brings one digest of
+what arrived meanwhile, not a flood. An alert asks again right before its send,
+so a revocation during a tick stops the DMs not yet sent.
 
 **Only the settled past is offered, once.** A user's cursor is a `first_seen`
 watermark. A tick offers rows first seen after it and at least SETTLE_S ago
@@ -110,6 +117,8 @@ class TickReport:
 
 SendDm = Callable[[int, DmMessage], Awaitable[None]]
 LoadWindow = Callable[[], Awaitable[list[Candidate]]]
+#: Whether a user may use the bot now, and so be DMed (`access.allowed`, as in a DM).
+Allowed = Callable[[int], bool]
 _Window = tuple[Sequence[Candidate], Mapping[int, str]]        # candidates and their group map
 
 
@@ -229,10 +238,10 @@ def _digest(p: Profile, matches: Sequence[Match], now: float, catch_up: bool) ->
 
 
 async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
-                 gmap: Mapping[int, str], send_dm: SendDm, now: float) -> str:
+                 gmap: Mapping[int, str], send_dm: SendDm, now: float, allowed: Allowed) -> str:
     """One user's digest, spec 5.4 step 3. Returns the outcome the report counts."""
     p = store.load(db, uid)
-    if p is None or not is_due(p, now):
+    if p is None or not is_due(p, now) or not allowed(uid):
         return "skipped"
     edge, catch_up = horizon(now), catching_up(p, now)
     mine = [c for c in cands if p.cursor < c.first_seen <= edge]
@@ -244,7 +253,7 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
     msg = _digest(p, matches, now, catch_up)
     # Nothing above awaits today; this read is the guard that must stay next to the send.
     fresh = store.load(db, uid)
-    if fresh is None or not is_due(fresh, now):
+    if fresh is None or not is_due(fresh, now) or not allowed(uid):
         return "skipped"
     outcome = await _send(db, send_dm, uid, msg, now, offers_postings=True)
     if outcome == "sent":
@@ -259,16 +268,17 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
 
 
 async def run_tick(db: sqlite3.Connection, *, load_window: LoadWindow, send_dm: SendDm,
-                   now: float, companies_watched: int) -> TickReport:
+                   now: float, companies_watched: int, allowed: Allowed) -> TickReport:
     """
-    Spec 5.4: DMs every due user what is new to them since their cursor.
+    Spec 5.4: DMs every due user what is new to them since their cursor. Only a user
+    `allowed` says may use the bot is due (module docstring).
 
     At most MAX_DMS_PER_TICK sends are attempted, SEND_GAP_S apart; the due
     users after that keep their cursor and are due again next tick. The window
     is loaded only when somebody is due. `companies_watched` is taken so both
     entry points accept the loop's same arguments; a digest does not quote it.
     """
-    due = [p.user_id for p in store.alerting_profiles(db) if is_due(p, now)]
+    due = [p.user_id for p in store.alerting_profiles(db) if is_due(p, now) and allowed(p.user_id)]
     if not due:
         return TickReport(due=0, sent=0, empty=0, forbidden=0, transient=0, deferred=0)
     cands = await load_window()
@@ -278,7 +288,7 @@ async def run_tick(db: sqlite3.Connection, *, load_window: LoadWindow, send_dm: 
         if sum(tally[k] for k in _ATTEMPTS) >= MAX_DMS_PER_TICK:
             tally["deferred"] = len(due) - index
             break
-        outcome = await _isolated(_alert(db, uid, cands, gmap, send_dm, now), "an alert")
+        outcome = await _isolated(_alert(db, uid, cands, gmap, send_dm, now, allowed), "an alert")
         tally[outcome] += 1
         if outcome in _ATTEMPTS:
             await asyncio.sleep(SEND_GAP_S)
@@ -338,11 +348,11 @@ async def _notify(kind: str, work: Awaitable[str], tally: Counter) -> None:
 
 
 async def run_notices(db: sqlite3.Connection, *, load_window: LoadWindow | None, send_dm: SendDm,
-                      now: float, companies_watched: int) -> dict[str, int]:
+                      now: float, companies_watched: int, allowed: Allowed) -> dict[str, int]:
     """
     Spec 5.5: expiry warnings first, then quiet notes by longest silence, at most
     MAX_NOTICES_PER_TICK of them together; the rest wait for the next tick.
-    Returns how many of each were delivered.
+    Returns how many of each were delivered. Nobody `allowed` refuses is sent either.
 
     The warnings go out before the window is read, so a window that fails to
     load cannot hold back the notice before a deletion. `load_window=None`
@@ -350,8 +360,9 @@ async def run_notices(db: sqlite3.Connection, *, load_window: LoadWindow | None,
     "still watching" would be untrue.
     """
     budget = MAX_NOTICES_PER_TICK
-    expiring = [p.user_id for p in store.expiring_profiles(db, now)][:budget]
-    quiet = ([p.user_id for p in store.quiet_candidates(db, now)][:budget - len(expiring)]
+    expiring = [p.user_id for p in store.expiring_profiles(db, now) if allowed(p.user_id)][:budget]
+    quiet = ([p.user_id for p in store.quiet_candidates(db, now)
+              if allowed(p.user_id)][:budget - len(expiring)]
              if load_window is not None else [])
     tally = Counter()
     for uid in expiring:

@@ -114,10 +114,12 @@ class _ContractCase(unittest.TestCase):
         self.addCleanup(intern_ui.invalidate)
 
     def enrol(self, uid, at, **fields):
+        """A profile whose owner may use the bot (granted by id)."""
         base = intern_profile.new_profile(uid, at, source="manual",
                                           cursor=intern_delivery.horizon(at))
         p = dataclasses.replace(base, fields=("software",), degree="bachelor", **fields)
         intern_store.save(self.db, p, now=at, cursor=intern_delivery.horizon(at))
+        access.grant(self.db, "user", uid, granted_by=None, now=at)
 
     def cursors(self) -> dict:
         return dict(self.db.execute("SELECT user_id, cursor FROM intern_profiles"))

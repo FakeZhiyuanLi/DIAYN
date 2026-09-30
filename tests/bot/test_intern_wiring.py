@@ -36,6 +36,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
+import access
 import intern_delivery
 import intern_match
 import intern_profile
@@ -921,6 +922,7 @@ class DeliveryLoopKeepsTheRetentionPromise(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
         intern_store.init_db(self.db)
+        access.init_db(self.db)
         self.enrol(IDLE, NOW - 366 * DAY, alerts="off")         # housekeeping deletes it
         self.enrol(DUE, NOW - 2 * 3600, alerts="hourly")         # a tick loads the window
         self.enrol(WARNED, NOW - 351 * DAY, alerts="off")        # due its expiry warning
@@ -951,16 +953,48 @@ class DeliveryLoopKeepsTheRetentionPromise(unittest.TestCase):
         self.addCleanup(self.db.close)
 
     def enrol(self, uid, at, **fields):
+        """A profile whose owner may use the bot (granted by id)."""
         base = intern_profile.new_profile(uid, at, source="manual",
                                           cursor=intern_delivery.horizon(at))
         p = dataclasses.replace(base, fields=("software",), degree="bachelor", **fields)
         intern_store.save(self.db, p, now=at, cursor=intern_delivery.horizon(at))
+        access.grant(self.db, "user", uid, granted_by=None, now=at)
 
     def run_loop(self) -> str:
         stderr = io.StringIO()
         with redirect_stderr(stderr):
             asyncio.run(intern_alert_views.intern_delivery_loop.coro())
         return stderr.getvalue()
+
+    def test_someone_without_access_gets_neither_alerts_nor_warnings(self):
+        for uid in (DUE, WARNED):
+            access.revoke(self.db, "user", uid)
+
+        log = self.run_loop()
+
+        self.assertNotIn("failed", log)
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(intern_store.load(self.db, IDLE))         # housekeeping still ran
+        self.assertIsNone(intern_store.load(self.db, WARNED).expiry_warned_at)
+
+    def test_a_member_of_a_granted_server_is_dmed(self):
+        access.revoke(self.db, "user", DUE)
+        access.grant(self.db, "guild", 9001, granted_by=None, now=NOW)
+        guild = types.SimpleNamespace(get_member=lambda uid: object() if uid == DUE else None)
+        with mock.patch.object(intern_ui, "bot", types.SimpleNamespace(
+                get_guild=lambda gid: guild if gid == 9001 else None)):
+            self.run_loop()
+        self.assertIn(DUE, self.sent)
+
+    def test_grants_that_cannot_be_read_send_nothing_and_stop_no_deletion(self):
+        self.db.execute("DROP TABLE access_grants")
+
+        log = self.run_loop()
+
+        self.assertIn("failed: OperationalError", log)
+        self.assertNotIn("access_grants", log)
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(intern_store.load(self.db, IDLE))
 
     def test_a_tick_whose_window_fails_still_deletes_and_warns(self):
         self.window_error = sqlite3.OperationalError("database is locked")

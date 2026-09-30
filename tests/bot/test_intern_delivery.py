@@ -18,6 +18,8 @@ The rules that matter most, because breaking them breaks nothing visible:
   * a refused DM is counted and three of them stop the DMs; a transient
     failure changes nothing and is retried;
   * a user deleted while a DM to them is in flight stays deleted;
+  * nobody the bot is not open to is DMed anything, and a revocation during a
+    tick stops the DMs not yet sent;
   * a 9am slot is 9am on the wall clock, on both sides of a DST change.
 
 Alert hours and the housekeeping day are in DIAYN_TZ, the scraper's
@@ -182,6 +184,7 @@ class DeliveryTest(unittest.TestCase):
         store.init_db(self.db)
         self.window, self.loads = [], 0
         self.outbox = Outbox(self.db)
+        self.revoked = set()         # who this bot is not open to (access.allowed says no)
         no_gap = mock.patch.object(delivery, "SEND_GAP_S", 0)
         no_gap.start()
         self.addCleanup(no_gap.stop)
@@ -200,9 +203,12 @@ class DeliveryTest(unittest.TestCase):
         self.loads += 1
         return list(self.window)
 
+    def allowed(self, uid) -> bool:
+        return uid not in self.revoked
+
     def run_async(self, entry, now):
         return asyncio.run(entry(self.db, load_window=self.load_window, send_dm=self.outbox,
-                                 now=now, companies_watched=COMPANIES))
+                                 now=now, companies_watched=COMPANIES, allowed=self.allowed))
 
     def tick(self, now) -> delivery.TickReport:
         return self.run_async(delivery.run_tick, now)
@@ -637,7 +643,8 @@ class Notices(DeliveryTest):
         self.enrol(BOB, at=MONDAY - 351 * DAY, alerts="off")
 
         result = asyncio.run(delivery.run_notices(self.db, load_window=None, send_dm=self.outbox,
-                                                  now=MONDAY, companies_watched=COMPANIES))
+                                                  now=MONDAY, companies_watched=COMPANIES,
+                                                  allowed=self.allowed))
 
         self.assertEqual((result, self.outbox.uids()), ({"quiet": 0, "expiry": 1}, [BOB]))
 
@@ -650,10 +657,81 @@ class Notices(DeliveryTest):
 
         with self.assertRaises(sqlite3.OperationalError):
             asyncio.run(delivery.run_notices(self.db, load_window=locked, send_dm=self.outbox,
-                                             now=MONDAY, companies_watched=COMPANIES))
+                                             now=MONDAY, companies_watched=COMPANIES,
+                                             allowed=self.allowed))
 
         self.assertEqual(self.outbox.uids(), [BOB])
         self.assertEqual(store.load(self.db, BOB).expiry_warned_at, MONDAY)
+
+
+class OnlyThoseWhoMayUseTheBotAreDmed(DeliveryTest):
+    """Plan 3.3: revoking access stops alerts at the next tick, and a tick asks before
+    every DM. Stop, Pause and delete need no access; being DMed does."""
+
+    def test_someone_without_access_is_not_due_and_keeps_their_cursor(self):
+        self.enrol(ALICE, alerts="hourly")
+        self.enrol(BOB, alerts="hourly")
+        self.post(posting("Software Engineer Intern", MONDAY + MINUTE))
+        self.revoked.add(BOB)
+        cursor = store.load(self.db, BOB).cursor
+
+        report = self.tick(MONDAY + HOUR)
+
+        self.assertEqual(self.outbox.uids(), [ALICE])
+        self.assertEqual((report.due, report.sent), (1, 1))
+        self.assertEqual(store.load(self.db, BOB).cursor, cursor)
+        self.assertEqual(self.seen(BOB), {})
+
+    def test_with_access_back_what_arrived_meanwhile_comes_in_one_digest(self):
+        self.enrol(BOB, alerts="hourly")
+        self.post(posting("Software Engineer Intern", MONDAY + MINUTE))
+        self.revoked.add(BOB)
+        self.tick(MONDAY + HOUR)
+        self.revoked.clear()
+
+        report = self.tick(MONDAY + 2 * HOUR)
+
+        self.assertEqual((report.sent, len(self.outbox.to(BOB))), (1, 1))
+
+    def test_a_revocation_during_a_tick_stops_the_dm_not_yet_sent(self):
+        self.enrol(ALICE, alerts="hourly")
+        self.enrol(BOB, alerts="hourly")
+        self.post(posting("Software Engineer Intern", MONDAY + MINUTE))
+        cursor = store.load(self.db, BOB).cursor
+        self.outbox.meanwhile[ALICE] = lambda: self.revoked.add(BOB)
+
+        report = self.tick(MONDAY + HOUR)
+
+        self.assertEqual(self.outbox.uids(), [ALICE])
+        self.assertEqual(report.due, 2)
+        self.assertEqual(store.load(self.db, BOB).cursor, cursor)
+
+    def test_no_quiet_note_or_expiry_warning_goes_to_someone_without_access(self):
+        self.enrol(ALICE, at=MONDAY - 20 * DAY)                    # due a quiet note
+        self.enrol(BOB, at=MONDAY - 351 * DAY, alerts="off")       # due its expiry warning
+        self.post(posting("Accountant", MONDAY - DAY))
+        self.revoked |= {ALICE, BOB}
+
+        result = self.notices(MONDAY)
+
+        self.assertEqual((result, self.outbox.calls), ({"quiet": 0, "expiry": 0}, []))
+        self.assertIsNone(store.load(self.db, BOB).expiry_warned_at)
+        self.assertIsNone(store.load(self.db, ALICE).last_quiet_at)
+
+    def test_whoever_still_has_access_still_gets_theirs(self):
+        self.enrol(ALICE, at=MONDAY - 20 * DAY)
+        self.enrol(BOB, at=MONDAY - 351 * DAY, alerts="off")
+        self.post(posting("Accountant", MONDAY - DAY))
+        self.revoked.add(ALICE)
+
+        self.assertEqual(self.notices(MONDAY), {"quiet": 0, "expiry": 1})
+        self.assertEqual(self.outbox.uids(), [BOB])
+
+    def test_neither_entry_point_can_be_run_without_being_told_who_may_be_dmed(self):
+        for entry in (delivery.run_tick, delivery.run_notices):
+            with self.subTest(entry=entry.__name__), self.assertRaises(TypeError):
+                entry(self.db, load_window=self.load_window, send_dm=self.outbox, now=MONDAY,
+                      companies_watched=COMPANIES)
 
 
 class Housekeeping(DeliveryTest):
