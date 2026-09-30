@@ -112,13 +112,23 @@ BARE_PYTHON = re.compile(r"(?<![\w./-])python (diayn|internship_poller|resolve_b
 DEPLOY_SECTIONS = (
     "A fresh VPS", "Where things live", "Installing", "The `.env`", "Choosing pm2 or systemd",
     "Running it as a service", "Sharing the box with another bot",
-    "Taking over from an older tracker", "Checking it runs", "After a reboot", "Backups",
-    "Restoring", "Upgrading by tag",
+    "Taking over from an older tracker", "Moving DIAYN from another machine", "Checking it runs",
+    "After a reboot", "Backups", "Restoring", "Upgrading by tag",
 )
 # One of DIAYN's commands as a document types it, `diayn.py grant --server <id>`: the
 # script, the command, and its arguments up to whatever ends a shell command or a code span.
 TYPED_COMMAND = re.compile(r"\b(diayn|internship_poller)\.py ([a-z][a-z-]*)([^`#;&|)\n]*)")
 FLAG = re.compile(r"(?<!\S)(--[a-z][\w-]*)")
+# Every document that tells someone what to type.
+COMMAND_DOCUMENTS = ("DEPLOY.md", "README.md", "CLAUDE.md", "CONTRACT.md", "example.env")
+# A command that starts DIAYN under its service manager, or stops it: one step of a line,
+# as `&&` separates them.
+STARTS_DIAYN = re.compile(r"^(sudo )?(pm2 (start|restart) (diayn|~/diayn\.config\.cjs)|"
+                          r"systemctl (start|restart|enable --now) diayn)(?![\w.-])")
+STOPS_DIAYN = re.compile(r"^(sudo )?(pm2 (stop|delete) diayn|systemctl (stop|disable --now) diayn)"
+                         r"(?![\w.-])")
+# Every ```sh block, at whatever indent a list item gives it.
+SH_BLOCK = re.compile(r"(?ms)^[ \t]*```sh\n(.*?)^[ \t]*```")
 # What DEPLOY.md's firewall advice rests on: nothing in the code accepts a connection.
 LISTENS = re.compile(r"\b(TCPSite|UnixSite|start_server|create_server|HTTPServer|"
                      r"socketserver|run_app)\b|\.listen\(|\.bind\(")
@@ -408,6 +418,19 @@ def shell_commands(text) -> list:
     return re.sub(r"\s*\\\n\s*", " ", text).splitlines()
 
 
+def diayn_after(block) -> str:
+    """What a block of commands, pasted top to bottom, leaves DIAYN: "running", "stopped",
+    or "" for a block that neither starts nor stops it. Comments are not commands."""
+    state = ""
+    for command in shell_commands(block):
+        for step in command.split("#", 1)[0].split("&&"):
+            if STOPS_DIAYN.match(step.strip()):
+                state = "stopped"
+            elif STARTS_DIAYN.match(step.strip()):
+                state = "running"
+    return state
+
+
 class Deploy(unittest.TestCase):
     """DEPLOY.md: running DIAYN for good, on any Linux or macOS host."""
 
@@ -483,24 +506,34 @@ class Deploy(unittest.TestCase):
 
     def test_every_command_it_types_is_a_real_one_with_real_options(self):
         # A guide that names a command or a flag the CLI does not have fails on the host,
-        # at the one step nobody can check from here.
-        typed = [(m.group(1), m.group(2), FLAG.findall(m.group(3)))
-                 for m in TYPED_COMMAND.finditer(self.deploy)]
+        # at the one step nobody can check from here. The README, CLAUDE.md, CONTRACT.md
+        # and example.env tell people what to type too.
+        typed_in = {name: [(m.group(1), m.group(2), FLAG.findall(m.group(3)))
+                           for m in TYPED_COMMAND.finditer(read(name))]
+                    for name in COMMAND_DOCUMENTS}
         helps = {}
-        for script, command, flags in typed:
-            known = poller.COMMANDS + (diayn.BOT_COMMANDS if script == "diayn" else ())
-            with self.subTest(command=f"{script}.py {command}"):
-                self.assertIn(command, known)
-            if command not in known:
-                continue
-            helps.setdefault(command, help_text(command))
-            for flag in flags:
-                with self.subTest(command=f"{script}.py {command}", flag=flag):
-                    self.assertRegex(helps[command], rf"(?<![\w-]){re.escape(flag)}(?![\w-])")
+        for name, typed in typed_in.items():
+            for script, command, flags in typed:
+                known = poller.COMMANDS + (diayn.BOT_COMMANDS if script == "diayn" else ())
+                with self.subTest(document=name, command=f"{script}.py {command}"):
+                    self.assertIn(command, known)
+                if command not in known:
+                    continue
+                helps.setdefault(command, help_text(command))
+                for flag in flags:
+                    with self.subTest(document=name, command=f"{script}.py {command}",
+                                      flag=flag):
+                        self.assertRegex(helps[command],
+                                         rf"(?<![\w-]){re.escape(flag)}(?![\w-])")
         # A scan that found nothing would pass on every run.
+        typed = typed_in["DEPLOY.md"]
         self.assertTrue({"setup", "doctor", "run", "config", "grant", "upgrade-db",
                          "import-legacy"} <= {command for _, command, _ in typed})
         self.assertTrue({"--server", "--from"} <= {f for *_, flags in typed for f in flags})
+        for name, typed in typed_in.items():
+            with self.subTest(document=name):
+                self.assertTrue(typed, f"{name} types no command the scan can see")
+        self.assertIn("--user", {f for *_, flags in typed_in["README.md"] for f in flags})
 
     def test_the_help_it_checks_against_lists_real_options(self):
         # help_text of a command that printed nothing would refuse every flag, or, read
@@ -657,6 +690,159 @@ class Deploy(unittest.TestCase):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, self.deploy)
 
+    def pm2_filter_env(self) -> list:
+        """The strings of the pm2 config's filter_env line, which may wrap."""
+        match = re.search(r"(?m)^\s+filter_env: \[([^\]]*)\],$", self.deploy)
+        self.assertIsNotNone(match, "the pm2 config has no filter_env")
+        return re.findall(r'"([^"]+)"', match.group(1))
+
+    def test_pm2_keeps_another_bots_variables_out_of_diayns_environment(self):
+        # pm2 hands an app the environment of the shell that ran `pm2 start`, which wins
+        # over DIAYN's .env: a DISCORD_TOKEN exported there for another bot would log DIAYN
+        # in as that bot. filter_env drops every variable whose name contains one of its
+        # strings (pm2's Common.js: `item.includes(current)`), and env: applies after it.
+        dropped = self.pm2_filter_env()
+        self.assertIn("DISCORD_TOKEN", dropped)
+        read_by_code = {var for _, var, _ in poller.SETTINGS_FROM_ENV} | {ENV_FILE_VARIABLE}
+        for var in sorted(read_by_code):
+            with self.subTest(var=var):
+                self.assertTrue(any(entry in var for entry in dropped), var)
+        for kept in ("PATH", "HOME", "LANG", "USER", "PYTHONUNBUFFERED"):
+            with self.subTest(kept=kept):
+                self.assertFalse(any(entry in kept for entry in dropped), kept)
+        self.assertIn('env: { PYTHONUNBUFFERED: "1" }', self.deploy)
+        self.assertIn("clean environment", " ".join(self.deploy.split()))
+
+    def test_the_backup_script_makes_its_copies_readable_by_its_user_alone(self):
+        # cron's umask is 022: without this, every copy of users.db would be mode 644.
+        self.assertIn("#!/bin/sh\nset -eu\numask 077\n", section(self.deploy, "Backups"))
+
+    def test_a_move_restores_both_databases_before_setup(self):
+        # setup on an empty data directory bootstraps a new ledger; with both databases
+        # restored first it only checks and tightens.
+        moving = section(self.deploy, "Moving DIAYN from another machine")
+        freed = moving.index('flock -n "$D/postings.db.lock" true && echo free')
+        restored = []
+        for db in ("postings.db", "users.db"):
+            with self.subTest(db=db):
+                backed = moving.index(f'"file:$D/{db}?mode=ro" ".backup ')
+                restore = re.search(r'sqlite3 "\$D/%s" [^\n]*\.restore ' % re.escape(db), moving)
+                self.assertIsNotNone(restore)
+                self.assertLess(freed, backed)
+                self.assertLess(backed, restore.start())
+                restored.append(restore.start())
+        runs = [m.start() for m in re.finditer(r"diayn\.py setup", moving)]
+        self.assertTrue(runs)
+        for at in runs:
+            with self.subTest(at=at):
+                self.assertGreater(at, max(restored))
+        self.assertRegex(moving, r"(?m)^\s*scp ")
+        self.assertIn("chmod 600 .env", moving)
+        self.assertIn("Never run both copies at once", moving)
+
+    def test_no_block_of_commands_leaves_diayn_stopped(self):
+        # Pasted top to bottom, a block ends with DIAYN running, or leaves it alone; a
+        # stop that is meant goes in its own line of prose.
+        touched = [b for b in SH_BLOCK.findall(self.deploy) if diayn_after(b)]
+        self.assertTrue(touched)
+        for block in touched:
+            with self.subTest(block=block.strip().splitlines()[0]):
+                self.assertEqual(diayn_after(block), "running", block)
+
+    def test_the_block_check_sees_a_start_and_a_stop(self):
+        # A check that saw neither would pass on every run.
+        self.assertEqual(diayn_after("pm2 start ~/diayn.config.cjs\npm2 stop diayn && pm2 save\n"
+                                     "pm2 logs diayn --lines 50 --nostream\n"), "stopped")
+        self.assertEqual(diayn_after("sudo systemctl stop diayn\n"
+                                     "sudo systemctl daemon-reload && sudo systemctl "
+                                     "enable --now diayn\n"), "running")
+        self.assertEqual(diayn_after("pm2 delete diayn && pm2 start ~/diayn.config.cjs && "
+                                     "pm2 save\n"), "running")
+        self.assertEqual(diayn_after("pm2 stop <old-bot>\nsystemctl status diayn   # pm2 stop "
+                                     "diayn\n"), "")
+        self.assertEqual(len(SH_BLOCK.findall("x\n   ```sh\n   a\n   ```\n```sh\nb\n```\n")), 2)
+
+    def test_each_service_manager_says_how_to_start_it_now_and_what_comes_later(self):
+        service = section(self.deploy, "Running it as a service")
+        parts = {"pm2": service[service.index("\n### pm2\n"):service.index("\n### systemd\n")],
+                 "systemd": service[service.index("\n### systemd\n"):
+                                    service.index("\n### Commands by hand")]}
+        for name, part in parts.items():
+            for said in ("**Start it now:**", "**Later**"):
+                with self.subTest(manager=name, said=said):
+                    self.assertIn(said, part)
+        # pm2 startup once per user: only where it is not set up already.
+        pm2 = parts["pm2"]
+        startup = re.search(r"(?m)^pm2 startup\b", pm2)
+        self.assertIsNotNone(startup)
+        self.assertLess(pm2.index('systemctl is-enabled "pm2-$USER"'), startup.start())
+
+    def test_sharing_finds_whose_pm2_runs_the_other_bot_before_any_pm2_command(self):
+        # pm2 run as another user silently starts a second, empty daemon for that user.
+        sharing = section(self.deploy, "Sharing the box with another bot")
+        found = sharing.index("ps -eo user,args | grep '[G]od Daemon'")
+        self.assertIn("systemctl list-unit-files 'pm2-*'", sharing)
+        # The first pm2 command typed in a block, not prose that begins with the word.
+        typed = [block.start(1) + line.start() for block in SH_BLOCK.finditer(sharing)
+                 for line in re.finditer(r"(?m)^\s*pm2 ", block.group(1))]
+        self.assertTrue(typed)
+        self.assertLess(found, min(typed))
+        self.assertIn("second, empty daemon", " ".join(sharing.split()))
+
+    def test_sharing_as_a_user_of_its_own_looks_as_that_user(self):
+        sharing = " ".join(section(self.deploy, "Sharing the box with another bot").split())
+        for said in ("sudo -iu diayn", "sudo journalctl -u diayn", "pm2 logs diayn",
+                     "diayn.py doctor"):
+            with self.subTest(said=said):
+                self.assertIn(said, sharing[sharing.index("A user of its own"):])
+
+    def test_a_fresh_vps_allows_each_public_port_before_the_firewall_goes_on(self):
+        fresh = section(self.deploy, "A fresh VPS")
+        each_port = fresh.index("sudo ufw allow <port>/tcp")
+        self.assertLess(fresh.index("sudo ufw allow OpenSSH"), each_port)
+        self.assertLess(each_port, fresh.index("sudo ufw enable"))
+        flat = " ".join(fresh.split())
+        for said in ("Command may disrupt existing ssh connections. Proceed with operation (y|n)?",
+                     "optional", "UDP 123", "outside this guide"):
+            with self.subTest(said=said):
+                self.assertIn(said, flat)
+
+    def test_a_fresh_vps_keeps_the_two_names_for_every_later_shell(self):
+        fresh = section(self.deploy, "A fresh VPS")
+        self.assertIn("cat >> ~/.bashrc <<'EOF'\nD=$HOME/DIAYN/data\nB=$HOME/diayn-backups\nEOF\n",
+                      fresh)
+        self.assertIn("new shell", fresh)
+
+    def test_installing_points_at_the_portal_before_setup_and_the_invite_after(self):
+        installing = section(self.deploy, "Installing")
+        setup = installing.index(".venv/bin/python diayn.py setup")
+        self.assertLess(installing.index("(README.md#the-discord-developer-portal)"), setup)
+        self.assertGreater(installing.index("with the link `setup` printed"), setup)
+
+    def test_says_to_use_homebrews_sqlite3_on_macos(self):
+        # Apple's refuses a .backup copy of a WAL database opened ?mode=ro.
+        for said in ("brew install", "sqlite", "unable to open database file (14)",
+                     "/usr/bin/sqlite3"):
+            with self.subTest(said=said):
+                self.assertIn(said, section(self.deploy, "Installing"))
+
+    def test_checking_it_runs_points_at_the_lock_beside_pgrep(self):
+        # pgrep -f counts a wrapper that started run as well; the lock does not.
+        checking = section(self.deploy, "Checking it runs")
+        self.assertIn('flock -n "$D/postings.db.lock" true && echo free || echo held', checking)
+        self.assertIn("sudo -u", checking)
+
+    def test_after_a_reboot_starts_a_looping_pm2_app_again_from_its_config(self):
+        # pm2 start diayn and pm2 restart diayn keep whatever options resurrect gave it.
+        after = section(self.deploy, "After a reboot")
+        self.assertIn("pm2 delete diayn && pm2 start ~/diayn.config.cjs && pm2 save", after)
+
+    def test_a_takeover_stops_the_old_bot_entirely_and_says_why(self):
+        takeover = " ".join(section(self.deploy, "Taking over from an older tracker").split())
+        for said in ("keep it stopped until", "double the traffic", "the same people"):
+            with self.subTest(said=said):
+                self.assertIn(said, takeover)
+
 
 class NothingListens(unittest.TestCase):
     """DEPLOY.md opens no port for DIAYN, because it listens on none: the bot and the
@@ -723,6 +909,18 @@ class ExitCode78(unittest.TestCase):
                 self.assertTrue(any("Server Members Intent" in p and "DISCORD_TOKEN" in p
                                     and "before it logs in" in p
                                     and "never a gateway login" in p for p in said), said)
+
+    def test_each_says_a_check_that_could_not_be_made_is_the_exception(self):
+        # A check that cannot reach Discord logs in as before, so a restart on 78 is then
+        # a gateway login after all: "never" holds only when the check was made.
+        for name in self.DOCUMENTS:
+            said = [p for p in passages(read(name)) if self.SAYS_78.search(p)
+                    and "never a gateway login" in p]
+            with self.subTest(document=name):
+                self.assertTrue(said)
+                for passage in said:
+                    self.assertRegex(passage, r"unless the check itself could not be made|"
+                                              r"If the check cannot reach Discord")
 
     def test_the_passages_are_cut_at_list_items_and_blank_lines(self):
         # A cut that kept a whole document as one passage would pass on every run.

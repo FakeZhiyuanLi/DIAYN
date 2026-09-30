@@ -95,9 +95,10 @@ Three things are expected, and are not red:
   `DISCORD_TOKEN`, which only the host can replace; a loop of refused logins
   can get the bot's token reset. `run` asks Discord's REST API about both
   before it logs in (`check_before_login`), so even a service manager that
-  restarts it anyway only repeats that REST call, never a gateway login; keep
-  that check ahead of the login. DEPLOY.md's units list 78 beside 3 as codes
-  never to restart on; keep them there.
+  restarts it anyway only repeats that REST call, never a gateway login,
+  unless the check itself could not be made; keep that check ahead of the
+  login. DEPLOY.md's units list 78 beside 3 as codes never to restart on; keep
+  them there.
 - **Load a `.env` from anywhere but `POLLER_ENV_FILE` or the checkout.** Never
   from the working directory or the data directory. Do not open, print or copy
   a `.env`; `diayn.py config` shows what took effect, and prints the Discord
@@ -172,6 +173,11 @@ description fetcher matches them with its own patterns.
   and never at import. Importing a module must stay inert: no file read, no
   change to `os.environ`, and `diayn.py` imports discord.py only for `run`.
   `tests/test_config.py` pins it for the scraper.
+- **A new setting has to be one DEPLOY.md's pm2 `filter_env` drops.** That
+  list keeps every variable DIAYN reads out of the environment pm2 hands it,
+  so another bot's exports never reach DIAYN. pm2 matches its entries anywhere
+  in a variable's name; a setting with a new prefix needs a new entry, and
+  `tests/test_docs.py` fails until it has one.
 
 ## Tests
 

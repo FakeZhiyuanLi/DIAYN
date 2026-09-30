@@ -19,7 +19,7 @@ about a role.
 - [Quick start](#quick-start) · [The Discord developer portal](#the-discord-developer-portal) · [Configuration](#configuration)
 - [Who may use it](#who-may-use-it) · [Commands](#commands) · [Gemini](#gemini) · [Privacy](#privacy)
 - [The politeness gate](#the-politeness-gate) · [Adding boards](#adding-boards) · [Linux and macOS only](#linux-and-macos-only)
-- [DEPLOY.md](DEPLOY.md): running it for good, from a fresh VPS, under pm2 or systemd, beside another bot, with backups and upgrades
+- [DEPLOY.md](DEPLOY.md): running it for good, from a fresh VPS, under pm2 or systemd, beside another bot, moved from another machine, with backups and upgrades
 - [CONTRACT.md](CONTRACT.md): the rules between the scraper and the bot
 - [CLAUDE.md](CLAUDE.md): the rules for working in this repository
 
