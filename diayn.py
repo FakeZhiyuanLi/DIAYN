@@ -449,8 +449,14 @@ def _run_arguments(poller, argv) -> argparse.Namespace:
     return args
 
 
-def _database_refusal(error, path) -> str:
-    """What `run` says when postings.db is refused: a missing one points at setup."""
+def _database_refusal(poller, error, path) -> str:
+    """What `run` says when postings.db is refused: a missing file, or one with an empty
+    ledger, points at setup alone, since `run` takes no --init."""
+    if isinstance(error, poller.EmptyLedger):
+        return (f"{path}: the seen ledger is empty, so the first sweep would record every "
+                "open posting as new, and the bot would announce them all. `diayn.py "
+                f"{RUN}` never bootstraps postings.db: `{hints.command(SETUP)}` says what to "
+                "do with this file.")
     if not os.path.exists(path):
         return (f"{path}: no such database. `{hints.command(SETUP)}` makes one, with a "
                 "first sweep that records every posting open now as seen, so that none is "
@@ -504,7 +510,7 @@ def cmd_run(poller, argv, bot=None, watch=None) -> int:
         print(f"diayn.py {RUN}: {e}", file=sys.stderr)
         return poller.LOCK_HELD_EXIT
     except poller.DatabaseRefused as e:
-        return _refused(_database_refusal(e, settings.postings_db), RUN)
+        return _refused(_database_refusal(poller, e, settings.postings_db), RUN)
     except poller.SchemaMismatch as e:
         return _refused(e, RUN)
     except IntentRefused:

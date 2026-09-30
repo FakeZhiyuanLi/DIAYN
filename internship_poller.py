@@ -1973,6 +1973,12 @@ class DatabaseRefused(RuntimeError):
     """
 
 
+class EmptyLedger(DatabaseRefused):
+    """postings.db's seen ledger is empty, and this command was not asked to bootstrap
+    it. Its own class so that `diayn.py run`, which takes no --init, can say something
+    else than the --init this message names."""
+
+
 class LockHeld(RuntimeError):
     """Another process holds the sweeper lock. main() prints it and exits 3."""
 
@@ -2205,7 +2211,7 @@ def open_for_sweeping(init, interval=DEFAULT_INTERVAL_S):
     conn = db_init(create=init)
     if not init and conn.execute("SELECT 1 FROM seen LIMIT 1").fetchone() is None:
         conn.close()
-        raise DatabaseRefused(
+        raise EmptyLedger(
             f"{SETTINGS.postings_db}: the seen ledger is empty, so this sweep would "
             "record every open posting as new. Pass --init if this is the first "
             "sweep of a new database.")

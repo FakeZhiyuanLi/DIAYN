@@ -260,6 +260,7 @@ class TheDatabase(_RunCase):
         code, out, err = self.run_diayn(bot=bot, watch=idle)
         self.assertEqual(code, FAILED)
         self.assertIn(hints.command("setup"), err)
+        self.assertNotIn("--init", err)                 # run takes no --init
         self.assertIn(self.db, err)
         self.assertEqual(bot.started, [])
         self.assertEqual(os.listdir(self.data), [])     # no postings.db, no lock file
@@ -271,6 +272,7 @@ class TheDatabase(_RunCase):
         self.assertEqual(code, FAILED)
         self.assertIn("seen ledger is empty", err)
         self.assertIn(hints.command("setup"), err)
+        self.assertNotIn("--init", err)                 # run takes no --init
         self.assertEqual(bot.started, [])
 
     def test_the_sweep_loop_gets_the_writer_and_the_options(self):
