@@ -41,9 +41,10 @@ stub_aiohttp()
 import internship_poller as poller  # noqa: E402
 from test_contract import contract_schema, plant, schema, untouched  # noqa: E402
 
-#: The scraper's files, as a checkout holds them: the script and the Gemini
-#: request code it shares with the bot (llm.py).
-SCRAPER_FILES = (os.path.join(ROOT, "internship_poller.py"), os.path.join(ROOT, "llm.py"))
+#: The scraper's files, as a checkout holds them: the script, the Gemini request
+#: code it shares with the bot (llm.py), and the hints its messages give (hints.py).
+SCRAPER_FILES = tuple(os.path.join(ROOT, name)
+                      for name in ("internship_poller.py", "llm.py", "hints.py"))
 
 
 def copy_scraper(checkout: str) -> str:

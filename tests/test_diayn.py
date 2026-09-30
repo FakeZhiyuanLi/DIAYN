@@ -291,7 +291,7 @@ class Script(unittest.TestCase):
         self.assertIn(self.db + ".lock", result.stderr)
 
     def copied(self):
-        return sorted(DIAYN_FILES + ("internship_poller.py", "llm.py"))
+        return sorted(set(DIAYN_FILES) | {"internship_poller.py", "llm.py", "hints.py"})
 
     def test_doctor_on_a_box_with_nothing_set_up_makes_nothing(self):
         # No token, so Discord is never asked; no data directory and no database.

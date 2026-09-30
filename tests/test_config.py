@@ -41,6 +41,7 @@ from aiohttp_stub import stub_aiohttp  # noqa: E402
 
 stub_aiohttp()
 
+import hints  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import copy_scraper  # noqa: E402
 
@@ -105,6 +106,24 @@ def shown(output, label):
         if line.startswith(label + " "):
             return line[len(label):].strip()
     return None
+
+
+class WithoutPythonDotenv(unittest.TestCase):
+    def test_an_env_file_nothing_can_read_names_the_install_command_for_this_python(self):
+        # setup, doctor and run print this as their `settings` failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.path.join(tmp, "diayn.env")
+            with open(env, "w", encoding="ascii") as f:
+                f.write("POLL_CONTACT=https://example.invalid/diayn-host\n")
+            with mock.patch.dict(sys.modules, {"dotenv": None}), \
+                    mock.patch.object(poller, "env_file_path", return_value=env), \
+                    self.assertRaises(poller.ConfigError) as caught:
+                poller.load_env_file()
+        said = str(caught.exception)
+        self.assertIn("python-dotenv is not installed", said)
+        self.assertIn(hints.install_hint(), said)
+        self.assertIn("export the variables", said)
+        self.assertNotIn("(pip install", said)
 
 
 class Configure(unittest.TestCase):
@@ -471,8 +490,8 @@ class UserAgent(unittest.TestCase):
 class Cli(unittest.TestCase):
     """The scraper run as a script, from a temporary checkout.
 
-    The layout is `checkout/internship_poller.py` and `checkout/llm.py`
-    (copies) and `work/`, the directory the child process starts in. Nothing
+    The layout is `checkout/internship_poller.py`, `checkout/llm.py` and
+    `checkout/hints.py` (copies) and `work/`, the directory the child process starts in. Nothing
     else is there unless a test puts it there.
     """
 
@@ -522,7 +541,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(seen["contact"], "")
         self.assertEqual(seen["boards"], 0)
         self.assertEqual(sorted(os.listdir(self.checkout)),
-                         [".env", "internship_poller.py", "llm.py"])
+                         [".env", "hints.py", "internship_poller.py", "llm.py"])
         self.assertEqual(os.listdir(self.work), [".env"])
 
     @NEEDS_DOTENV

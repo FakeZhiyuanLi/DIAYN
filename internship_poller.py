@@ -82,6 +82,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 
+import hints
 import llm
 
 # --------------------------------------------------------------------------
@@ -347,8 +348,8 @@ def load_env_file() -> Optional[str]:
         from dotenv import load_dotenv
     except ImportError:
         raise ConfigError(
-            f"{path} exists, but python-dotenv is not installed to read it "
-            "(pip install python-dotenv, or export the variables instead)"
+            f"{path} exists, but python-dotenv is not installed to read it. "
+            f"{hints.install_hint()} Or export the variables instead."
         ) from None
     load_dotenv(path, override=False)
     return path
