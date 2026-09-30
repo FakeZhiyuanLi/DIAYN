@@ -205,6 +205,14 @@ class Readme(unittest.TestCase):
     def setUpClass(cls):
         cls.readme = read("README.md")
 
+    def test_the_layout_names_every_module_at_the_root(self):
+        # A module the others import, left off the map, is one a stranger cannot place.
+        block = self.readme.split("\n## Layout\n", 1)[1].split("```", 2)[1]
+        listed = {line.split()[0] for line in block.splitlines() if line.strip()}
+        for name in sorted(n for n in os.listdir(ROOT) if n.endswith(".py")):
+            with self.subTest(module=name):
+                self.assertIn(name, listed)
+
     def test_every_command_has_a_section(self):
         # The scraper's commands, and DIAYN's own.
         commands = next(a for a in poller.arguments()._actions if a.dest == "cmd").choices

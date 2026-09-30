@@ -601,6 +601,7 @@ along with everything else.
 diayn.py               the entry point: setup · doctor · run · grant · revoke · import-legacy, and every scraper command
 host_checks.py         what setup does and doctor checks
 discord_portal.py      what setup and doctor ask Discord about the bot
+hints.py               the commands and install steps messages tell someone to type, spelled with the running Python
 internship_poller.py   the scraper: sweep, watch, stats, prune, discover, upgrade-db, …
 llm.py                 one request to Gemini, for the fit check and --llm
 resolve_boards.py      finds the job board behind a careers page
