@@ -83,7 +83,7 @@ STORED_COLUMNS: dict[str, str] = {
     "companies_only": "Only these companies",
     "companies_hidden": "Companies you hid",
     "alerts": "How often I DM you",
-    "alert_hour": "Hour of day for alerts (Pacific)",
+    "alert_hour": "Hour of day for alerts",
     "min_score": "Lowest match you're alerted about",
     "paused_until": "Alerts paused until",
     "cursor": "When I last checked for new roles for you",

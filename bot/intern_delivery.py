@@ -5,7 +5,7 @@ When the internship finder DMs someone, what it sends them, and what it
 writes down afterwards.
 
 The bot's five-minute delivery loop calls `run_tick` (alerts), `run_notices`
-(the quiet-period note and the expiry warning) and, once a Pacific day,
+(the quiet-period note and the expiry warning) and, once a day in DIAYN_TZ,
 `run_housekeeping`. Everything that decides who is due and what a send, a
 refusal or a network failure changes lives here; the loop only supplies
 `send_dm` and `load_window`. Split from the Discord modules for the reason
@@ -32,8 +32,12 @@ refused DM is counted (three in a row stop the DMs until the user turns them
 back on); a transient one changes nothing and is retried next tick; anything
 else is logged by its type name only, never an id or the message.
 
+Alert hours are wall-clock hours in DIAYN_TZ (`intern_clock`), the zone the
+host sets, and so is the day housekeeping runs once in.
+
 Delivery is at-least-once: a crash between a send and its record repeats one
-digest. Pure: the standard library and the finder's pure modules.
+digest. Pure: the standard library and the finder's pure modules, apart from
+reading the zone.
 """
 
 import asyncio
@@ -43,16 +47,14 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from functools import lru_cache
-from zoneinfo import ZoneInfo
 
+import intern_clock
 import intern_match
 import intern_store as store
 import intern_text
 from intern_match import Candidate, Match
 from intern_profile import Profile
 
-TZ_NAME = "America/Los_Angeles"
 SETTLE_S = 600
 DM_MAX_LISTINGS = intern_text.ALERT_LISTINGS_MAX       # 5; format_alert enforces it
 MAX_DMS_PER_TICK = 50
@@ -73,16 +75,12 @@ _ATTEMPTS = frozenset({"sent", "forbidden", "transient", "failed"})
 _ONE_DAY, _ONE_WEEK = timedelta(days=1), timedelta(days=7)
 
 
-@lru_cache(maxsize=1)
-def _pacific() -> ZoneInfo:
-    return ZoneInfo(TZ_NAME)
-
-
 def __getattr__(name: str) -> object:
-    # `TZ` (spec 6.13) is looked up on first use rather than at import:
-    # ZoneInfo reads the tz database, and no finder module does I/O at import.
+    # `TZ` (spec 6.13), DIAYN_TZ, is looked up on every use rather than at
+    # import: ZoneInfo reads the tz database, no finder module does I/O at
+    # import, and the zone is the one the scraper's settings hold now.
     if name == "TZ":
-        return _pacific()
+        return intern_clock.zone()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -139,14 +137,14 @@ def catching_up(p: Profile, now: float) -> bool:
 
 
 def _slot_on(day: date, hour: int) -> float:
-    """`hour`:00 Pacific on `day`. Built from the wall clock, so a DST change moves the
+    """`hour`:00 in DIAYN_TZ on `day`. Built from the wall clock, so a DST change moves the
     timestamp and never the hour."""
-    return datetime(day.year, day.month, day.day, hour, tzinfo=_pacific()).timestamp()
+    return datetime(day.year, day.month, day.day, hour, tzinfo=intern_clock.zone()).timestamp()
 
 
 def _current_slot(p: Profile, now: float) -> float:
     """Daily: today's slot, possibly still ahead. Weekly: the latest Monday slot at or before now."""
-    today = datetime.fromtimestamp(now, _pacific()).date()
+    today = datetime.fromtimestamp(now, intern_clock.zone()).date()
     if p.alerts == "daily":
         return _slot_on(today, p.alert_hour)
     monday = today - timedelta(days=today.weekday())
@@ -156,7 +154,7 @@ def _current_slot(p: Profile, now: float) -> float:
 
 def _slot_after(p: Profile, ts: float) -> float:
     """The first daily or weekly slot strictly after `ts`."""
-    day = datetime.fromtimestamp(ts, _pacific()).date()
+    day = datetime.fromtimestamp(ts, intern_clock.zone()).date()
     step = _ONE_WEEK if p.alerts == "weekly" else _ONE_DAY
     if p.alerts == "weekly":
         day -= timedelta(days=day.weekday())
@@ -368,21 +366,21 @@ async def run_notices(db: sqlite3.Connection, *, load_window: LoadWindow | None,
 
 # ------------------------------------------------------------------ housekeeping (5.6)
 
-def _pacific_day(now: float) -> float:
-    """`now`'s Pacific date as YYYYMMDD, the number `intern_meta` stores."""
-    day = datetime.fromtimestamp(now, _pacific()).date()
+def _local_day(now: float) -> float:
+    """`now`'s date in DIAYN_TZ as YYYYMMDD, the number `intern_meta` stores."""
+    day = datetime.fromtimestamp(now, intern_clock.zone()).date()
     return float(day.year * 10_000 + day.month * 100 + day.day)
 
 
 def housekeeping_due(db: sqlite3.Connection, now: float) -> bool:
-    return store.get_meta(db, HOUSEKEEPING_KEY) != _pacific_day(now)
+    return store.get_meta(db, HOUSEKEEPING_KEY) != _local_day(now)
 
 
 def run_housekeeping(db: sqlite3.Connection, now: float) -> dict[str, int]:
     """
-    `intern_store.housekeeping`, then today's Pacific date recorded so it runs once
-    a day. Recorded after, so a run that fails is tried again on the next tick.
+    `intern_store.housekeeping`, then today's date in DIAYN_TZ recorded so it runs
+    once a day. Recorded after, so a run that fails is tried again on the next tick.
     """
     counts = store.housekeeping(db, now)
-    store.set_meta(db, HOUSEKEEPING_KEY, _pacific_day(now))
+    store.set_meta(db, HOUSEKEEPING_KEY, _local_day(now))
     return counts

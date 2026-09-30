@@ -22,7 +22,9 @@ import ast
 import pathlib
 import re
 import unittest
+import zoneinfo
 
+import intern_clock
 import intern_places
 import intern_vocab as vocab
 
@@ -36,6 +38,11 @@ OPTION_LABEL = 100
 #: The fifteen metros section 4.3.4 names, which are also the metro presets.
 METROS = ("oc", "la", "sd", "ie", "bay", "sac", "sea", "pdx", "phx", "den",
           "chi", "dc", "nyc", "bos", "atl")
+
+
+#: The longest name an hour could be shown with, over every zone DIAYN_TZ may be.
+LONGEST_ZONE = max((intern_clock.zone_label(name) for name in zoneinfo.available_timezones()),
+                   key=len, default="Los Angeles time")
 
 
 def ids(pairs):
@@ -58,14 +65,15 @@ class SelectVocabularies(unittest.TestCase):
         self.assertEqual(len(set(ids(vocab.LOCATION_PRESETS))), 23)
 
     def test_every_select_fits_in_one_discord_select(self):
-        for name in ("FIELDS", "LEVELS", "LOCATION_PRESETS", "ALERT_CHOICES",
+        for name in ("FIELDS", "LEVELS", "LOCATION_PRESETS", "ALERT_CHOICE_VALUES",
                      "MIN_SCORE_CHOICES", "DEGREES"):
             with self.subTest(vocabulary=name):
                 self.assertLessEqual(len(getattr(vocab, name)), SELECT_OPTIONS)
 
     def test_every_label_fits_in_a_select_option(self):
         pairs = (vocab.FIELDS + vocab.LEVELS + vocab.LOCATION_PRESETS
-                 + vocab.ALERT_CHOICES + vocab.MIN_SCORE_CHOICES + vocab.DEGREES)
+                 + vocab.alert_choices(zone=LONGEST_ZONE) + vocab.MIN_SCORE_CHOICES
+                 + vocab.DEGREES)
         for value, label in pairs:
             with self.subTest(value=value):
                 self.assertTrue(label)
@@ -353,7 +361,7 @@ class AlertChoices(unittest.TestCase):
                     self.assertEqual(vocab.parse_alert_choice(value), (cadence, hour))
 
     def test_every_listed_choice_parses(self):
-        for value, _label in vocab.ALERT_CHOICES:
+        for value in vocab.ALERT_CHOICE_VALUES:
             with self.subTest(value=value):
                 self.assertIsNotNone(vocab.parse_alert_choice(value))
 
@@ -367,30 +375,46 @@ class AlertChoices(unittest.TestCase):
                 self.assertIsNone(vocab.parse_alert_choice(value))
 
     def test_a_listed_choice_has_its_listed_label(self):
-        for value, label in vocab.ALERT_CHOICES:
+        for value, label in vocab.alert_choices(zone="UTC"):
             with self.subTest(value=value):
                 cadence, hour = vocab.parse_alert_choice(value)
-                self.assertEqual(vocab.alert_choice_label(cadence, hour), label)
+                self.assertEqual(vocab.alert_choice_label(cadence, hour, zone="UTC"), label)
+
+    def test_the_listed_choices_name_the_zone_an_hour_is_in(self):
+        self.assertEqual(vocab.alert_choices(zone="Los Angeles time"), (
+            ("hourly:9", "Hourly (at most one DM an hour)"),
+            ("daily:9", "Daily at 9am Los Angeles time"),
+            ("daily:17", "Daily at 5pm Los Angeles time"),
+            ("weekly:9", "Weekly, Mondays at 9am Los Angeles time"),
+            ("off:9", "Off")))
+
+    def test_there_are_no_labels_without_a_zone(self):
+        # A select built from fixed labels would show an hour that names no
+        # zone, or the wrong one.
+        self.assertFalse(hasattr(vocab, "ALERT_CHOICES"))
+        with self.assertRaises(TypeError):
+            vocab.alert_choice_label("daily", 9)                   # no zone given
 
     def test_an_hour_set_with_ping_gets_a_label_of_its_own(self):
-        self.assertEqual(vocab.alert_choice_label("daily", 7), "Daily at 7am Pacific")
-        self.assertEqual(vocab.alert_choice_label("weekly", 19),
-                         "Weekly, Mondays at 7pm Pacific")
+        self.assertEqual(vocab.alert_choice_label("daily", 7, zone="Los Angeles time"),
+                         "Daily at 7am Los Angeles time")
+        self.assertEqual(vocab.alert_choice_label("weekly", 19, zone="UTC"),
+                         "Weekly, Mondays at 7pm UTC")
 
     def test_midnight_and_noon_read_as_twelve(self):
-        self.assertEqual(vocab.alert_choice_label("daily", 0), "Daily at 12am Pacific")
-        self.assertEqual(vocab.alert_choice_label("daily", 12), "Daily at 12pm Pacific")
+        self.assertEqual(vocab.alert_choice_label("daily", 0, zone="UTC"), "Daily at 12am UTC")
+        self.assertEqual(vocab.alert_choice_label("daily", 12, zone="UTC"), "Daily at 12pm UTC")
 
     def test_the_hour_means_nothing_to_hourly_or_off(self):
-        self.assertEqual(vocab.alert_choice_label("hourly", 7),
+        self.assertEqual(vocab.alert_choice_label("hourly", 7, zone="UTC"),
                          "Hourly (at most one DM an hour)")
-        self.assertEqual(vocab.alert_choice_label("off", 7), "Off")
+        self.assertEqual(vocab.alert_choice_label("off", 7, zone="UTC"), "Off")
 
     def test_an_impossible_cadence_or_hour_raises(self):
         for cadence, hour in (("monthly", 9), ("daily", 24), ("daily", -1), ("daily", "9")):
             with self.subTest(cadence=cadence, hour=hour):
                 with self.assertRaises(ValueError):
-                    vocab.alert_choice_label(cadence, hour)
+                    vocab.alert_choice_label(cadence, hour, zone="UTC")
 
     def test_min_score_choices_are_the_three_the_table_allows(self):
         # intern_profiles.min_score has CHECK (min_score IN (45, 60, 75)).

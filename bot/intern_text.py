@@ -11,17 +11,20 @@ listings and counts them, the delete screen is packed into several messages.
 **Outside text** (companies, titles, places, filenames) passes through
 `safe_inline` or `safe_url` before it reaches a message.
 
+**Time** is DIAYN_TZ (`intern_clock`): every hour and date is in it, and an
+hour always names it.
+
 Component labels live in the view modules and the J4 problem sentences in
-`intern_profile`, by design. Pure: imports under bare `python3`.
+`intern_profile`, by design. Pure apart from reading the zone: imports under
+bare `python3`.
 """
 
 import re
 import time
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta, timezone
-from functools import lru_cache
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import datetime
 
+import intern_clock
 import intern_vocab as vocab
 from intern_location import describe_locations
 from intern_match import BROWSE_MAX, FIRST_MATCHES, MATCHES_MAX, Coverage, Match, Relaxation
@@ -111,17 +114,13 @@ def _clock(hour: int) -> str:
     return f"{hour % 12 or 12}{'am' if hour < 12 else 'pm'}"
 
 
-@lru_cache(maxsize=1)
-def _pacific():
-    """Pacific time, or a fixed UTC-8 on a box without tz data. Looked up on first use."""
-    try:
-        return ZoneInfo("America/Los_Angeles")
-    except (ZoneInfoNotFoundError, ValueError):
-        return timezone(timedelta(hours=-8), "PT")
+def _hour(hour: int) -> str:
+    """An hour as shown to a user: "5pm Los Angeles time", its zone always named."""
+    return f"{_clock(hour)} {intern_clock.zone_label()}"
 
 
 def _month_day(ts: float) -> str:
-    local = datetime.fromtimestamp(ts, _pacific())
+    local = datetime.fromtimestamp(ts, intern_clock.zone())
     return f"{local:%b} {local.day}"
 
 
@@ -321,7 +320,7 @@ def _studying(p: Profile) -> str:
 
 def _alerts(p: Profile) -> str:
     try:
-        label = vocab.alert_choice_label(p.alerts, p.alert_hour)
+        label = vocab.alert_choice_label(p.alerts, p.alert_hour, zone=intern_clock.zone_label())
     except ValueError:
         label = str(p.alerts)
     parts = [label, _MIN_SCORE_WORDS.get(p.min_score, "") if p.alerts != "off" else "",
@@ -422,8 +421,8 @@ def cancelled_draft() -> str:
 
 def cadence_phrase(alerts: str, alert_hour: int) -> str:
     phrases = {"hourly": "hourly (at most one DM an hour)",
-               "daily": f"every day at {_clock(alert_hour)} Pacific",
-               "weekly": f"every Monday at {_clock(alert_hour)} Pacific",
+               "daily": f"every day at {_hour(alert_hour)}",
+               "weekly": f"every Monday at {_hour(alert_hour)}",
                "off": "never, because alerts are off"}
     if alerts not in phrases:
         raise ValueError(f"unknown alert cadence {alerts!r}")
@@ -675,7 +674,7 @@ _SCALARS = {
     "source": lambda v: _SOURCE_WORDS.get(v),
     "degree": lambda v: _DEGREE_LABELS.get(v),
     "grad_month": lambda v: _MONTHS[v - 1] if isinstance(v, int) and 1 <= v <= 12 else None,
-    "alert_hour": lambda v: _clock(v) if isinstance(v, int) else None,
+    "alert_hour": lambda v: _hour(v) if isinstance(v, int) else None,
     "min_score": lambda v: f"{v} ({_MIN_SCORE_WORDS[v]})" if v in _MIN_SCORE_WORDS else None,
 }
 
@@ -693,7 +692,8 @@ def _stored(column: str, value: object) -> str:
     if isinstance(value, (list, tuple)):
         return ", ".join(safe_inline(str(v), 60) for v in value)
     if column in _TIMESTAMPS and isinstance(value, (int, float)):
-        return f"{datetime.fromtimestamp(value, _pacific()):%Y-%m-%d %H:%M} Pacific"
+        local = datetime.fromtimestamp(value, intern_clock.zone())
+        return f"{local:%Y-%m-%d %H:%M} {intern_clock.zone_label()}"
     return _SCALARS.get(column, lambda v: None)(value) or safe_inline(str(value), 60)
 
 

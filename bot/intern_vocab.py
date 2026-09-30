@@ -204,16 +204,12 @@ _STATE_TOKEN = "st:"
 #: What `intern_profiles.alerts` allows.
 _CADENCES = ("hourly", "daily", "weekly", "off")
 _LAST_HOUR = 23
-#: The hour the fixed labels of `hourly` and `off` are listed under. Their
-#: stored hour is kept for when alerts go back to daily and means nothing now.
-_LISTED_HOUR = 9
-ALERT_CHOICES: tuple[tuple[str, str], ...] = (   # (value "alerts:hour", label)
-    ("hourly:9", "Hourly (at most one DM an hour)"),
-    ("daily:9", "Daily at 9am Pacific"),
-    ("daily:17", "Daily at 5pm Pacific"),
-    ("weekly:9", "Weekly, Mondays at 9am Pacific"),
-    ("off:9", "Off"))
-_ALERT_LABELS = dict(ALERT_CHOICES)
+#: The Alerts select's values ("alerts:hour"), in order. Their labels name the
+#: zone the hour is in, which is the host's, so they are made by `alert_choices`.
+#: `hourly` and `off` are listed under hour 9: their stored hour is kept for when
+#: alerts go back to daily and means nothing now.
+ALERT_CHOICE_VALUES: tuple[str, ...] = ("hourly:9", "daily:9", "daily:17", "weekly:9", "off:9")
+_UNTIMED_LABELS = {"hourly": "Hourly (at most one DM an hour)", "off": "Off"}
 #: Exactly what `alert_choice_value` writes: no padding, no leading zero, ASCII
 #: digits only (`\d` would also take Arabic-Indic ones, which `int` accepts).
 _ALERT_VALUE = re.compile(r"(hourly|daily|weekly|off):(0|[1-9][0-9]?)")
@@ -248,12 +244,14 @@ def _clock(hour: int) -> str:
     return f"{hour % 12 or 12}{'am' if hour < 12 else 'pm'}"
 
 
-def alert_choice_label(alerts: str, alert_hour: int) -> str:
+def alert_choice_label(alerts: str, alert_hour: int, *, zone: str) -> str:
     """
-    The ALERT_CHOICES label, or for an hour not listed (set with
-    `/internships ping hour:`) "Daily at 7am Pacific" / "Weekly, Mondays at
-    7pm Pacific". The card's Alerts select adds this as an extra preselected
-    option when the current value is not in ALERT_CHOICES.
+    "Daily at 7am Los Angeles time" / "Weekly, Mondays at 7pm UTC" for any hour,
+    listed or set with `/internships ping hour:`, and the fixed labels of
+    `hourly` and `off`. `zone` names the zone the hour is in, DIAYN_TZ, as
+    `intern_clock.zone_label()` gives it; this module stays pure, so it is
+    handed the name rather than looking it up. The card's Alerts select adds
+    this as an extra preselected option when the current value is not listed.
 
     Raises ValueError for a cadence or hour the profile table would refuse:
     a label for a setting that cannot be stored would describe nothing real.
@@ -263,14 +261,18 @@ def alert_choice_label(alerts: str, alert_hour: int) -> str:
     if isinstance(alert_hour, bool) or not isinstance(alert_hour, int) \
             or not 0 <= alert_hour <= _LAST_HOUR:
         raise ValueError(f"alert hour must be an int from 0 to {_LAST_HOUR}, not {alert_hour!r}")
-    listed = _ALERT_LABELS.get(alert_choice_value(alerts, alert_hour))
-    if listed is not None:
-        return listed
-    if alerts in ("hourly", "off"):
-        return _ALERT_LABELS[alert_choice_value(alerts, _LISTED_HOUR)]
+    if alerts in _UNTIMED_LABELS:
+        return _UNTIMED_LABELS[alerts]
     if alerts == "daily":
-        return f"Daily at {_clock(alert_hour)} Pacific"
-    return f"Weekly, Mondays at {_clock(alert_hour)} Pacific"
+        return f"Daily at {_clock(alert_hour)} {zone}"
+    return f"Weekly, Mondays at {_clock(alert_hour)} {zone}"
+
+
+def alert_choices(*, zone: str) -> tuple[tuple[str, str], ...]:
+    """(value, label) for the Alerts select, in ALERT_CHOICE_VALUES order, each hour
+    naming `zone` (see `alert_choice_label`)."""
+    return tuple((value, alert_choice_label(*parse_alert_choice(value), zone=zone))
+                 for value in ALERT_CHOICE_VALUES)
 
 
 # ------------------------------------------------------------------ legacy (3.3)

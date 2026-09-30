@@ -787,6 +787,11 @@ class ColumnsAndPrivacy(StoreTest):
         self.assertEqual(len(table), 33)
         self.assertEqual([f.name for f in dataclasses.fields(profile.Profile)], table)
 
+    def test_no_description_names_a_zone_the_host_may_not_use(self):
+        # The zone is DIAYN_TZ, shown with the value (intern_text), not fixed here.
+        self.assertEqual(store.STORED_COLUMNS["alert_hour"], "Hour of day for alerts")
+        self.assertFalse([d for d in store.STORED_COLUMNS.values() if "Pacific" in d])
+
     def test_every_column_has_a_plain_english_description(self):
         for column, text in store.STORED_COLUMNS.items():
             with self.subTest(column=column):

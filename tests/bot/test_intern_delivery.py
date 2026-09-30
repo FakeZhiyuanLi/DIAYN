@@ -20,9 +20,12 @@ The rules that matter most, because breaking them breaks nothing visible:
   * a user deleted while a DM to them is in flight stays deleted;
   * a 9am slot is 9am on the wall clock, on both sides of a DST change.
 
-Times are written with their UTC offset stated (PDT until 2026-11-01 02:00,
-PST after), so the DST tests check the module against the calendar rather
-than against its own time zone lookup.
+Alert hours and the housekeeping day are in DIAYN_TZ, the scraper's
+`SETTINGS.tz`. This module runs with it set to America/Los_Angeles, a zone
+with a DST change, except where a test sets another. Times are written with
+their UTC offset stated (PDT until 2026-11-01 02:00, PST after), so the DST
+tests check the module against the calendar rather than against its own time
+zone lookup.
 """
 
 import asyncio
@@ -41,6 +44,7 @@ import intern_match
 import intern_profile as profile
 import intern_store as store
 import intern_text
+import internship_poller as poller
 from test_intern_match import CITIES     # the 56-place regional-clone fixture
 
 PDT, PST = timezone(timedelta(hours=-7)), timezone(timedelta(hours=-8))
@@ -49,6 +53,21 @@ COMPANIES = 42
 ALICE, BOB, CAROL = 111_111_111_111_111_111, 222_222_222_222_222_222, 333_333_333_333_333_333
 DAVE = 444_444_444_444_444_444
 _ROWIDS = itertools.count(1)
+_IN_PACIFIC = mock.patch.object(poller, "SETTINGS",
+                                poller.configure({"DIAYN_TZ": "America/Los_Angeles"}))
+
+
+def setUpModule():
+    _IN_PACIFIC.start()
+
+
+def tearDownModule():
+    _IN_PACIFIC.stop()
+
+
+def in_zone(name: str):
+    """DIAYN_TZ set to `name` for the length of a `with` block."""
+    return mock.patch.object(poller, "SETTINGS", poller.configure({"DIAYN_TZ": name}))
 
 
 def clock(month: int, day: int, hour: int = 9, minute: int = 0, tz=PDT) -> float:
@@ -638,7 +657,7 @@ class Notices(DeliveryTest):
 
 
 class Housekeeping(DeliveryTest):
-    def test_it_runs_once_per_pacific_day(self):
+    def test_it_runs_once_per_day_in_diayn_tz(self):
         evening = clock(10, 5, 16, 30)                          # 23:30 UTC
         self.enrol(at=evening - 366 * DAY)
         due_before = delivery.housekeeping_due(self.db, evening)
@@ -652,6 +671,32 @@ class Housekeeping(DeliveryTest):
         # The UTC date has turned by 18:00 Pacific; the Pacific one has not.
         self.assertFalse(delivery.housekeeping_due(self.db, clock(10, 5, 18, 0)))
         self.assertTrue(delivery.housekeeping_due(self.db, clock(10, 6, 0, 30)))
+
+    def test_in_utc_the_day_turns_at_utc_midnight(self):
+        evening = clock(10, 5, 16, 30)                          # 23:30 UTC
+        with in_zone("UTC"):
+            delivery.run_housekeeping(self.db, evening)
+
+            self.assertEqual(store.get_meta(self.db, "housekeeping_day"), 20261005)
+            self.assertTrue(delivery.housekeeping_due(self.db, clock(10, 5, 18, 0)))
+
+
+class TheZoneIsDiaynTz(unittest.TestCase):
+    """The slots follow whatever DIAYN_TZ says; America/Los_Angeles is only this module's."""
+
+    def test_the_zone_is_the_one_set(self):
+        with in_zone("UTC"):
+            self.assertEqual(str(delivery.TZ), "UTC")
+        self.assertEqual(str(delivery.TZ), "America/Los_Angeles")
+
+    def test_a_daily_slot_is_its_hour_in_diayn_tz(self):
+        nine_utc = datetime(2026, 10, 5, 9, tzinfo=timezone.utc).timestamp()
+        p = person(last_run_at=nine_utc - DAY + 60)
+
+        with in_zone("UTC"):
+            self.assertFalse(delivery.is_due(p, nine_utc - 60))
+            self.assertTrue(delivery.is_due(p, nine_utc))
+            self.assertEqual(delivery.next_slot(p, nine_utc - 3600), nine_utc)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,10 @@ kinds of promise are pinned here:
   * **Copy.** The fixed sentences are the spec's (section 1.2) character for
     character, and text from outside (a company, a title, a filename) can
     never format, mention or break out of the line it is put on.
+
+Hours and dates are in DIAYN_TZ, the scraper's `SETTINGS.tz`, named wherever
+an hour is shown. This module runs with it set to America/Los_Angeles, except
+where a test sets another.
 """
 
 import dataclasses
@@ -21,6 +25,7 @@ import itertools
 import re
 import unittest
 from datetime import datetime
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 import intern_match
@@ -29,6 +34,7 @@ import intern_profile
 import intern_store
 import intern_text as text
 import intern_vocab
+import internship_poller as poller
 import resume_lexicon
 import resume_parse
 
@@ -36,6 +42,21 @@ NOW = 1_790_000_000.0                  # 2026-09-21, a Monday, in Pacific time
 DAY = 86400
 PACIFIC = ZoneInfo("America/Los_Angeles")
 _IDS = itertools.count(1)
+_IN_PACIFIC = mock.patch.object(poller, "SETTINGS",
+                                poller.configure({"DIAYN_TZ": "America/Los_Angeles"}))
+
+
+def setUpModule():
+    _IN_PACIFIC.start()
+
+
+def tearDownModule():
+    _IN_PACIFIC.stop()
+
+
+def in_zone(name: str):
+    """DIAYN_TZ set to `name` for the length of a `with` block."""
+    return mock.patch.object(poller, "SETTINGS", poller.configure({"DIAYN_TZ": name}))
 
 LONGEST_SKILLS = tuple(s.id for s in sorted(resume_lexicon.SKILLS, key=lambda s: -len(s.label))[:40])
 LONGEST_MAJORS = tuple(m.id for m in sorted(resume_lexicon.MAJORS, key=lambda m: -len(m.label))[:5])
@@ -185,7 +206,7 @@ class Card(unittest.TestCase):
         self.assertIn("**Where:** Anywhere in the US · Orange County / Irvine · roles that don't "
                       "list a location", card)
         self.assertIn("**Companies:** only Boeing, SpaceX · hiding CVS Health", card)
-        self.assertIn("**Alerts:** Daily at 9am Pacific · good and strong matches", card)
+        self.assertIn("**Alerts:** Daily at 9am Los Angeles time · good and strong matches", card)
         self.assertIn("**Last 30 days:** 9 roles fit this (3 strong).", card)
 
     def test_coverage_notices(self):
@@ -313,7 +334,8 @@ class Lists(unittest.TestCase):
         chunks = text.saved_followup([worst_match(n) for n in range(8)], NOW, person())
         self.assertTrue(chunks[0].startswith("**Saved.** Your best matches from the last 14 days:"))
         self.assertTrue(chunks[-1].endswith("New matches will reach you by DM every day at 9am "
-                                            "Pacific. `/internships matches` shows everything any time."))
+                                            "Los Angeles time. `/internships matches` shows everything "
+                                            "any time."))
         self.assertTrue(all(len(c) <= text.ALERT_MAX for c in chunks))
         self.assertEqual(sum(c.count("\n<https://example.com/") for c in chunks), 5)
 
@@ -387,11 +409,47 @@ class DeleteScreen(unittest.TestCase):
         self.assertIn("**Roles I've alerted you about:** 9999 (kept 45 days)", joined)
         self.assertIn("**Roles you hid:** 9999 (kept 90 days)", joined)
 
+    def test_hours_and_times_name_their_zone(self):
+        p = person(alert_hour=17, last_run_at=datetime(2026, 9, 21, 8, 5, tzinfo=PACIFIC).timestamp())
+
+        lines = text.privacy_text(stored_rows(p))
+
+        self.assertIn(f"**{intern_store.STORED_COLUMNS['alert_hour']}:** 5pm Los Angeles time", lines)
+        self.assertIn(f"**{intern_store.STORED_COLUMNS['last_run_at']}:** 2026-09-21 08:05 "
+                      "Los Angeles time", lines)
+
     def test_a_fresh_profile_fits_the_same_bounds(self):
         chunks = text.delete_confirm(text.privacy_text(stored_rows(person())))
         self.assertIn(len(chunks), (1, 2))
         self.assertTrue(all(len(c) <= text.ALERT_MAX for c in chunks))
         self.assertTrue(chunks[-1].endswith(self.QUESTION))
+
+
+class TheZoneIsDiaynTz(unittest.TestCase):
+    """Every hour shown is in DIAYN_TZ and says so; America/Los_Angeles is only this module's."""
+
+    def test_in_utc_an_hour_says_utc(self):
+        with in_zone("UTC"):
+            self.assertEqual(text.cadence_phrase("daily", 9), "every day at 9am UTC")
+            self.assertEqual(text.cadence_phrase("weekly", 17), "every Monday at 5pm UTC")
+            card = text.card_text(person(), mode="saved", coverage=None)
+
+        self.assertIn("**Alerts:** Daily at 9am UTC", card)
+
+    def test_a_stored_time_is_shown_in_the_zone_it_names(self):
+        at = datetime(2026, 9, 21, 8, 5, tzinfo=PACIFIC).timestamp()     # 15:05 UTC
+        with in_zone("UTC"):
+            lines = text.privacy_text(stored_rows(person(last_run_at=at)))
+
+        self.assertIn(f"**{intern_store.STORED_COLUMNS['last_run_at']}:** 2026-09-21 15:05 UTC",
+                      lines)
+
+    def test_a_date_is_the_date_in_diayn_tz(self):
+        until = datetime(2026, 9, 28, 23, 30, tzinfo=PACIFIC).timestamp()   # Sep 29 in UTC
+        with in_zone("UTC"):
+            reply = text.alert_reply("paused", until=until)
+
+        self.assertTrue(reply.startswith("Paused until Sep 29."))
 
 
 class FixedCopy(unittest.TestCase):
@@ -434,12 +492,16 @@ class FixedCopy(unittest.TestCase):
 
     def test_cadence_and_ping(self):
         phrases = {("hourly", 9): "hourly (at most one DM an hour)",
-                   ("daily", 9): "every day at 9am Pacific", ("daily", 17): "every day at 5pm Pacific",
-                   ("weekly", 9): "every Monday at 9am Pacific", ("off", 9): "never, because alerts are off"}
+                   ("daily", 9): "every day at 9am Los Angeles time",
+                   ("daily", 17): "every day at 5pm Los Angeles time",
+                   ("weekly", 9): "every Monday at 9am Los Angeles time",
+                   ("off", 9): "never, because alerts are off"}
         for (alerts, hour), phrase in phrases.items():
             self.assertEqual(text.cadence_phrase(alerts, hour), phrase)
-        self.assertEqual(text.ping_reply(person(), action="on"), "Alerts are on: every day at 9am Pacific.")
-        self.assertEqual(text.ping_reply(person(), action="set"), "Alerts: every day at 9am Pacific.")
+        self.assertEqual(text.ping_reply(person(), action="on"),
+                         "Alerts are on: every day at 9am Los Angeles time.")
+        self.assertEqual(text.ping_reply(person(), action="set"),
+                         "Alerts: every day at 9am Los Angeles time.")
         self.assertEqual(text.ping_reply(person(), action="off"), "Alerts are off. Your profile is "
                          "saved; run `/internships ping` again to turn them back on.")
 
