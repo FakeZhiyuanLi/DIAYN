@@ -669,6 +669,26 @@ class TheWayOutIsAlwaysOpen(_GateCase):
         self.assertEqual(intern_store.seen_hashes(self.db, STRANGER), frozenset())
         self.assertEqual(i.response.edits[0]["content"], intern_text.deleted_text())
 
+    def test_a_grant_by_id_is_kept_and_the_confirmation_says_so(self):
+        # Deleting a profile is not giving up access, and is never a silent revoke.
+        self.grant("user", STRANGER)
+        self.enrol(STRANGER)
+        screen = self.press(intern_views.ProfileCardView, lambda v, i: v.delete.callback(i))
+        done = self.press(lambda: intern_views.DeleteConfirmView(STRANGER),
+                          lambda v, i: v.delete_all.callback(i))
+
+        shown = "\n".join(c for c, _ in screen.response.sent + screen.followup.sent)
+        self.assertIn("that grant stays until they revoke it", shown)
+        self.assertEqual(done.response.edits[0]["content"], intern_text.deleted_text(granted=True))
+        self.assertIsNone(intern_store.load(self.db, STRANGER))
+        self.assertIn(STRANGER, access.grants(self.db).users)
+
+    def test_with_only_a_grant_held_it_says_so(self):
+        self.grant("user", STRANGER)
+        i = self.press(intern_views.ProfileCardView, lambda v, i: v.delete.callback(i))
+        self.assertEqual(i.response.sent[0][0], intern_text.nothing_held(granted=True))
+        self.assertIn(STRANGER, access.grants(self.db).users)
+
     def test_keep_it_and_both_cancels_answer(self):
         self.enrol(STRANGER)
         p = intern_store.load(self.db, STRANGER)

@@ -254,6 +254,13 @@ class TheGrantsTable(_GrantsCase):
         self.assertFalse(access.revoke(self.db, "user", GRANTED))
         self.assertFalse(access.revoke(self.db, "guild", CLUB_SERVER))
 
+    def test_whether_one_user_holds_a_grant_by_id(self):
+        access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
+        access.grant(self.db, "guild", STRANGER, granted_by=OWNER, now=NOW)   # a server's id
+        self.assertTrue(access.user_granted(self.db, GRANTED))
+        self.assertFalse(access.user_granted(self.db, STRANGER))
+        self.assertFalse(access.user_granted(None, GRANTED))
+
     def test_the_snapshot_splits_users_from_servers(self):
         access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
         access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)

@@ -492,7 +492,9 @@ The bot process never parses, stores or logs the resume's text; only the
 vocabulary the person confirms is kept. Whoever runs this bot can read what it
 stores. A profile is deleted after a year unused, and 30 days after its owner
 leaves every server the bot shares with them or loses access to the bot.
-`/internships delete` erases everything at once.
+`/internships delete` erases a person's profile and its history at once. A
+grant made for them by id is yours, not theirs, and stays until you revoke it;
+the delete screen and its confirmation tell them so.
 
 **What the fit check sends to Google.** Only where the host has set
 `GEMINI_API_KEY`, only for someone who has not turned the check off, and only

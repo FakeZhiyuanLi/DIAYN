@@ -234,11 +234,13 @@ async def show_delete(interaction) -> None:
     `privacy_rows` is one quick read, so there is no defer."""
     uid = interaction.user.id
     rows = intern_store.privacy_rows(intern_ui.db, uid)
+    # A grant by id is whoever runs the bot's record: deleting leaves it, and says so.
+    granted = intern_ui.granted_by_id(uid)
     if rows is None:
         intern_store.delete_user(intern_ui.db, uid)        # any row left without a profile
-        await intern_ui.refuse(interaction, intern_text.nothing_held())
+        await intern_ui.refuse(interaction, intern_text.nothing_held(granted=granted))
         return
-    chunks = intern_text.delete_confirm(intern_text.privacy_text(rows))
+    chunks = intern_text.delete_confirm(intern_text.privacy_text(rows), granted=granted)
     if len(chunks) == 1:
         await interaction.response.send_message(chunks[0], ephemeral=True,
                                                 allowed_mentions=intern_ui.NO_MENTIONS,
@@ -262,8 +264,9 @@ class DeleteConfirmView(intern_ui.OwnedView):
             return
         intern_store.delete_user(intern_ui.db, interaction.user.id)
         self.stop()
-        await interaction.response.edit_message(content=intern_text.deleted_text(), view=None,
-                                                allowed_mentions=intern_ui.NO_MENTIONS)
+        granted = intern_ui.granted_by_id(interaction.user.id)     # not revoked: said
+        await interaction.response.edit_message(content=intern_text.deleted_text(granted=granted),
+                                                view=None, allowed_mentions=intern_ui.NO_MENTIONS)
 
     @discord.ui.button(label="Keep it", style=discord.ButtonStyle.secondary)
     async def keep(self, interaction, button) -> None:

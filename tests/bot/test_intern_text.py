@@ -538,6 +538,44 @@ class DeleteScreen(unittest.TestCase):
         self.assertTrue(chunks[-1].endswith(self.QUESTION))
 
 
+class AGrantIsNotDeletedWithTheProfile(unittest.TestCase):
+    """A grant by id is whoever runs the bot's record, kept until they revoke it: the delete
+    screens say so rather than claim everything is gone (review finding 7)."""
+
+    KEPT = ("Whoever runs this bot granted you access by your Discord id, and that grant "
+            "stays until they revoke it.")
+    MAYBE = ("If whoever runs this bot granted you access by your Discord id, that grant "
+             "stays until they revoke it.")
+
+    def test_done_says_what_went_and_never_that_it_is_all_gone(self):
+        for granted in (False, True, None):
+            with self.subTest(granted=granted):
+                done = text.deleted_text(granted=granted)
+                self.assertTrue(done.startswith("**Done. Your profile and its history are deleted.**"))
+                self.assertNotIn("all gone", done)
+
+    def test_done_names_the_grant_that_stays(self):
+        self.assertTrue(text.deleted_text(granted=True).endswith(self.KEPT))
+        self.assertNotIn("grant", text.deleted_text(granted=False))
+        self.assertTrue(text.deleted_text(granted=None).endswith(self.MAYBE))
+
+    def test_nothing_held_but_a_grant_says_so(self):
+        self.assertEqual(text.nothing_held(granted=True),
+                         f"I don't hold a profile or any history for you. {self.KEPT}")
+        self.assertEqual(text.nothing_held(granted=None),
+                         f"I don't hold a profile or any history for you. {self.MAYBE}")
+
+    def test_the_delete_screen_says_it_before_the_question(self):
+        lines = text.privacy_text(stored_rows(person()))
+        with_grant = "\n".join(text.delete_confirm(lines, granted=True))
+        without = "\n".join(text.delete_confirm(lines))
+
+        self.assertIn(self.KEPT, with_grant)
+        self.assertLess(with_grant.index(self.KEPT), with_grant.index(DeleteScreen.QUESTION))
+        self.assertTrue(with_grant.endswith(DeleteScreen.QUESTION))
+        self.assertNotIn("grant", without)
+
+
 class TheZoneIsDiaynTz(unittest.TestCase):
     """Every hour shown is in DIAYN_TZ and says so; America/Los_Angeles is only this module's."""
 
@@ -641,9 +679,9 @@ class FixedCopy(unittest.TestCase):
             text.matches_no_profile(): "Meanwhile, `/internships recent` lists every field.",
             text.not_yours(): "That isn't yours.",
             text.generic_failure(): "Something went wrong on my side. Try again in a minute.",
-            text.deleted_text(): "**Done. It's all gone.** Messages I already sent stay in your DMs "
-                                 "until you delete them, and Discord keeps its own copy of files "
-                                 "you uploaded.",
+            text.deleted_text(): "**Done. Your profile and its history are deleted.** Messages I "
+                                 "already sent stay in your DMs until you delete them, and Discord "
+                                 "keeps its own copy of files you uploaded.",
         }
         for got, want in cases.items():
             with self.subTest(want=want):

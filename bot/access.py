@@ -152,6 +152,15 @@ def grants(db: sqlite3.Connection | None) -> Grants:
                   guilds=_ids(i for kind, i in rows if kind == "guild"))
 
 
+def user_granted(db: sqlite3.Connection | None, user_id: int) -> bool:
+    """Whether `user_id` holds a grant by id: the owner's record, which a person deleting
+    their profile does not delete. False without users.db. Raises sqlite3.Error."""
+    if db is None:
+        return False
+    return db.execute("SELECT 1 FROM access_grants WHERE kind = 'user' AND id = ?",
+                      (user_id,)).fetchone() is not None
+
+
 def allowed(granted: Grants, user_id: object, guild_id: object,
             member_of_granted_guild: MemberOf) -> bool:
     """

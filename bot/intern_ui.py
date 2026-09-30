@@ -272,6 +272,16 @@ async def profile_for(interaction, *, tracker: bool = False):
     return p
 
 
+def granted_by_id(user_id: int) -> bool | None:
+    """Whether `user_id` holds a grant by id, which deleting their profile leaves in place
+    (`access.user_granted`); None when it cannot be read. Never raises."""
+    try:
+        return access.user_granted(db, user_id)
+    except sqlite3.Error as error:
+        log_failure("reading an access grant", error)
+        return None
+
+
 def note_fit_notice(user_id: int) -> None:
     """Records that `user_id` has just been shown the Gemini fit check's notice, so their
     alerts may be checked from now on (intern_fit): only where the host has a key, and

@@ -778,18 +778,35 @@ def privacy_text(rows: Mapping[str, object]) -> tuple[str, ...]:
         f"**Roles you hid:** {int(rows.get('hidden_count') or 0)} (kept {HIDDEN_RETAIN_S // _DAY_S} days)")
 
 
-def delete_confirm(privacy: Sequence[str]) -> list[str]:
-    """J11: header, the lines, a blank line and the question, packed so no line is split."""
-    return pack([_DELETE_HEADER, *privacy, "", _DELETE_QUESTION], ALERT_MAX, "\n")
+def _grant_kept(granted: bool | None) -> str:
+    """What deleting leaves: a grant by id is whoever runs this bot's record, kept until they
+    revoke it. `granted` None: it could not be read, so the sentence is conditional."""
+    if granted is None:
+        return ("If whoever runs this bot granted you access by your Discord id, that grant "
+                "stays until they revoke it.")
+    return ("Whoever runs this bot granted you access by your Discord id, and that grant "
+            "stays until they revoke it.") if granted else ""
 
 
-def deleted_text() -> str:
-    return ("**Done. It's all gone.** Messages I already sent stay in your DMs until you delete them, "
-            "and Discord keeps its own copy of files you uploaded.")
+def delete_confirm(privacy: Sequence[str], *, granted: bool | None = False) -> list[str]:
+    """J11: header, the lines, a blank line and the question, packed so no line is split.
+    A grant by id, which the delete leaves, is named before the question."""
+    kept = _grant_kept(granted)
+    return pack([_DELETE_HEADER, *privacy, "", *([kept] if kept else []), _DELETE_QUESTION],
+                ALERT_MAX, "\n")
 
 
-def nothing_held() -> str:
-    return "I don't hold anything about you."
+def deleted_text(*, granted: bool | None = False) -> str:
+    done = ("**Done. Your profile and its history are deleted.** Messages I already sent stay in "
+            "your DMs until you delete them, and Discord keeps its own copy of files you uploaded.")
+    kept = _grant_kept(granted)
+    return f"{done} {kept}" if kept else done
+
+
+def nothing_held(*, granted: bool | None = False) -> str:
+    kept = _grant_kept(granted)
+    return f"I don't hold a profile or any history for you. {kept}" if kept else \
+        "I don't hold anything about you."
 
 
 # ------------------------------------------------------------------ J12 and 1.3: commands
