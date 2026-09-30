@@ -1,0 +1,579 @@
+"""
+host_checks.py
+~~~~~~~~~~~~~~
+`diayn.py setup`, which gets a new host ready, from a filled-in .env to an
+invite link, and `diayn.py doctor`, which checks it again at any time.
+
+    .venv/bin/python diayn.py setup
+    .venv/bin/python diayn.py doctor
+
+**setup** goes in this order, and stops at the first failure:
+
+0. **The bot's dependencies.** Without discord.py `run` cannot start the bot,
+   so setup stops before anything is asked or made. Without pypdf a PDF resume
+   cannot be read, which is a warning.
+1. **The token.** DISCORD_TOKEN must be set, and Discord must accept it
+   (discord_portal). Nothing is made until it does.
+2. **The intent.** The Server Members Intent must be on. The bot always asks
+   for it, to notice someone leaving every server it shares with them and to
+   tell in a DM who is a member of a granted server, and Discord refuses the
+   login of a bot that asks for an intent its portal toggle has off. Nothing
+   is made until it is on.
+3. **The data directory**, DIAYN_DATA, made at mode 700. One that exists, and
+   that others on the box can read, is tightened to 700, and so are users.db
+   and postings.db, with their -journal, -wal and -shm, to 600: grant or
+   import-legacy before setup, or an older DIAYN, could have left them loose.
+   setup names what it tightened, and stops if it cannot.
+4. **postings.db**, bootstrapped as `sweep --init` would: a first sweep that
+   records every posting open now as seen, so none of them is announced. A file
+   that is already there is never bootstrapped again: with a ledger it is left
+   as it is, and with an empty one it is left alone and refused, since only
+   the operator can say whether it is new (`sweep --init`) or the wrong file.
+5. **The invite link**, with the scopes the bot needs and no permission.
+
+**doctor** checks the Python version, the platform, discord.py and pypdf, the
+settings, the token and the intent, the data directory, postings.db and its last sweep, whether
+anything holds the sweeper lock, POLL_CONTACT, and the Gemini key. Every check
+runs, whatever an earlier one found, except those that need settings that
+would not load. It makes nothing and writes nothing. To see whether a sweeper
+is running it takes the lock for an instant, and only when nothing holds it.
+
+Each check prints one line, `ok`, `warn`, `note` or `fail`, and a failure goes
+to stderr. Exit codes are the scraper's: 0 done (warnings included), 1 failed
+or something to fix, 3 another sweeper holds the lock (setup only). Nothing
+printed carries the token or the Gemini key.
+
+Importing this module does nothing.
+"""
+
+import argparse
+import asyncio
+import dataclasses
+import importlib.util
+import os
+import sqlite3
+import stat
+import sys
+import time
+
+import discord_portal as portal
+import hints
+import private_files
+
+OK, WARN, NOTE, FAIL = "ok", "warn", "note", "fail"
+FAILED_EXIT = 1
+MIN_PYTHON = hints.MIN_PYTHON
+#: What DIAYN needs that only a POSIX system has, and what for.
+POSIX_MODULES = (("fcntl", "the sweeper lock"), ("resource", "the resume reader's limits"))
+PLATFORM_NAMES = {"linux": "Linux", "darwin": "macOS"}
+#: B6: a sweep this many intervals late is reported, as /diayn debug reports it.
+STALE_SWEEPS = 3
+INTENT_HOW = hints.INTENT_HOW
+#: What the bot needs besides the scraper's own: (the module, what pip calls it, the
+#: level when it is missing, and what goes without it). Looked for, never imported:
+#: only `run` imports discord.py.
+DEPENDENCIES = (
+    ("discord", "discord.py", FAIL, "so `run` cannot start the bot"),
+    ("pypdf", "pypdf", WARN, "so a PDF resume cannot be read. A .docx, a .txt or pasted "
+                             "text still fills in a profile"),
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class Finding:
+    """One line of what setup (or doctor) found: its level, what it is about, and what it says."""
+    level: str
+    what: str
+    said: str
+
+    @property
+    def failed(self) -> bool:
+        return self.level == FAIL
+
+
+def report(finding: Finding) -> None:
+    """Prints `finding` as one line, to stderr when it is a failure."""
+    print(f"{finding.level:<5} {finding.what}: {finding.said}",
+          file=sys.stderr if finding.failed else sys.stdout, flush=True)
+
+
+# ------------------------------------------------------------------ dependencies
+
+def _has_module(name: str) -> bool:
+    """Whether `name` can be imported here, without importing it."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ValueError:          # already imported, with no spec, as a stub is
+        return sys.modules.get(name) is not None
+
+
+def dependencies() -> list:
+    """A finding for each of DEPENDENCIES: ok when it is installed."""
+    found = []
+    for module, name, level, without in DEPENDENCIES:
+        if _has_module(module):
+            found.append(Finding(OK, name, "installed."))
+        else:
+            found.append(Finding(level, name, f"not installed, {without}. "
+                                 f"{hints.install_hint()}"))
+    return found
+
+
+# ------------------------------------------------------------------ Discord
+
+def discord_findings(poller, settings, fetch_application=None):
+    """([findings], the application), or ([the failure], None) when the token is missing or
+    refused. Discord is asked only when there is a token to ask about."""
+    if not (settings.discord_token or "").strip():
+        return [Finding(FAIL, "DISCORD_TOKEN", "not set. Put the bot's token in .env: in the "
+                        "developer portal, your application, then Bot, then Reset Token.")], None
+    fetch = fetch_application or portal.fetch_application
+    agent = portal.user_agent(poller.PROJECT_URL, poller.__version__)
+    try:
+        app = asyncio.run(fetch(settings.discord_token, user_agent=agent))
+    except portal.PortalError as error:
+        return [Finding(FAIL, "DISCORD_TOKEN", str(error))], None
+    found = [Finding(OK, "DISCORD_TOKEN", f"Discord accepts it, for the bot {app.bot_name} "
+                     f"of the application {app.name!r}.")]
+    if app.members_intent:
+        found.append(Finding(OK, "Server Members Intent", "on."))
+    else:
+        found.append(Finding(FAIL, "Server Members Intent", "off, and the bot cannot log in "
+                             "without it: Discord refuses the connection, and `run` stops "
+                             "rather than restart into the same refusal. " + INTENT_HOW))
+    if app.public:
+        found.append(Finding(NOTE, "Public Bot", "on, so anyone with the invite link can add "
+                             "this bot to a server. It still answers only you and those you "
+                             "grant access. To add it yourself only, turn Public Bot off on "
+                             "the Bot page."))
+    return found, app
+
+
+# ------------------------------------------------------------------ the data directory
+
+def _loose(path: str, mode: int) -> Finding:
+    return Finding(WARN, "data directory", f"{path} is mode {mode:o}, so other users on this "
+                   f"box can read what it holds, users.db's profiles among them. "
+                   f"`{hints.command('setup')}` tightens it, as does chmod 700 {path}")
+
+
+def _tighten(path: str, mode: int) -> Finding:
+    """setup's answer to a data directory others can read: take that away, and say so."""
+    try:
+        private_files.tighten(path)
+    except OSError as error:
+        return Finding(FAIL, "data directory", f"{path} is mode {mode:o}, so other users on "
+                       f"this box can read what it holds, and setup could not tighten it: "
+                       f"{type(error).__name__}: {error}. chmod 700 {path}")
+    now = stat.S_IMODE(os.stat(path).st_mode)
+    return Finding(NOTE, "data directory", f"{path} was mode {mode:o}, so other users on this "
+                   f"box could read what it holds, users.db's profiles among them; it is "
+                   f"now {now:o}.")
+
+
+def _make_private(path: str) -> Finding:
+    try:
+        private_files.make_directory(path)
+    except OSError as error:
+        return Finding(FAIL, "data directory", f"{path} could not be made at mode 700: "
+                       f"{type(error).__name__}: {error}")
+    return Finding(OK, "data directory", f"{path} made, mode 700.")
+
+
+def data_directory(path: str, fix: bool = False) -> Finding:
+    """What the data directory at `path` is like. With `fix`, as setup asks, a missing one
+    is made at mode 700, and one that others on the box can read is tightened; without,
+    as doctor asks, nothing is changed."""
+    if not os.path.isdir(path):
+        if os.path.exists(path):
+            return Finding(FAIL, "data directory", f"{path} is not a directory. "
+                           "Check DIAYN_DATA.")
+        if fix:
+            return _make_private(path)
+        return Finding(FAIL, "data directory", f"{path} does not exist. "
+                       f"`{hints.command('setup')}` makes it.")
+    if not os.access(path, os.W_OK | os.X_OK):
+        return Finding(FAIL, "data directory", f"{path} is not writable by this user.")
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    if not mode & private_files.GROUP_AND_OTHERS:
+        return Finding(OK, "data directory", f"{path}, mode {mode:o}.")
+    return _tighten(path, mode) if fix else _loose(path, mode)
+
+
+def private_databases(paths) -> list:
+    """
+    setup's findings for the databases at `paths`, and the files sqlite keeps beside
+    each: every one that others on the box can read is tightened, and named. [] when
+    there was nothing to tighten; a failure at the first that cannot be.
+    """
+    tightened = []
+    for path in paths:
+        for name in private_files.database_files(path):
+            try:
+                before = private_files.tighten(name)
+            except OSError as error:
+                return [Finding(FAIL, "database files", f"other users on this box can read "
+                                f"{name}, and setup could not tighten it: "
+                                f"{type(error).__name__}: {error}. chmod 600 {name}")]
+            if before is not None:
+                tightened.append(f"{name} (was mode {before:o})")
+    if not tightened:
+        return []
+    return [Finding(NOTE, "database files", f"other users on this box could read "
+                    f"{', '.join(tightened)}; each is now readable by this user alone.")]
+
+
+def env_file_finding(path, fix: bool = False) -> list:
+    """
+    The .env at `path`, which holds the bot's token and any Gemini key, when others on
+    the box can read it: setup (`fix`) tightens it to 600 and says so; doctor warns and
+    changes nothing. [] when there is none, or it is private.
+    """
+    if not path:
+        return []
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return []
+    if not mode & private_files.GROUP_AND_OTHERS:
+        return []
+    exposed = f"{path} is mode {mode:o}, so other users on this box can read the bot's token"
+    if not fix:
+        return [Finding(WARN, ".env", f"{exposed}. `{hints.command('setup')}` tightens it, "
+                        f"as does chmod 600 {path}")]
+    try:
+        private_files.tighten(path)
+    except OSError as error:
+        return [Finding(FAIL, ".env", f"{exposed}, and setup could not tighten it: "
+                        f"{type(error).__name__}: {error}. chmod 600 {path}")]
+    return [Finding(NOTE, ".env", f"{path} was mode {mode:o}, so other users on this box could "
+                    "read the bot's token; it is now readable by this user alone.")]
+
+
+# ------------------------------------------------------------------ postings.db
+
+def _seen(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
+
+
+def _refused(error) -> Finding:
+    return Finding(FAIL, "postings.db", str(error))
+
+
+@dataclasses.dataclass(frozen=True)
+class Ledger:
+    """What doctor and setup read from postings.db."""
+    seen: int                   # rows in the seen ledger
+    last_sweep: float | None    # when the last recorded sweep began
+    interval: int               # the seconds between sweeps scraper_meta names
+
+
+def _interval(poller, conn) -> int:
+    """scraper_meta's sweep_interval_s, or the scraper's default for a file without one."""
+    try:
+        row = conn.execute("SELECT value FROM scraper_meta "
+                           "WHERE key = 'sweep_interval_s'").fetchone()
+    except sqlite3.OperationalError:        # a file from before the contract tables
+        row = None
+    try:
+        interval = int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        interval = 0
+    return interval if interval > 0 else poller.DEFAULT_INTERVAL_S
+
+
+def read_ledger(poller, path: str):
+    """The Ledger of the postings.db at `path`, which exists, opened read-only; or the
+    Finding that refuses it."""
+    try:
+        conn = poller.db_read_only()
+    except (poller.DatabaseRefused, poller.SchemaMismatch) as error:
+        return _refused(error)
+    except sqlite3.Error as error:
+        return _refused(f"{path}: {type(error).__name__}: {error}")
+    try:
+        return Ledger(seen=_seen(conn),
+                      last_sweep=conn.execute("SELECT MAX(started) FROM sweeps").fetchone()[0],
+                      interval=_interval(poller, conn))
+    except sqlite3.Error as error:
+        return _refused(f"{path}: {type(error).__name__}: {error}")
+    finally:
+        conn.close()
+
+
+def _empty(path: str) -> Finding:
+    return _refused(
+        f"{path} exists, but its seen ledger is empty, so `{hints.command('run')}` would "
+        "refuse it, and setup never bootstraps a file that is already there. If setup made "
+        f"it and its first sweep failed, `{hints.command('sweep', '--init')}` finishes the "
+        "bootstrap. If this box should have a ledger, this is the wrong file: "
+        f"`{hints.command('config')}` shows the path in use.")
+
+
+def existing_ledger(poller, path: str) -> Finding:
+    """What setup says of the postings.db at `path`, which exists; it is never changed."""
+    ledger = read_ledger(poller, path)
+    if isinstance(ledger, Finding):
+        return ledger
+    if not ledger.seen:
+        return _empty(path)
+    return Finding(OK, "postings.db", f"{path} exists, with {ledger.seen} postings seen, and "
+                   "is left as it is: a ledger is never bootstrapped twice.")
+
+
+def _first_sweep(poller, path: str) -> Finding:
+    interval = poller.DEFAULT_INTERVAL_S
+    conn = poller.open_for_sweeping(init=True, interval=interval)
+    try:
+        try:
+            result = asyncio.run(poller.cmd_sweep(conn, quiet=True, interval=interval))
+        except Exception as error:      # rolled back when the connection closes uncommitted
+            return _refused(f"the first sweep failed ({type(error).__name__}: {error}). "
+                            f"{path} was made, with no ledger yet: "
+                            f"`{hints.command('sweep', '--init')}` tries the first sweep again.")
+        seen = _seen(conn)
+    finally:
+        conn.close()
+    if not seen:
+        return _refused(f"the first sweep recorded no posting ({result.summary}). Check "
+                        f"that this box can reach the job boards, then "
+                        f"`{hints.command('sweep', '--init')}` tries again.")
+    return Finding(OK, "postings.db", f"bootstrapped: {seen} postings recorded as seen. "
+                   f"{result.summary}")
+
+
+def bootstrap(poller, settings) -> tuple[int, Finding]:
+    """(exit code, finding): postings.db bootstrapped with a first sweep, unless a file is
+    already there, which is only looked at. The sweeper lock is held for the sweep."""
+    path = settings.postings_db
+    if os.path.exists(path):
+        found = existing_ledger(poller, path)
+        return (FAILED_EXIT if found.failed else 0), found
+    print("...   postings.db: bootstrapping. The first sweep records every posting open now "
+          "as seen, so none of them is announced. It takes a minute or two.", flush=True)
+    try:
+        with poller.sweeper_lock(path, create=True):
+            found = (existing_ledger(poller, path) if os.path.exists(path)
+                     else _first_sweep(poller, path))
+    except poller.LockHeld as error:
+        return poller.LOCK_HELD_EXIT, _refused(error)
+    except (poller.DatabaseRefused, poller.SchemaMismatch) as error:
+        return FAILED_EXIT, _refused(error)
+    except (sqlite3.Error, OSError) as error:
+        return FAILED_EXIT, _refused(f"{path}: {type(error).__name__}: {error}")
+    return (FAILED_EXIT if found.failed else 0), found
+
+
+# ------------------------------------------------------------------ setup
+
+def _invite(app) -> None:
+    print("\nInvite the bot to your server with this link:\n\n"
+          f"    {portal.invite_url(app.id)}\n\n"
+          f"Then start it: {hints.command('run')}   (DEPLOY.md has pm2 and systemd examples)\n"
+          "In Discord, /internships profile starts a profile, and as the owner, "
+          "/diayn grant lets others in.")
+
+
+def _failed(findings) -> bool:
+    """Reports each of `findings`; returns whether any of them failed."""
+    for finding in findings:
+        report(finding)
+    return any(finding.failed for finding in findings)
+
+
+def _steps(poller, settings, fetch_application, env_path=None) -> int:
+    if _failed(dependencies()):
+        return FAILED_EXIT
+    found, app = discord_findings(poller, settings, fetch_application)
+    if _failed(found) or app is None:
+        return FAILED_EXIT
+    if _failed([data_directory(settings.data_dir, fix=True)]):
+        return FAILED_EXIT
+    if _failed(private_databases((settings.users_db, settings.postings_db))):
+        return FAILED_EXIT
+    if _failed(env_file_finding(env_path, fix=True)):
+        return FAILED_EXIT
+    code, ledger = bootstrap(poller, settings)
+    report(ledger)
+    if code:
+        return code
+    _invite(app)
+    return 0
+
+
+def cmd_setup(poller, argv, fetch_application=None) -> int:
+    """
+    `setup`: checks the dependencies, the token and the intent, makes the data directory
+    (or tightens it, the databases in it, and the .env), bootstraps postings.db, then
+    prints the invite link; returns the exit code. The settings are
+    bound first (the scraper's boot()), so the paths are the ones `run` will use.
+    `fetch_application` stands in for discord_portal's, for the tests.
+    """
+    argparse.ArgumentParser(
+        prog="diayn.py setup",
+        description="Get this host ready: check the dependencies and the bot's token and "
+                    "intent, make the data "
+                    "directory, bootstrap postings.db and print the invite link. "
+                    "Safe to run again: nothing that exists is changed, except that "
+                    "what others on this box could read is made private.").parse_args(argv)
+    try:
+        env_path = poller.boot()
+    except poller.ConfigError as error:
+        report(Finding(FAIL, "settings", str(error)))
+        return FAILED_EXIT
+    return _steps(poller, poller.SETTINGS, fetch_application, env_path)
+
+
+# ------------------------------------------------------------------ doctor
+
+def python_version(version=None) -> Finding:
+    """Python `version` (default: this one), which must be 3.10 or newer."""
+    version = tuple(version or sys.version_info[:3])
+    shown = ".".join(str(n) for n in version[:3])
+    if version[:2] < MIN_PYTHON:
+        return Finding(FAIL, "Python", f"{shown}, but DIAYN needs 3.10 or newer.")
+    return Finding(OK, "Python", f"{shown}.")
+
+
+def platform_support(os_name=None, platform=None) -> Finding:
+    """Whether this platform (or the one named) has what DIAYN needs: Linux or macOS."""
+    os_name, platform = os_name or os.name, platform or sys.platform
+    name = PLATFORM_NAMES.get(platform, platform)
+    if os_name != "posix":
+        return Finding(FAIL, "platform", f"{name}. DIAYN runs on Linux and macOS only: it "
+                       "needs fcntl for the sweeper lock and resource for the resume "
+                       "reader's limits.")
+    missing = [f"{module} (for {what})" for module, what in POSIX_MODULES
+               if not _has_module(module)]
+    if missing:
+        return Finding(FAIL, "platform", f"{name}, but this Python has no "
+                       f"{' or '.join(missing)}. DIAYN runs on Linux and macOS only.")
+    return Finding(OK, "platform", f"{name}, with fcntl for the sweeper lock and resource "
+                   "for the resume reader's limits.")
+
+
+def _ago(seconds: float) -> str:
+    for unit, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= size:
+            n = int(seconds // size)
+            return f"{n} {unit}{'' if n == 1 else 's'}"
+    n = max(0, int(seconds))
+    return f"{n} second{'' if n == 1 else 's'}"
+
+
+def last_sweep(ledger: Ledger, now: float) -> Finding:
+    """How long ago the last sweep began: late beyond STALE_SWEEPS intervals."""
+    every = _ago(ledger.interval)
+    if ledger.last_sweep is None:
+        return Finding(WARN, "last sweep", f"none recorded yet. `{hints.command('run')}` sweeps "
+                       f"every {every}.")
+    age = max(0.0, now - ledger.last_sweep)
+    if age > STALE_SWEEPS * ledger.interval:
+        return Finding(WARN, "last sweep", f"began {_ago(age)} ago, more than "
+                       f"{STALE_SWEEPS} intervals of {every}. The bot warns of the same in "
+                       "/diayn debug; the process's log says why.")
+    return Finding(OK, "last sweep", f"began {_ago(age)} ago; one is due every {every}.")
+
+
+def sweeper(poller, path: str) -> Finding:
+    """Whether a `run` or a `watch` holds the sweeper lock. Taken for an instant, and
+    only when nothing holds it; a lock file that is not there is not made."""
+    lock = poller.lock_path(path)
+    idle = f"so nothing is sweeping. `{hints.command('run')}` runs the bot and its sweeps."
+    if not os.path.exists(lock):
+        return Finding(WARN, "sweeper", f"there is no {lock} yet, {idle}")
+    try:
+        with poller.sweeper_lock(path):
+            pass
+    except poller.LockHeld:
+        return Finding(OK, "sweeper", "a `run` or a `watch` holds the lock, so postings.db "
+                       "is being swept.")
+    except (OSError, poller.DatabaseRefused) as error:
+        return Finding(FAIL, "sweeper", f"{lock}: {type(error).__name__}: {error}")
+    return Finding(WARN, "sweeper", f"nothing holds {lock}, {idle}")
+
+
+def database_findings(poller, path: str, now: float) -> list:
+    """postings.db, its last sweep and its sweeper. Nothing is made: a missing file is
+    only reported."""
+    if not os.path.exists(path):
+        return [_refused(f"{path} does not exist. `{hints.command('setup')}` makes one, with "
+                         "a first sweep that records every open posting as seen.")]
+    ledger = read_ledger(poller, path)
+    if isinstance(ledger, Finding):
+        return [ledger]
+    held = (_empty(path) if not ledger.seen
+            else Finding(OK, "postings.db", f"{path}, with {ledger.seen} postings seen."))
+    return [held, last_sweep(ledger, now), sweeper(poller, path)]
+
+
+def contact(settings) -> Finding:
+    if settings.contact:
+        return Finding(OK, "POLL_CONTACT", f"{settings.contact}, in the User-Agent every job "
+                       "board sees.")
+    return Finding(WARN, "POLL_CONTACT", "not set. It goes in the User-Agent every job board "
+                   "sees, so a board's owner can reach whoever runs this rather than block "
+                   "it. Use a project URL or a role mailbox, never a personal address.")
+
+
+def gemini(settings) -> Finding:
+    if settings.gemini_key:
+        return Finding(OK, "GEMINI_API_KEY", "set. Before an alert, Gemini checks each match "
+                       "for everyone who has not turned the check off, up to "
+                       f"FIT_RPD={settings.fit_rpd} requests a day; that budget and --llm's "
+                       "together must fit the key's quota.")
+    return Finding(NOTE, "GEMINI_API_KEY", "not set, which is fine: it is optional. With a "
+                   "key, Gemini checks each match before an alert is sent, leaves out the "
+                   "ones that do not suit the person and says why for the rest. Without one, "
+                   "alerts carry the rule-based matches unchecked. The README's Gemini "
+                   "section says what it sends.")
+
+
+def _settings_finding(poller, env_file) -> Finding:
+    if env_file:
+        return Finding(OK, "settings", f"from {env_file}.")
+    return Finding(OK, "settings", "from the environment alone, since there is no "
+                   f"{poller.env_file_path()}.")
+
+
+def _verdict(findings: list) -> int:
+    failed = sum(f.failed for f in findings)
+    warned = sum(f.level == WARN for f in findings)
+    warnings = f", {warned} warning{'' if warned == 1 else 's'}" if warned else ""
+    print(f"\ndoctor: {failed} to fix{warnings}." if failed
+          else f"\ndoctor: nothing to fix{warnings}.")
+    return FAILED_EXIT if failed else 0
+
+
+def cmd_doctor(poller, argv, fetch_application=None, now=None) -> int:
+    """
+    `doctor`: every check, each reported as it is made; returns 1 when anything is to fix
+    and 0 otherwise. `fetch_application` stands in for discord_portal's and `now` for the
+    clock, for the tests.
+    """
+    argparse.ArgumentParser(
+        prog="diayn.py doctor",
+        description="Check this host: the dependencies, the token and intent, the data "
+                    "directory, postings.db, the sweeper, and the settings. "
+                    "Changes nothing.").parse_args(argv)
+    findings = []
+
+    def check(*found):
+        for finding in found:
+            report(finding)
+            findings.append(finding)
+
+    check(python_version(), platform_support(), *dependencies())
+    try:
+        env_file = poller.boot()
+    except poller.ConfigError as error:
+        check(Finding(FAIL, "settings", str(error)))
+        return _verdict(findings)
+    settings = poller.SETTINGS
+    check(_settings_finding(poller, env_file))
+    check(*env_file_finding(env_file))
+    check(*discord_findings(poller, settings, fetch_application)[0])
+    check(data_directory(settings.data_dir))
+    check(*database_findings(poller, settings.postings_db, time.time() if now is None else now))
+    check(contact(settings), gemini(settings))
+    return _verdict(findings)

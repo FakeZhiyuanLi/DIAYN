@@ -216,3 +216,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── DIAYN runtime data: never commit any of it ──────────────────────────────
+# postings.db holds every posting the job boards return; SQLite writes its
+# sidecars and the sweeper's lock beside it. boards.json and yc_cache.json are
+# rewritten wholesale by `discover` and belong to the data directory, not git.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.lock
+data/
+boards.json
+yc_cache.json
+.env.*

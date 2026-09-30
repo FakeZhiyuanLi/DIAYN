@@ -1,0 +1,153 @@
+# DIAYN's CI: the suite on the oldest and the newest Python it supports, with
+# everything installed, with the scraper's dependencies only, and without
+# aiohttp; and guards for what a public repository must never hold.
+#
+# Hardened on purpose. It runs on push and pull_request only, never
+# pull_request_target, which would run a fork's code with this repository's
+# token. The token is read-only, no secret is used, and every action is pinned
+# to a full commit SHA, because a tag can be moved to other code after review.
+# To check a pin: git ls-remote https://github.com/actions/checkout refs/tags/v4.2.2
+#
+# gitleaks is pinned the same way: a version, and the sha256 of its release
+# tarball, checked before the binary is unpacked. To move the pin, take the new
+# checksum from the release's gitleaks_<version>_checksums.txt and confirm it
+# against the digest GitHub shows for the asset.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }}, ${{ matrix.deps }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+        # full: all of requirements.txt, as the bot and the scraper run.
+        # scraper: aiohttp and python-dotenv only, so the tests that need
+        #   discord.py skip, as on a box that runs the scraper alone.
+        # no-aiohttp: python-dotenv only, so the suite runs on
+        #   tests/aiohttp_stub.py, as under a bare python3.
+        deps: [full, scraper, no-aiohttp]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install requirements (${{ matrix.deps }})
+        env:
+          DEPS: ${{ matrix.deps }}
+        run: |
+          # The partial legs name what they install, with the pins taken from
+          # requirements.txt. Leaving aiohttp out of the file instead would not
+          # work: discord.py depends on aiohttp and would bring it back.
+          wanted="$RUNNER_TEMP/requirements.txt"
+          case "$DEPS" in
+            full) cp requirements.txt "$wanted" ;;
+            scraper) grep -E '^(aiohttp|python-dotenv)==' requirements.txt > "$wanted" ;;
+            no-aiohttp) grep -E '^python-dotenv==' requirements.txt > "$wanted" ;;
+            *) echo "::error::unknown leg $DEPS"; exit 1 ;;
+          esac
+          python -m pip install -r "$wanted"
+      - name: Check the ${{ matrix.deps }} leg has exactly its modules
+        env:
+          DEPS: ${{ matrix.deps }}
+        run: |
+          python - <<'PY'
+          import importlib.util, os, sys
+          leg = os.environ["DEPS"]
+          expected = {"full": {"aiohttp", "discord", "dotenv", "pypdf"},
+                      "scraper": {"aiohttp", "dotenv"},
+                      "no-aiohttp": {"dotenv"}}[leg]
+          present = {m for m in ("aiohttp", "discord", "dotenv", "pypdf")
+                     if importlib.util.find_spec(m) is not None}
+          if present != expected:
+              sys.exit(f"{leg} leg has {sorted(present)}, expected {sorted(expected)}")
+          PY
+      - name: Compile
+        run: |
+          # nullglob: a directory with no module yet adds nothing, rather than
+          # a literal "bot/*.py" that py_compile cannot open.
+          shopt -s nullglob
+          python -m py_compile *.py tests/*.py bot/*.py tests/bot/*.py
+      - name: Tests
+        # tests/bot/ is a package, so this reaches it; tests/test_layout.py
+        # fails if it does not.
+        run: python -m unittest discover -s tests -v
+
+  guards:
+    name: Nothing private in the tree or the history
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # The whole history. At the default depth of 1 there is one commit,
+          # so one root, and the history guard below would pass on anything.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: No runtime data or secrets are tracked
+        run: |
+          # postings.db with its sidecars and lock, any .env, the data
+          # directory, and the two files `discover` writes. tests/test_docs.py
+          # checks this pattern against sample paths.
+          tracked=$(git ls-files | grep -E '\.db($|-|\.lock)|(^|/)\.env($|\.)|boards\.json|yc_cache\.json|^data/' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::runtime data or a secret is tracked:"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi
+      - name: No secrets in the tree or the history (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          # gitleaks_8.30.1_linux_x64.tar.gz, from the release's checksums file,
+          # matching the digest GitHub reports for the asset.
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" version
+          # Every commit on every ref: the checkout above fetched the whole
+          # history. .gitleaks.toml keeps every default rule and passes only the
+          # tests' marked fakes. --redact keeps a real finding out of the log.
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner --verbose .
+      - name: The history has only its known roots
+        env:
+          # The commit GitHub made with the repository: .gitignore, LICENSE
+          # and a one-line README, nothing from BaronChairStair.
+          ROOT_REPO_CREATED: acc1d1dffc64553714cc73cad6633828a814f84e
+          # The scraper's single root: its import from BaronChairStair 9f00cd5,
+          # where the audited history begins.
+          ROOT_SCRAPER_IMPORT: 210ac1414027d86299923852a584b65ed9cc41b0
+        run: |
+          # Any other root is history merged in from somewhere else, and could
+          # carry what BaronChairStair's history rewrite removed. Changing this
+          # list is a decision about history, and the owner's to make.
+          actual=$(git rev-list --all --max-parents=0 | sort)
+          expected=$(printf '%s\n' "$ROOT_REPO_CREATED" "$ROOT_SCRAPER_IMPORT" | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::unexpected history roots:"
+            printf '%s\n' "$actual"
+            exit 1
+          fi
+      - name: A release tag matches __version__
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' internship_poller.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but internship_poller.py says $version"
+            exit 1
+          fi

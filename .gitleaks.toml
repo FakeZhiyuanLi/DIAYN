@@ -1,0 +1,20 @@
+# What CI's gitleaks step scans the whole history with: every default rule of
+# the pinned gitleaks release, and one allowlist.
+#
+# The allowlist passes only the fake secrets the tests use, each of which says
+# so in its own value ("not-a-real-token", "test-key-not-real"). Its regexes see
+# the extracted secret alone, never the line or the path, so a real key beside a
+# fake one is still found. tests/test_docs.py holds it to that: every fake
+# value passes, and values that only come near the marker do not.
+
+title = "DIAYN"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake secrets in the tests, marked as fake in their own values"
+regexes = [
+  '''not-a-real-''',
+  '''-not-real$''',
+]

@@ -1,0 +1,43 @@
+{
+  "about": [
+    "Contract v1 (B7): the company-name key and the blocklist rule, pinned so the scraper and the bot agree.",
+    "norm: the scraper's _norm(input) and the bot's company_norm(input) must both return `norm`. Lower case, then only a-z and 0-9 survive; null is the empty string.",
+    "prefix: with `blocked_companies` as the blocklist, every name in `blocked` is blocked and every name in `allowed` is not. A name is blocked when its norm STARTS WITH the norm of a listed company. A listed company whose norm is empty blocks nothing: the empty string is a prefix of everything.",
+    "The cases come from DIAYN's tests/test_internship_blocklist.py. The bot vendors this file into client/fixtures/ with a header naming the DIAYN tag it came from."
+  ],
+  "norm": [
+    {"input": "Rocket Lab", "norm": "rocketlab"},
+    {"input": "  Rocket  Lab  ", "norm": "rocketlab"},
+    {"input": "ROCKET LAB", "norm": "rocketlab"},
+    {"input": "Rocket-Lab", "norm": "rocketlab"},
+    {"input": "Rocket Lab USA, Inc.", "norm": "rocketlabusainc"},
+    {"input": "rocketlab/wd1/RocketLab_Careers", "norm": "rocketlabwd1rocketlabcareers"},
+    {"input": "AT&T", "norm": "att"},
+    {"input": "3M", "norm": "3m"},
+    {"input": "Two Sigma", "norm": "twosigma"},
+    {"input": "Café Zoë", "norm": "cafzo"},
+    {"input": "---", "norm": ""},
+    {"input": "", "norm": ""},
+    {"input": null, "norm": ""}
+  ],
+  "prefix": [
+    {
+      "blocked_companies": ["Rocket Lab"],
+      "blocked": [
+        "Rocket Lab", "rocket lab", "ROCKET LAB", "Rocket-Lab", "RocketLab",
+        "  Rocket  Lab  ", "Rocket Lab USA", "Rocket Lab USA, Inc.",
+        "rocketlabusa", "rocketlabinc", "rocket-lab-usa",
+        "rocketlab/wd1/RocketLab_Careers", "Rocket Lab Adjacent Inc"
+      ],
+      "allowed": [
+        "SpaceX", "Astranis", "Astro Rocket Labs", "Not Rocket Lab",
+        "Mini-Rocket Lab", "Rocket", "", null
+      ]
+    },
+    {
+      "blocked_companies": ["", "---", "Rocket Lab"],
+      "blocked": ["Rocket Lab USA"],
+      "allowed": ["SpaceX", "Astranis", "", null]
+    }
+  ]
+}
