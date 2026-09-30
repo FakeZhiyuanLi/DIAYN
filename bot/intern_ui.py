@@ -55,6 +55,7 @@ from discord import app_commands
 import access
 import intern_clock
 import intern_delivery
+import intern_fit
 import intern_match
 import intern_store
 import intern_text
@@ -529,6 +530,7 @@ async def send_dm(user_id: int, msg: intern_delivery.DmMessage) -> None:
 async def show_start(interaction, *, extra: str | None = None) -> None:
     """The start card (J1) with its two buttons; `extra` is appended (J9)."""
     import intern_upload           # lazily: intern_upload imports this module
-    text = intern_text.start_card(pdf_ok=resume_parse.pdf_supported())
+    text = intern_text.start_card(pdf_ok=resume_parse.pdf_supported(),
+                                  gemini=intern_fit.available())
     await refuse(interaction, f"{text}\n\n{extra}" if extra else text,
                  view=intern_upload.StartView(interaction.user.id))

@@ -185,20 +185,47 @@ _FORMATS = {
            "can install `pypdf`), so upload the .docx or paste the text."}
 
 
+#: The Gemini fit check (intern_fit), shown beside the disclosure wherever the host has a
+#: key: exactly what is sent, what never is, and the way to turn it off.
+_FIT_NOTE = (
+    "**Gemini checks your alerts**\n"
+    "- Before an alert is sent, this bot asks Google's Gemini whether each role suits you. It "
+    "sends your profile's labels (majors, minors, degree, graduation date, kinds of role, fields, "
+    "skills, keywords, places and terms) and each role's title, company, location and term. "
+    "Google's terms for the Gemini API cover what it receives.\n"
+    "- Never your resume, name, Discord id or contact details. Its answers are kept for 45 days "
+    "under a fingerprint of those labels, not under your name or id.\n"
+    "- To stop it, pick **Turn the Gemini check off** in the Alerts menu of your profile card.")
+
+
 def disclosure_text() -> str:
+    """What happens to a resume. The fit check's note is its own (`fit_note`)."""
     return _DISCLOSURE
 
 
-def start_card(*, pdf_ok: bool) -> str:
+def fit_note() -> str:
+    return _FIT_NOTE
+
+
+def _disclosed(gemini: bool) -> str:
+    return f"{_DISCLOSURE}\n\n{_FIT_NOTE}" if gemini else _DISCLOSURE
+
+
+def consent_screen(*, gemini: bool = False) -> str:
+    """The disclosure before an upload, with the fit check's note when the host has a key."""
+    return _disclosed(gemini)
+
+
+def start_card(*, pdf_ok: bool, gemini: bool = False) -> str:
     return ("**Find internships that fit you**\n"
             "I'll DM you internships, co-ops and new-grad roles that fit *your* major, not just CS, "
             "with a line on why each one matched. It takes about a minute.\n\n"
-            f"{_DISCLOSURE}\n\n{_FORMATS[bool(pdf_ok)]}\n"
+            f"{_disclosed(gemini)}\n\n{_FORMATS[bool(pdf_ok)]}\n"
             "Just browsing? `/internships recent` needs no profile.")
 
 
-def consent_text(filename: str) -> str:
-    return f"**Before I read `{safe_filename(filename)}`**\n{_DISCLOSURE}"
+def consent_text(filename: str, *, gemini: bool = False) -> str:
+    return f"**Before I read `{safe_filename(filename)}`**\n{_disclosed(gemini)}"
 
 
 def upload_modal_note() -> str:
@@ -320,13 +347,16 @@ def _studying(p: Profile) -> str:
     return " · ".join(part for part in (head, tail) if part)
 
 
-def _alerts(p: Profile) -> str:
+def _alerts(p: Profile, gemini: bool) -> str:
+    """The card's Alerts line. With a host key (`gemini`), whether Gemini checks them."""
     try:
         label = vocab.alert_choice_label(p.alerts, p.alert_hour, zone=intern_clock.zone_label())
     except ValueError:
         label = str(p.alerts)
+    checked = ("checked by Gemini" if p.fit_check else "not checked by Gemini") \
+        if gemini and p.alerts != "off" else ""
     parts = [label, _MIN_SCORE_WORDS.get(p.min_score, "") if p.alerts != "off" else "",
-             f"paused until {_month_day(p.paused_until)}" if p.paused_until else ""]
+             f"paused until {_month_day(p.paused_until)}" if p.paused_until else "", checked]
     return " · ".join(part for part in parts if part)
 
 
@@ -364,7 +394,8 @@ def _coverage_lines(p: Profile, coverage: Coverage | None) -> tuple[list[str], l
     return [f"**Last 30 days:** {head}"], notes
 
 
-def _render_card(p: Profile, lists: dict, shown: Mapping[str, int], top: list, bottom: list) -> str:
+def _render_card(p: Profile, lists: dict, shown: Mapping[str, int], top: list, bottom: list,
+                 gemini: bool) -> str:
     def items(name: str) -> str:
         _, values, sep = lists[name]
         return _capped(values, shown[name], sep)
@@ -374,7 +405,8 @@ def _render_card(p: Profile, lists: dict, shown: Mapping[str, int], top: list, b
             f"**Graduating:** {_month_year(p.grad_year, p.grad_month)}" if p.grad_year else None,
             *(f"**{lists[n][0]}:** {items(n)}" for n in ("skills", "keywords", "fields", "levels",
                                                            "where", "terms") if lists[n][1]),
-            f"**Companies:** {companies}" if companies else None, f"**Alerts:** {_alerts(p)}"]
+            f"**Companies:** {companies}" if companies else None,
+            f"**Alerts:** {_alerts(p, gemini)}"]
     return "\n".join(part for part in (*top, *body, *bottom) if part)
 
 
@@ -389,10 +421,11 @@ def _shrunk(lists: dict, shown: Mapping[str, int], floor: int) -> dict[str, int]
 
 def card_text(p: Profile, *, mode: str, coverage: Coverage | None, feedback: str | None = None,
               evidence: str | None = None, header: str | None = None, notices: Sequence[str] = (),
-              companies: Mapping[str, str] | None = None) -> str:
+              companies: Mapping[str, str] | None = None, gemini: bool = False) -> str:
     """J3, one renderer for a draft and a saved profile. <= CARD_MAX: lists shorten with "(+N more)"
     down to three items, then notices go from the end, then lists go down to one. `companies`
-    (norm -> display name) names filtered companies; without it the stored normalised names show."""
+    (norm -> display name) names filtered companies; without it the stored normalised names show.
+    `gemini`: the host has a key, so the Alerts line says whether Gemini checks them."""
     if mode not in ("draft", "saved"):
         raise ValueError(f"unknown card mode {mode!r}")
     lists = _card_lists(p, companies)
@@ -402,7 +435,7 @@ def card_text(p: Profile, *, mode: str, coverage: Coverage | None, feedback: str
     top = [feedback, dm_blocked_banner() if p.dm_failures >= 3 else None, header,
            f"*{evidence}*" if evidence else None]
     while True:
-        card = _render_card(p, lists, shown, top, [*last30, *notes])
+        card = _render_card(p, lists, shown, top, [*last30, *notes], gemini)
         if len(card) <= CARD_MAX:
             return card
         fewer = _shrunk(lists, shown, _LIST_FLOOR)
@@ -550,7 +583,9 @@ def migrated_intro() -> str:
             "here, and I copied your filters, so you still get the tech internships you signed up "
             "for. I also match roles to *your* major now, for any major. `/internships profile` "
             "tailors it to you; `/internships ping` turns these DMs off; `/internships delete` "
-            "erases what I hold.")
+            "erases what I hold. Before an alert I may ask Google's Gemini whether a role suits "
+            "your filters, never your name or Discord id; **Turn the Gemini check off** in your "
+            "profile card's Alerts menu stops that.")
 
 
 def _alert_text(total: int, blocks: list[str], *, cadence: str, intro: bool, catch_up: bool,
@@ -758,8 +793,9 @@ def ping_reply(p: Profile, *, action: str, now: float | None = None) -> str:
     return f"{'Alerts are on:' if action == 'on' else 'Alerts:'} {schedule}.{resume}"
 
 
-def help_text(*, pdf_ok: bool, companies: int) -> list[str]:
-    """Two chunks: what the commands do, then the disclosure and whether PDFs can be read."""
+def help_text(*, pdf_ok: bool, companies: int, gemini: bool = False) -> list[str]:
+    """Two chunks: what the commands do, then the disclosure (with the fit check's note when
+    the host has a key) and whether PDFs can be read."""
     commands = (
         "**Internship finder**\n"
         "It matches internships, co-ops and new-grad roles to *your* major, for any major, and DMs you "
@@ -778,7 +814,7 @@ def help_text(*, pdf_ok: bool, companies: int) -> list[str]:
         "be on for alerts to reach you.")
     status = "PDF reading: available." if pdf_ok else \
         "PDF reading: not installed on this bot; Word, .txt and pasting work."
-    return [commands, f"{_DISCLOSURE}\n\n{status}"]
+    return [commands, f"{_disclosed(gemini)}\n\n{status}"]
 
 
 def unknown_choice(kind: str, value: str) -> str:

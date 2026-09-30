@@ -39,6 +39,14 @@ from intern_profile import Profile, can_save, with_changes
 
 _DAY_S = 86400
 _STATE = "st:"
+#: The Alerts menu's two extra values, which turn the Gemini fit check off and on. The
+#: card has no row left for a button of its own (four selects and five buttons).
+FIT_OFF, FIT_ON = "fit:off", "fit:on"
+_FIT_OPTIONS = {
+    True: (FIT_OFF, "Turn the Gemini check off",
+           "Alerts go out as the matcher ranks them, without Gemini's reasons"),
+    False: (FIT_ON, "Turn the Gemini check on",
+            "Gemini checks each role against your profile's labels before it's sent")}
 _PROBLEMS_SHOWN = 3                 # modal problem sentences on a card's feedback line
 _DELETE_TIMEOUT_S = 300
 _FIRST_DAYS = intern_text.FIRST_MATCH_DAYS
@@ -54,7 +62,8 @@ async def _coverage(p: Profile):
 
 
 def _card(p: Profile, coverage, **text: object) -> str:
-    return intern_text.card_text(p, coverage=coverage, companies=intern_ui.known_companies(), **text)
+    return intern_text.card_text(p, coverage=coverage, companies=intern_ui.known_companies(),
+                                 gemini=intern_fit.available(), **text)
 
 
 async def _edit(interaction, content: str, view: discord.ui.View | None) -> None:
@@ -277,10 +286,20 @@ def _alert_pairs(p: Profile | None) -> tuple[list[tuple[str, str]], str | None]:
     return pairs, current
 
 
+def _fit_option(p: Profile | None) -> list[discord.SelectOption]:
+    """The Alerts menu's way to turn the fit check off, or back on: for a profile, where the
+    host has a key. Never preselected, so picking it is an action, like a button."""
+    if p is None or not intern_fit.available():
+        return []
+    value, label, description = _FIT_OPTIONS[bool(p.fit_check)]
+    return [discord.SelectOption(label=label, value=value, description=description)]
+
+
 def _card_select(kind: int, p: Profile | None, *, fields_min: int,
                  custom_id: str = discord.utils.MISSING) -> discord.ui.Select:
     """Card row `kind` + 1: fields, levels, where or alerts, current values preselected.
-    st:XX tokens are never Where options: they are edited in More filters."""
+    st:XX tokens are never Where options: they are edited in More filters. The Alerts menu
+    also turns the Gemini fit check off or on (`_fit_option`)."""
     fields, levels = (p.fields, p.levels) if p else ((), ())
     presets = tuple(t for t in p.locations if not t.startswith(_STATE)) if p else ()
     alert_pairs, alert = _alert_pairs(p)
@@ -289,7 +308,7 @@ def _card_select(kind: int, p: Profile | None, *, fields_min: int,
          max(vocab.MAX_FIELDS, len(fields))),
         ("Looking for", intern_ui.select_options(vocab.LEVELS, levels), 1, len(vocab.LEVELS)),
         ("Where", intern_ui.select_options(vocab.LOCATION_PRESETS, presets), 1, len(vocab.LOCATION_PRESETS)),
-        ("Alerts", intern_ui.select_options(alert_pairs, (alert,)), 1, 1))[kind]
+        ("Alerts", intern_ui.select_options(alert_pairs, (alert,)) + _fit_option(p), 1, 1))[kind]
     return discord.ui.Select(custom_id=custom_id, placeholder=placeholder, options=options,
                              min_values=low, max_values=high, row=kind)
 
@@ -297,7 +316,10 @@ def _card_select(kind: int, p: Profile | None, *, fields_min: int,
 def _select_changes(p: Profile, kind: int, values: list[str]) -> dict[str, object] | None:
     """What one of the four selects asks for, as with_changes keywords (None: nothing valid)."""
     if kind == 3:
-        choice = vocab.parse_alert_choice(next(iter(values), ""))
+        picked = next(iter(values), "")
+        if picked in (FIT_OFF, FIT_ON):
+            return {"fit_check": picked == FIT_ON}
+        choice = vocab.parse_alert_choice(picked)
         if choice is None:
             return None
         # Off carries no hour of its own: keep the stored one for when alerts come back.

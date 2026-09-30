@@ -151,6 +151,43 @@ class Disclosure(unittest.TestCase):
                          "**Before I read `cv\\_final.pdf`**\n" + text.disclosure_text())
 
 
+class TheFitCheckNote(unittest.TestCase):
+    """Plan 3.5: where the host has a key, the consent screen says exactly what Gemini is sent."""
+
+    def test_it_names_every_label_and_every_posting_field_sent(self):
+        note = text.fit_note()
+        for sent in ("majors", "minors", "degree", "graduation date", "kinds of role", "fields",
+                     "skills", "keywords", "places", "terms", "title, company, location and term"):
+            with self.subTest(sent=sent):
+                self.assertIn(sent, note)
+        self.assertIn("Google's Gemini", note)
+        self.assertIn("Never your resume, name, Discord id or contact details", note)
+        self.assertIn("kept for 45 days", note)
+        self.assertIn("**Turn the Gemini check off**", note)
+
+    def test_it_joins_the_start_card_the_consent_screen_and_help_only_with_a_key(self):
+        note = text.fit_note()
+        self.assertIn(note, text.start_card(pdf_ok=True, gemini=True))
+        self.assertNotIn(note, text.start_card(pdf_ok=True))
+        self.assertEqual(text.consent_screen(gemini=True), f"{text.disclosure_text()}\n\n{note}")
+        self.assertEqual(text.consent_screen(gemini=False), text.disclosure_text())
+        self.assertEqual(text.consent_text("cv.pdf", gemini=True),
+                         f"**Before I read `cv.pdf`**\n{text.disclosure_text()}\n\n{note}")
+        self.assertIn(note, text.help_text(pdf_ok=True, companies=412, gemini=True)[1])
+        self.assertNotIn(note, text.help_text(pdf_ok=True, companies=412)[1])
+
+    def test_every_screen_it_joins_still_fits_one_message(self):
+        for screen in (text.start_card(pdf_ok=False, gemini=True),
+                       text.consent_text("x" * 80 + ".pdf", gemini=True),
+                       *text.help_text(pdf_ok=False, companies=412, gemini=True)):
+            with self.subTest(screen=screen[:30]):
+                self.assertLessEqual(len(screen), text.ALERT_MAX)
+
+    def test_the_resume_promise_is_unchanged(self):
+        # The resume is still never sent to an AI service: the note is about labels.
+        self.assertIn("not sent to any AI service", text.consent_screen(gemini=True))
+
+
 class UploadErrors(unittest.TestCase):
     def test_every_reason_has_copy(self):
         for reason in resume_parse.REASONS:
@@ -210,6 +247,26 @@ class Card(unittest.TestCase):
         self.assertIn("**Companies:** only Boeing, SpaceX · hiding CVS Health", card)
         self.assertIn("**Alerts:** Daily at 9am Los Angeles time · good and strong matches", card)
         self.assertIn("**Last 30 days:** 9 roles fit this (3 strong).", card)
+
+    def test_the_alerts_line_says_whether_gemini_checks_them_where_it_can(self):
+        on, off = person(), person(fit_check=False)
+
+        self.assertIn("**Alerts:** Daily at 9am Los Angeles time · good and strong matches · "
+                      "checked by Gemini",
+                      text.card_text(on, mode="saved", coverage=None, gemini=True))
+        self.assertIn("· not checked by Gemini",
+                      text.card_text(off, mode="saved", coverage=None, gemini=True))
+        for p in (on, off, person(alerts="off")):
+            with self.subTest(p=p.fit_check):
+                self.assertNotIn("Gemini", text.card_text(p, mode="saved", coverage=None))
+        self.assertNotIn("Gemini", text.card_text(person(alerts="off"), mode="saved",
+                                                  coverage=None, gemini=True))
+
+    def test_the_worst_case_card_still_fits_with_the_gemini_words(self):
+        card = text.card_text(worst_profile(), mode="saved", coverage=self.COVERAGE,
+                              gemini=True, notices=("N" * 200,) * 3)
+        self.assertLessEqual(len(card), text.CARD_MAX)
+        self.assertIn("checked by Gemini", card)
 
     def test_coverage_notices(self):
         p = person(fields=("pharmacy",), locations=("oc", "unlisted"), dm_failures=3)
@@ -520,6 +577,14 @@ class NoClubWording(unittest.TestCase):
         self.assertIn("I copied your filters", intro)
         for command in ("/internships profile", "/internships ping", "/internships delete"):
             self.assertIn(command, intro)
+
+    def test_the_migrated_intro_says_gemini_may_check_their_alerts(self):
+        # They never saw the consent screen, and the check is on unless they turn it off.
+        intro = text.migrated_intro()
+
+        self.assertIn("Google's Gemini", intro)
+        self.assertIn("never your name or Discord id", intro)
+        self.assertIn("**Turn the Gemini check off**", intro)
 
     def test_the_old_tracker_s_button_reply_is_gone(self):
         # A button answers to the bot that posted it, so DIAYN can never be

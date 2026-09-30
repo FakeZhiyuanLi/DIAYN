@@ -838,6 +838,107 @@ class AlertPromisesAreKept(unittest.TestCase):
 
 
 @needs_discord
+class TheCardTurnsTheFitCheckOnAndOff(unittest.TestCase):
+    """Plan 3.5: a "Gemini check" setting on the profile card. The card has no row left for
+    a button, so the Alerts menu carries it, where the host has a key."""
+
+    def setUp(self):
+        import intern_views
+        self.views = intern_views
+        self.keyed = poller.configure({"GEMINI_API_KEY": "test-key-not-real"})
+        patch = mock.patch.object(poller, "SETTINGS", self.keyed)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def profile(self, **changes):
+        base = intern_profile.new_profile(7, 1.0, source="manual", cursor=0.0)
+        return dataclasses.replace(base, fields=("software",), **changes)
+
+    def options(self, p):
+        async def build():
+            return self.views._card_select(3, p, fields_min=1)
+        return {o.value: o for o in asyncio.run(build()).options}
+
+    def test_the_alerts_menu_offers_the_opposite_of_the_current_setting(self):
+        on, off = self.options(self.profile()), self.options(self.profile(fit_check=False))
+
+        self.assertEqual(on["fit:off"].label, "Turn the Gemini check off")
+        self.assertNotIn("fit:on", on)
+        self.assertEqual(off["fit:on"].label, "Turn the Gemini check on")
+        self.assertNotIn("fit:off", off)
+        for option in (on["fit:off"], off["fit:on"]):
+            self.assertFalse(option.default)
+            self.assertLessEqual(len(option.description or ""), 100)
+
+    def test_without_a_key_there_is_nothing_to_turn_on_or_off(self):
+        with mock.patch.object(poller, "SETTINGS", poller.configure({})):
+            values = set(self.options(self.profile()))
+        self.assertFalse(values & {"fit:on", "fit:off"})
+
+    def test_the_draft_card_offers_it_too(self):
+        async def build():
+            return self.views.DraftCardView(self.profile(), evidence=None, replacing=None)
+        view = asyncio.run(build())
+        values = {o.value for item in view.children for o in getattr(item, "options", [])}
+        self.assertIn("fit:off", values)
+
+    def test_picking_it_changes_only_the_setting(self):
+        p = self.profile(alerts="daily", alert_hour=17)
+        self.assertEqual(self.views._select_changes(p, 3, ["fit:off"]), {"fit_check": False})
+        self.assertEqual(self.views._select_changes(p, 3, ["fit:on"]), {"fit_check": True})
+
+    def test_the_saved_card_stores_it_and_leaves_the_alerts_alone(self):
+        p, stored, set_alerts = self.profile(alerts="weekly", alert_hour=17), [], mock.Mock()
+
+        async def yes(*args, **kwargs):
+            return True
+
+        async def current(*args, **kwargs):
+            return p
+
+        async def nothing(*args, **kwargs):
+            return None
+
+        async def render(interaction, before, changed, problems=()):
+            stored.append(changed)
+
+        with mock.patch.object(intern_ui, "need_access", yes), \
+                mock.patch.object(intern_ui, "profile_for", current), \
+                mock.patch.object(intern_ui, "defer_update", nothing), \
+                mock.patch.object(self.views, "_store_and_render", render), \
+                mock.patch.object(self.views.intern_store, "set_alerts", set_alerts):
+            asyncio.run(self.views._edit_saved(fake_interaction(), 3, ["fit:off"]))
+
+        (changed,) = stored
+        self.assertFalse(changed.fit_check)
+        self.assertEqual((changed.alerts, changed.alert_hour), ("weekly", 17))
+        set_alerts.assert_not_called()
+
+
+class TheConsentScreenNamesWhatGeminiIsSent(unittest.TestCase):
+    """Wherever the finder shows its disclosure, it asks whether the host has a key."""
+
+    def test_every_disclosure_screen_passes_whether_the_host_has_a_key(self):
+        wanted = {"start_card": "intern_ui.py", "consent_text": "intern_upload.py",
+                  "consent_screen": "intern_upload.py", "help_text": "intern_commands.py"}
+        for function, name in wanted.items():
+            calls = [n for n in ast.walk(tree(name)) if isinstance(n, ast.Call)
+                     and chain(n.func) == f"intern_text.{function}"]
+            with self.subTest(function=function):
+                self.assertTrue(calls)
+                for call in calls:
+                    (gemini,) = [k.value for k in call.keywords if k.arg == "gemini"]
+                    self.assertEqual(ast.unparse(gemini), "intern_fit.available()")
+
+    def test_the_bare_disclosure_is_never_sent_as_the_consent_screen(self):
+        for name in SURFACE:
+            calls = [n for n in ast.walk(tree(name)) if isinstance(n, ast.Call)
+                     and chain(n.func) == "intern_text.disclosure_text"]
+            with self.subTest(file=name):
+                self.assertEqual(calls, [])
+
+
+@needs_discord
 class TheCardsAlertHoursNameTheZone(unittest.TestCase):
     """Alert hours are kept in DIAYN_TZ, so every hour the card offers names it."""
 

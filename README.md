@@ -245,9 +245,38 @@ Prints the `.env` used and every setting a run would use, by variable name.
 The Gemini key and the Discord token are shown only as set or not set, and the
 owners' ids only as a count.
 
-## Gemini (`--llm`)
+## Gemini
 
-Optional. With `GEMINI_API_KEY` set, `--llm` classifies newly seen postings by
+Optional: without `GEMINI_API_KEY`, nothing is sent to Gemini and everything
+below still works. With it, the key is used in two ways, each with a budget of
+its own, and the two budgets together must fit the key's quota on your AI
+Studio dashboard. Both send their requests through `llm.py`, share
+`GEMINI_MODEL`, `GEMINI_MAX_ATTEMPTS` and `GEMINI_HTTP_TIMEOUT`, and count
+their day in `LLM_DAY_TZ`.
+
+### The fit check (the bot)
+
+Before an alert is sent, Gemini is asked whether each role the rule-based
+matcher picked suits that person, and answers `fit`, `unsure` or `no_fit`
+with a reason of at most 120 characters. A `no_fit` role is not sent, and the
+alerts move on past it all the same; `fit` roles come first, then `unsure`, and
+the DM shows each one's reason. At most `FIT_BATCH` roles go in one request (default 15),
+at most `FIT_RPD` requests a day (200) and `FIT_RPM` a minute (10). Verdicts
+are cached in `users.db` for 45 days, by a fingerprint of the profile's labels
+and the role, so a role is asked about once per profile and asked again after
+the profile changes. `/internships matches` shows the cached verdicts and never
+makes a request.
+
+The check never holds an alert back. Without a key, with the day's budget
+spent, on an API error or an answer that does not parse, the alert goes out
+with the rule-based matches unchecked and no reason lines. `/diayn debug` shows
+the day's requests and tokens and the class of the last failure. Each person
+can turn the check off from their profile card; it is on for everyone else.
+What it sends is listed under [Privacy](#privacy).
+
+### `--llm` (the scraper)
+
+With `GEMINI_API_KEY` set, `--llm` classifies newly seen postings by
 title with Gemini instead of the regular expressions, in batches of
 `GEMINI_BATCH`. A sweep sends only the postings it has never seen, which is what
 keeps a busy day inside a free-tier budget: tens of calls, not thousands. Verdicts are
@@ -280,7 +309,8 @@ inherits it:
 - **One sweeper, every 15 minutes.** The lock stops a second process from
   doubling the traffic, and a restarted `watch` waits for its turn.
 
-Gemini's API is the one exception: it has its own quota accounting.
+Gemini's API is the one exception: each of its two uses has a budget of its
+own (see [Gemini](#gemini)).
 
 ## Blocking a company: `BLOCKED_COMPANIES`
 
@@ -342,6 +372,18 @@ bot process never parses, stores or logs the resume's text; only the vocabulary
 the person confirms is kept. Whoever runs this bot can read what it stores.
 A profile is deleted after a year unused, and 30 days after its owner leaves
 every server the bot shares with them or loses access to the bot.
+
+**What the fit check sends to Google.** Only where the host has set
+`GEMINI_API_KEY`, and only for someone who has not turned the check off:
+before an alert, one request to Google's Gemini API holding that person's
+profile as labels (majors, minors, degree, graduation date, kinds of role,
+fields, skills, keywords, places and terms) and, for each role, its title,
+company, location and term. Never the resume or any of its text, a name, a
+Discord id, an email address or other contact details: the profile holds none
+of those. Google's terms for the Gemini API govern what it receives. The
+answers are kept in `users.db` for 45 days under a fingerprint of those labels,
+never under a person's id. The consent screen says the same, whenever the host
+has a key.
 
 ## Tests
 

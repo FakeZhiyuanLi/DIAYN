@@ -31,8 +31,9 @@ from resume_lexicon import (MAJOR_BY_ID, SKILL_BY_ID, fields_for, resolve_major_
 
 #: Bump when the disclosure (intern_text.disclosure_text) changes in a way that
 #: needs fresh consent: every profile below it sees the consent screen on its
-#: next upload (spec 2.4).
-DISCLOSURE_VERSION = 1
+#: next upload (spec 2.4). 2: the consent screen gained the Gemini fit check's
+#: note (intern_text.fit_note), which says what is sent to Google.
+DISCLOSURE_VERSION = 2
 
 SOURCES = ("resume", "pasted", "manual", "migrated")
 CADENCES = ("hourly", "daily", "weekly", "off")

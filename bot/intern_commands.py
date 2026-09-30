@@ -132,7 +132,8 @@ async def internships_delete(interaction: discord.Interaction) -> None:
 async def internships_help(interaction: discord.Interaction) -> None:
     intern_ui.touch(interaction.user.id)
     chunks = intern_text.help_text(pdf_ok=resume_parse.pdf_supported(),
-                                   companies=intern_ui.companies_watched())
+                                   companies=intern_ui.companies_watched(),
+                                   gemini=intern_fit.available())
     await intern_ui.refuse(interaction, chunks[0])
     for chunk in chunks[1:]:
         await intern_ui.private_send(interaction)(chunk)

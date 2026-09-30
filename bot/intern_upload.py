@@ -34,6 +34,7 @@ import aiohttp
 import discord
 
 import intern_delivery
+import intern_fit
 import intern_store
 import intern_text
 import intern_ui
@@ -119,7 +120,8 @@ async def open_upload_with_consent(interaction) -> None:
         await open_upload(interaction)
         return
     await interaction.response.send_message(
-        intern_text.disclosure_text(), ephemeral=True, allowed_mentions=intern_ui.NO_MENTIONS,
+        intern_text.consent_screen(gemini=intern_fit.available()), ephemeral=True,
+        allowed_mentions=intern_ui.NO_MENTIONS,
         view=ConsentView(interaction.user.id, None, "", then_modal=True))
 
 
@@ -150,7 +152,8 @@ async def begin_upload(interaction, attachment: discord.Attachment) -> None:
         return
     if not consented:
         await interaction.response.send_message(
-            intern_text.consent_text(attachment.filename), ephemeral=True,
+            intern_text.consent_text(attachment.filename, gemini=intern_fit.available()),
+            ephemeral=True,
             allowed_mentions=intern_ui.NO_MENTIONS, view=ConsentView(uid, attachment, kind))
         return
     await start_read(interaction, attachment, kind, source="resume")
