@@ -48,7 +48,9 @@ late regional copy of the same role (spec 4.6).
 `/internships delete` can land while `send_dm` is in flight. The profile is
 re-read immediately before every send, and every write after one goes through
 `intern_store`, whose delivery writes are UPDATEs or INSERT ... SELECTs that
-find nothing once the profile is gone. Each commits before the next await.
+find nothing once the profile is gone. Each commits before the next await. So
+can Pause, while the fit check or a send is awaited: a catch-up clears only the
+pause that has ended, never one pressed since (`intern_store.end_pause`).
 
 **One user's failure is theirs alone.** Each user runs in their own `try`. A
 refused DM is counted (three in a row stop the DMs until the user turns them
@@ -293,8 +295,9 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
             store.mark_fit_notice(db, uid, now)     # it has now been told: checked from here
     elif outcome == "forbidden" and catch_up:
         # The refusal moved the cursor past what the pause held back, so the catch-up is
-        # spent; left paused, the user would be due again on every five-minute tick.
-        store.set_paused_until(db, uid, None, now)
+        # spent; left paused, the user would be due again on every five-minute tick. A
+        # pause pressed while the DM was in flight is a new one, and stays.
+        store.end_pause(db, uid, now)
     return outcome
 
 

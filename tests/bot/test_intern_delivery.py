@@ -482,6 +482,66 @@ class Races(DeliveryTest):
         self.assertFalse(self.db.in_transaction)
 
 
+class APausePressedMidTickStands(DeliveryTest):
+    """A catch-up tick clears the pause that has ended. A new one, pressed while the tick
+    waits on the fit check or on Discord, is not that pause, and survives it."""
+
+    WEEK = MONDAY + 2 * HOUR + delivery.PAUSE_S
+
+    def catching_up(self):
+        self.enrol(ALICE, alerts="hourly", paused_until=MONDAY + HOUR)
+        self.post(posting("Software Engineer Intern", MONDAY + MINUTE))
+
+    def pause(self):
+        store.set_paused_until(self.db, ALICE, self.WEEK, MONDAY + 2 * HOUR)
+
+    def checked_tick(self, check_fit):
+        return asyncio.run(delivery.run_tick(
+            self.db, load_window=self.load_window, send_dm=self.outbox, now=MONDAY + 2 * HOUR,
+            companies_watched=COMPANIES, allowed=self.allowed, check_fit=check_fit))
+
+    def test_pressed_while_the_check_runs_and_nothing_fits(self):
+        self.catching_up()
+
+        async def pausing_then_nothing_fits(p, matches, now):
+            self.pause()
+            return []
+
+        report = self.checked_tick(pausing_then_nothing_fits)
+
+        self.assertEqual(report.empty, 1)
+        self.assertEqual(store.load(self.db, ALICE).paused_until, self.WEEK)
+
+    def test_pressed_while_the_digest_is_being_sent(self):
+        self.catching_up()
+        self.outbox.meanwhile[ALICE] = self.pause
+
+        report = self.tick(MONDAY + 2 * HOUR)
+
+        self.assertEqual(report.sent, 1)
+        self.assertEqual(store.load(self.db, ALICE).paused_until, self.WEEK)
+
+    def test_pressed_while_a_refused_digest_was_being_sent(self):
+        self.catching_up()
+        self.outbox.meanwhile[ALICE] = self.pause
+        self.outbox.raises[ALICE] = delivery.DmForbidden
+
+        report = self.tick(MONDAY + 2 * HOUR)
+
+        self.assertEqual(report.forbidden, 1)
+        self.assertEqual(store.load(self.db, ALICE).paused_until, self.WEEK)
+
+    def test_the_pause_that_ended_is_still_cleared(self):
+        self.catching_up()
+
+        async def nothing_fits(p, matches, now):
+            return []
+
+        self.checked_tick(nothing_fits)
+
+        self.assertIsNone(store.load(self.db, ALICE).paused_until)
+
+
 class Throttle(DeliveryTest):
     def test_the_per_tick_cap_leaves_the_rest_for_the_next_tick(self):
         for uid in (ALICE, BOB, CAROL):

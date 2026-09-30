@@ -395,6 +395,19 @@ class Advance(StoreTest):
         self.assertEqual((p.cursor, p.last_run_at, p.last_sent_at), (NOW + 100, NOW + 700, None))
         self.assertEqual((p.intro_pending, p.paused_until), (True, NOW + DAY))
 
+    def test_clearing_a_pause_clears_only_one_that_has_ended(self):
+        # Pause pressed again while the tick waited: that pause is not the one it caught up on.
+        for clear in (lambda: store.advance(self.db, ALICE, cursor=NOW, now=NOW, sent=False,
+                                            clear_pause=True),
+                      lambda: store.end_pause(self.db, ALICE, NOW)):
+            for until, kept in ((NOW - 5, None), (NOW, None), (NOW + DAY, NOW + DAY)):
+                with self.subTest(until=until):
+                    self.save(ALICE)
+                    self.set_columns(ALICE, paused_until=until)
+                    clear()
+                    self.assertEqual(store.load(self.db, ALICE).paused_until, kept)
+                    store.delete_user(self.db, ALICE)
+
     def test_advance_never_lowers_the_cursor(self):
         self.save(ALICE)
         store.advance_all_cursors(self.db, NOW + 1000)

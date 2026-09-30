@@ -347,6 +347,16 @@ def set_paused_until(db: sqlite3.Connection, user_id: int, until: float | None, 
     _update(db, user_id, "paused_until = ?, updated_at = ?", (until, now))
 
 
+#: Clears a pause that has ended by `now` and leaves any other alone: the user may have
+#: pressed Pause again while a delivery tick was waiting on the fit check or on Discord.
+_END_PAUSE = "paused_until = CASE WHEN paused_until <= ? THEN NULL ELSE paused_until END"
+
+
+def end_pause(db: sqlite3.Connection, user_id: int, now: float) -> None:
+    """Clears the pause if it has ended by `now`; a pause still running is kept."""
+    _update(db, user_id, _END_PAUSE, (now,))
+
+
 def reset_dm_failures(db: sqlite3.Connection, user_id: int) -> None:
     _update(db, user_id, "dm_failures = 0")
 
@@ -434,13 +444,15 @@ def hide(db: sqlite3.Connection, user_id: int, hashes: Iterable[str], now: float
 
 def advance(db: sqlite3.Connection, user_id: int, *, cursor: float, now: float, sent: bool,
             clear_pause: bool = False) -> None:
-    """One tick's outcome: the cursor moves up, and a sent digest clears the counters."""
+    """One tick's outcome: the cursor moves up, and a sent digest clears the counters.
+    `clear_pause` clears a pause that has ended by `now`, never one pressed since
+    (`end_pause`)."""
     assignments, params = "cursor = MAX(cursor, ?), last_run_at = ?", (cursor, now)
     if sent:
         assignments, params = (assignments + ", last_sent_at = ?, dm_failures = 0, intro_pending = 0",
                                params + (now,))
     if clear_pause:
-        assignments += ", paused_until = NULL"
+        assignments, params = assignments + f", {_END_PAUSE}", params + (now,)
     _update(db, user_id, assignments, params)
 
 
