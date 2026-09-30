@@ -355,5 +355,7 @@ history was rewritten once, so its commit ids from before the rewrite no longer
 mean anything, and none is cited here. The imported code has the same author
 as the rest, and the same [LICENSE](LICENSE).
 
-The bot's half stays in BaronChairStair: the alerts, `/internships`, user
-profiles and their `stats.db`, and the taxonomy behind them.
+The bot's half, the alerts, `/internships`, user profiles and the taxonomy
+behind them, is moving into DIAYN as well, under `bot/`. Profiles live in
+DIAYN's own `users.db`, and `import-legacy` (under *Commands*) copies the old
+tracker's subscribers into it once.
