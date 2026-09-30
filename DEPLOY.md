@@ -197,7 +197,12 @@ holds the lock: stop the service first, and start it again after.
 
 1. `pm2 list` or `systemctl status diayn` shows it online, with a restart count
    that is not climbing.
-2. `pgrep -af 'diayn.py run'` prints exactly one line.
+2. `pgrep -f 'diayn[.]py run' | wc -l` prints 1. It counts PIDs, which
+   pgrep prints the same way on Linux and macOS, whereas its `-a` flag does not
+   travel: on Linux it lists command lines, on macOS it adds ancestors to the
+   match. The `[.]` keeps the pattern from matching a shell that runs this very
+   line. To see the command line as well: `pgrep -lf` on macOS, and
+   `pgrep -f --list-full` on Linux.
 3. The log shows `DIAYN is logged in as …`, then `watching N boards every 900s`,
    perhaps `next sweep due in Ns`, and then one `sweep: …` line every 15
    minutes. One `sweep failed, rolled back: …` is a board having a bad moment;
@@ -261,7 +266,7 @@ For a damaged or lost file, never to undo something.
 Stop the service (`pm2 stop diayn`, or `sudo systemctl stop diayn`), then:
 
 ```sh
-pgrep -af 'diayn.py run'                                      # prints nothing
+pgrep -f 'diayn[.]py run' | wc -l                             # 0
 ls -la "$B"                                                   # choose the day
 sqlite3 "file:$B/postings-YYYY-MM-DD.db?mode=ro" 'PRAGMA integrity_check'   # ok
 flock -n "$D/postings.db.lock" \

@@ -336,6 +336,14 @@ class Deploy(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertIn(said, self.deploy)
 
+    def test_the_process_check_works_on_linux_and_macos(self):
+        # pgrep -a lists command lines on Linux, and on macOS means "ancestors too".
+        # A count of the PIDs reads the same on both.
+        for command in self.commands:
+            with self.subTest(command=command):
+                self.assertNotRegex(command, r"\bpgrep\s+-\w*a")
+        self.assertIn("pgrep -f 'diayn[.]py run' | wc -l", self.deploy)
+
     def test_backs_up_both_databases_with_backup(self):
         for db in ("postings.db", "users.db"):
             with self.subTest(db=db):
