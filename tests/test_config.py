@@ -25,7 +25,6 @@ import importlib.util
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +42,7 @@ from aiohttp_stub import stub_aiohttp  # noqa: E402
 stub_aiohttp()
 
 import internship_poller as poller  # noqa: E402
+from test_cli import copy_scraper  # noqa: E402
 
 HAS_DOTENV = importlib.util.find_spec("dotenv") is not None
 NEEDS_DOTENV = unittest.skipUnless(HAS_DOTENV, "python-dotenv is not installed")
@@ -57,9 +57,9 @@ SCRAPER_PREFIXES = ("POLL_", "GEMINI_", "LLM_", "DIAYN_", "FIT_")
 # as a script. argv is [tests dir, script, *args]. `block_dotenv` makes
 # `import dotenv` fail, as it does on a box without python-dotenv.
 RUN_SCRIPT = """
-import runpy, sys
+import os, runpy, sys
 tests, script = sys.argv[1], sys.argv[2]
-sys.path.insert(0, tests)
+sys.path[:0] = [os.path.dirname(script), tests]
 from aiohttp_stub import stub_aiohttp
 stub_aiohttp()
 if {block_dotenv}:
@@ -76,10 +76,10 @@ runpy.run_path(script, run_name="__main__")
 IMPORT_SCRIPT = """
 import builtins, json, os, runpy, sys
 tests, script = sys.argv[1], sys.argv[2]
-sys.path.insert(0, tests)
+sys.path[:0] = [os.path.dirname(script), tests]
 from aiohttp_stub import stub_aiohttp
 stub_aiohttp()
-import aiohttp, zoneinfo
+import aiohttp, llm, zoneinfo
 before = dict(os.environ)
 opened = []
 real_open = builtins.open
@@ -471,9 +471,9 @@ class UserAgent(unittest.TestCase):
 class Cli(unittest.TestCase):
     """The scraper run as a script, from a temporary checkout.
 
-    The layout is `checkout/internship_poller.py` (a copy) and `work/`, the
-    directory the child process starts in. Nothing else is there unless a test
-    puts it there.
+    The layout is `checkout/internship_poller.py` and `checkout/llm.py`
+    (copies) and `work/`, the directory the child process starts in. Nothing
+    else is there unless a test puts it there.
     """
 
     def setUp(self):
@@ -483,7 +483,7 @@ class Cli(unittest.TestCase):
         self.work = os.path.join(self._tmp.name, "work")
         os.mkdir(self.checkout)
         os.mkdir(self.work)
-        self.script = shutil.copy(poller.__file__, self.checkout)
+        self.script = copy_scraper(self.checkout)
 
     def _write(self, path, text):
         with open(path, "w") as f:
@@ -522,7 +522,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(seen["contact"], "")
         self.assertEqual(seen["boards"], 0)
         self.assertEqual(sorted(os.listdir(self.checkout)),
-                         [".env", "internship_poller.py"])
+                         [".env", "internship_poller.py", "llm.py"])
         self.assertEqual(os.listdir(self.work), [".env"])
 
     @NEEDS_DOTENV

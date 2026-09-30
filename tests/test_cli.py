@@ -41,17 +41,28 @@ stub_aiohttp()
 import internship_poller as poller  # noqa: E402
 from test_contract import contract_schema, plant, schema, untouched  # noqa: E402
 
+#: The scraper's files, as a checkout holds them: the script and the Gemini
+#: request code it shares with the bot (llm.py).
+SCRAPER_FILES = (os.path.join(ROOT, "internship_poller.py"), os.path.join(ROOT, "llm.py"))
+
+
+def copy_scraper(checkout: str) -> str:
+    """The scraper's files copied into `checkout`; returns the script's path there."""
+    return [shutil.copy(path, checkout) for path in SCRAPER_FILES][0]
+
+
 # Every variable the scraper reads, so a child process starts clean.
 SCRAPER_VARIABLES = ("POLLER_ENV_FILE", "POSTINGS_DB", "BOARDS_FILE", "YC_CACHE",
                      "DISCORD_TOKEN")
 SCRAPER_PREFIXES = ("POLL_", "GEMINI_", "LLM_", "DIAYN_", "FIT_")
 
-# The child: stub aiohttp if it is missing, load the copied module, replace
-# fetch_all, then run main() with the given arguments.
+# The child: stub aiohttp if it is missing, load the copied module with its
+# checkout first on the path, as `python internship_poller.py` would have it,
+# replace fetch_all, then run main() with the given arguments.
 CHILD = """
 import importlib.util, os, sys, time
 tests, script = sys.argv[1], sys.argv[2]
-sys.path.insert(0, tests)
+sys.path[:0] = [os.path.dirname(script), tests]
 from aiohttp_stub import stub_aiohttp
 stub_aiohttp()
 spec = importlib.util.spec_from_file_location("internship_poller", script)
@@ -168,7 +179,7 @@ def pragma(path, name):
 
 
 class Cli(unittest.TestCase):
-    """`checkout/` holds a copy of the module; `data/` is where the database goes."""
+    """`checkout/` holds a copy of the scraper; `data/` is where the database goes."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -177,7 +188,7 @@ class Cli(unittest.TestCase):
         self.checkout = os.path.join(self.tmp, "checkout")
         self.data = os.path.join(self.tmp, "data")
         os.mkdir(self.checkout)
-        self.script = shutil.copy(poller.__file__, self.checkout)
+        self.script = copy_scraper(self.checkout)
         self.db = os.path.join(self.data, "postings.db")
 
     def _command(self, *args):

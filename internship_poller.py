@@ -82,6 +82,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 
+import llm
+
 # --------------------------------------------------------------------------
 # Configuration. Read once, by main(), after the scraper's own .env has loaded
 # — never while this module is imported. Importing it reads no file and
@@ -437,7 +439,8 @@ def polite_session(**kw):
 
     Wrapping _request covers all adapters at once — no adapter has to
     remember to be polite, and new ones inherit it for free. The Gemini API
-    is exempt: it has its own quota accounting in LlmBudget.
+    is exempt: every caller of llm.py has a budget of its own (LlmBudget here,
+    the fit check's in the bot).
     """
     sess = aiohttp.ClientSession(**kw)
     inner = sess._request
@@ -1285,32 +1288,12 @@ def classify(p: "Posting") -> dict:
 # vary by project; check your own AI Studio rate-limit view and set GEMINI_RPM,
 # GEMINI_RPD and GEMINI_TPM to match, since the published tables go stale. The
 # key, the model and every limit are in Settings, at the top of this file.
-# --------------------------------------------------------------------------
-
-# Failures worth retrying: the request never produced an answer, and the same
-# request may well succeed moments later. Timeouts dominate here — a batch of 8
-# postings is ~13k tokens, so a slow generation can exceed the client deadline
-# even though nothing is wrong. Connection resets and aiohttp's generic
-# ClientError cover transport-level flakiness.
 #
-# Deliberately NOT retried: an unparseable 200 response (deterministic — the
-# model returned malformed JSON and will again), and non-retryable HTTP codes
-# like 400/403, which are handled by status before ever reaching the handler.
-TRANSIENT_LLM_ERRORS = (asyncio.TimeoutError, aiohttp.ClientError,
-                        ConnectionError)
-
-
-def llm_backoff(attempt: int) -> float:
-    """Seconds to wait before re-attempting a failed Gemini call.
-
-    Exponential from 5s (5, 10, 20…), matching the 500/503 path so a run
-    can't stall for minutes on retries alone.
-    """
-    return 2 ** attempt * 5
-
-
-GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
-              "{model}:generateContent")
+# The request itself — the endpoint, JSON output, retries and what is and is
+# not retried, the token counts — is llm.py's, shared with the bot's fit
+# check. What stays here is what only --llm needs: its prompt and schema, its
+# budget and its cache.
+# --------------------------------------------------------------------------
 
 LLM_PROMPT = """You classify job postings for a tech-internship alert bot.
 
@@ -1430,13 +1413,7 @@ class LlmBudget:
         a missing or malformed usageMetadata must never fail a classification
         that already succeeded.
         """
-        if not isinstance(meta, dict):
-            return
-        try:
-            pt = int(meta.get("promptTokenCount") or 0)
-            ot = int(meta.get("candidatesTokenCount") or 0)
-        except (TypeError, ValueError):
-            return
+        pt, ot = llm.usage_tokens(meta)
         if not (pt or ot):
             return
         try:
@@ -1450,7 +1427,7 @@ class LlmBudget:
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
-        return len(text or "") // 4 + 64   # +64 for the response/schema overhead
+        return llm.estimate_tokens(text)
 
     def _prune(self, now):
         self.calls = [t for t in self.calls if now - t < 60]
@@ -1488,64 +1465,28 @@ class LlmBudget:
 
 
 async def _llm_call(sess, budget, batch):
-    """One batched request. Returns {index: fields} or {} on any failure."""
+    """One batched request. Returns {index: fields} or {} on any failure.
+
+    llm.generate_json sends it, asking the budget before every attempt, and
+    says on stderr why a failed one falls back to the regular expressions.
+    """
     lines = "\n".join(f'{i}. {p.title} — {p.location or "no location given"}'
                        for i, p in batch)
-    if not await budget.acquire(budget.estimate_tokens(LLM_PROMPT + lines)):
+    prompt = LLM_PROMPT + lines
+    est_tokens = budget.estimate_tokens(prompt)
+    try:
+        rows = await llm.generate_json(
+            sess, key=SETTINGS.gemini_key, model=SETTINGS.gemini_model, prompt=prompt,
+            schema=LLM_SCHEMA, max_attempts=SETTINGS.llm_max_attempts,
+            acquire=lambda: budget.acquire(est_tokens), on_usage=budget.record_usage)
+    except llm.LlmError:
         return {}
-    body = {
-        "contents": [{"parts": [{"text": LLM_PROMPT + lines}]}],
-        "generationConfig": {"responseMimeType": "application/json",
-                             "responseSchema": LLM_SCHEMA,
-                             "temperature": 0},
-    }
-    url = GEMINI_URL.format(model=SETTINGS.gemini_model)
-    for attempt in range(SETTINGS.llm_max_attempts):
-        # The first attempt's slot was taken above; every RETRY is another
-        # real API call and must take its own, or retries spend quota
-        # invisibly and overrun the daily budget.
-        if attempt and not await budget.acquire(
-                budget.estimate_tokens(LLM_PROMPT + lines)):
-            return {}
-        try:
-            async with sess.post(url, json=body,
-                                 headers={"x-goog-api-key": SETTINGS.gemini_key}) as r:
-                if r.status == 429:
-                    await asyncio.sleep(llm_backoff(attempt))
-                    continue
-                if r.status in (500, 503):
-                    await asyncio.sleep(llm_backoff(attempt))
-                    continue
-                if r.status != 200:
-                    print(f"  llm: HTTP {r.status} — falling back to regex",
-                          file=sys.stderr)
-                    return {}
-                d = await r.json(content_type=None)
-        except TRANSIENT_LLM_ERRORS as e:
-            last = attempt == SETTINGS.llm_max_attempts - 1
-            print(f"  llm: {type(e).__name__} "
-                  f"(attempt {attempt + 1}/{SETTINGS.llm_max_attempts})"
-                  + (" — falling back to regex" if last else
-                     f" — retrying in {llm_backoff(attempt):.0f}s"),
-                  file=sys.stderr)
-            if last:
-                return {}
-            await asyncio.sleep(llm_backoff(attempt))
-            continue
-        except Exception as e:
-            print(f"  llm: {type(e).__name__} — falling back to regex",
-                  file=sys.stderr)
-            return {}
-        try:
-            budget.record_usage(d.get("usageMetadata"))
-            text = d["candidates"][0]["content"]["parts"][0]["text"]
-            rows = json.loads(text.strip().strip("`").removeprefix("json"))
-            return {r["i"]: r for r in rows if isinstance(r, dict) and "i" in r}
-        except Exception:
-            print("  llm: unparseable response — falling back to regex",
-                  file=sys.stderr)
-            return {}
-    return {}
+    try:
+        return {r["i"]: r for r in rows if isinstance(r, dict) and "i" in r}
+    except Exception:
+        print("  llm: unparseable response — falling back to regex",
+              file=sys.stderr)
+        return {}
 
 
 async def llm_classify(conn, postings, verbose=True):

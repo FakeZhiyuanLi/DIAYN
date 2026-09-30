@@ -38,7 +38,7 @@ stub_aiohttp()
 import diayn  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import CHILD as SCRAPER_CHILD  # noqa: E402
-from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, v2_fixture  # noqa: E402
+from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, copy_scraper, v2_fixture  # noqa: E402
 
 PLANNED = ("setup", "doctor", "run")
 BUILT = ("import-legacy", "grant", "revoke")
@@ -175,7 +175,7 @@ class Script(unittest.TestCase):
         self.checkout = os.path.join(self.tmp, "checkout")
         self.data = os.path.join(self.tmp, "data")
         os.mkdir(self.checkout)
-        self.poller_script = shutil.copy(poller.__file__, self.checkout)
+        self.poller_script = copy_scraper(self.checkout)
         self.script = shutil.copy(diayn.__file__, self.checkout)
         self.db = os.path.join(self.data, "postings.db")
 
@@ -236,7 +236,7 @@ class Script(unittest.TestCase):
                 self.assertIn("not built yet", result.stdout + result.stderr)
         self.assertFalse(os.path.exists(self.data))
         self.assertEqual(sorted(os.listdir(self.checkout)),
-                         ["diayn.py", "internship_poller.py"])
+                         ["diayn.py", "internship_poller.py", "llm.py"])
 
     def test_a_missing_dependency_names_it_and_the_fix(self):
         result = self._diayn("config", BLOCK_AIOHTTP="1")
