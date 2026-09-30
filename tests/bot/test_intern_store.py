@@ -5,9 +5,10 @@ erased.
     python3 -m unittest discover -s tests      # no install needed
 
 `intern_store` is sqlite3 and nothing else, so everything here runs against an
-in-memory database built by `init_db` alone — never the real `stats.db`. The
-one test that needs a file (did the deleted bytes leave the disk?) makes it in
-a temporary directory that is gone when the test ends.
+in-memory database built by `init_db` alone — never the real `users.db`. The
+tests that need a file (did the deleted bytes leave the disk? what does a new
+users.db hold?) make it in a temporary directory that is gone when the test
+ends.
 
 The rules that matter most, because breaking them breaks nothing visible:
 
@@ -19,7 +20,6 @@ The rules that matter most, because breaking them breaks nothing visible:
     finder table, including ones added after this test was written.
 """
 
-import ast
 import dataclasses
 import os
 import sqlite3
@@ -35,36 +35,10 @@ NOW = 1_790_000_000.0
 CURSOR = NOW - 600
 ALICE, BOB = 111_111_111_111_111_111, 222_222_222_222_222_222
 
-#: The statements the finder's source bot ran for the two tables it created
-#: itself, as they stood when the finder was ported. DIAYN has no copy of that
-#: bot, so they are kept here, and the tests below still hold intern_store and
-#: the legacy fixture to them.
-BOT_SOURCE = '''
-db.execute("""
-    CREATE TABLE IF NOT EXISTS intern_pings (
-        user_id INTEGER PRIMARY KEY,
-        channel_id INTEGER NOT NULL
-    )
-""")
-for _col, _decl in (("categories", "TEXT"),
-                    ("us_only", "INTEGER"),
-                    ("days", "INTEGER")):
-    try:
-        db.execute(f"ALTER TABLE intern_pings ADD COLUMN {_col} {_decl}")
-    except sqlite3.OperationalError:
-        pass
-db.commit()
-db.execute("""
-    CREATE TABLE IF NOT EXISTS intern_meta (
-        key TEXT PRIMARY KEY,
-        value REAL
-    )
-""")
-'''
-
-#: Copied from the source bot: the legacy table and the three columns it
-#: gained later. A test that needs `intern_pings` builds it exactly this way,
-#: because `init_db` never creates it (spec 3.1).
+#: The old tracker's subscriber table, as its bot created it in that bot's own
+#: stats.db, with the three columns it gained later. A test that needs
+#: `intern_pings` builds it exactly this way: `init_db` never creates it, and
+#: DIAYN's users.db never holds it.
 PINGS_DDL = """
     CREATE TABLE IF NOT EXISTS intern_pings (
         user_id INTEGER PRIMARY KEY,
@@ -86,15 +60,6 @@ def add_legacy(db: sqlite3.Connection, uid: int, categories, us_only) -> None:
     db.execute("INSERT OR REPLACE INTO intern_pings VALUES (?, ?, ?, ?, ?)",
                (uid, 999, categories, us_only, None))
     db.commit()
-
-
-def bot_create_statement(table: str) -> str:
-    """The CREATE string the source bot ran for `table`, read with ast."""
-    for node in ast.walk(ast.parse(BOT_SOURCE)):
-        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                and f"CREATE TABLE IF NOT EXISTS {table}" in node.value):
-            return node.value
-    raise AssertionError(f"the source bot never created {table}")
 
 
 def make(uid: int, **fields) -> profile.Profile:
@@ -144,27 +109,42 @@ class InitDb(StoreTest):
         self.assertEqual(store.get_meta(self.db, "delivery_last_at"), 13.0)
         self.assertIsNone(store.get_meta(self.db, "never_written"))
 
-    def test_intern_meta_is_created_exactly_as_discord_bot_creates_it(self):
-        # On the bot the table already exists, so init_db's copy is a no-op —
-        # unless the two drift, when whichever runs first silently wins.
-        theirs = sqlite3.connect(":memory:")
-        theirs.execute(bot_create_statement("intern_meta"))
-        schema = "SELECT sql FROM sqlite_master WHERE name = 'intern_meta'"
+    def test_intern_meta_is_a_key_and_a_number(self):
+        columns = [(name, kind, pk) for _, name, kind, _, _, pk
+                   in self.db.execute("PRAGMA table_info(intern_meta)")]
 
-        self.assertEqual(self.db.execute(schema).fetchone(), theirs.execute(schema).fetchone())
-        theirs.close()
+        self.assertEqual(columns, [("key", "TEXT", 1), ("value", "REAL", 0)])
 
     def test_the_legacy_table_is_never_created_here(self):
         names = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master")}
 
         self.assertNotIn("intern_pings", names)
 
-    def test_the_copied_legacy_ddl_is_still_what_the_bot_runs(self):
-        squash = lambda text: " ".join(text.split())  # noqa: E731
+    def test_the_legacy_fixture_has_the_old_tracker_s_columns_in_order(self):
+        # The old bot wrote its rows positionally, five values (add_legacy).
+        create_pings(self.db)
 
-        self.assertEqual(squash(bot_create_statement("intern_pings")), squash(PINGS_DDL))
-        for column, decl in PINGS_ADDED:
-            self.assertIn(f'("{column}", "{decl}")', BOT_SOURCE)
+        columns = [row[1] for row in self.db.execute("PRAGMA table_info(intern_pings)")]
+
+        self.assertEqual(columns, ["user_id", "channel_id", "categories", "us_only", "days"])
+
+
+class ANewUsersDb(unittest.TestCase):
+    """DIAYN's own users.db, as init_db leaves a file that did not exist."""
+
+    def test_it_holds_the_finder_s_three_tables_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = sqlite3.connect(os.path.join(folder, "users.db"))
+            store.init_db(db)
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            index = db.execute("SELECT name FROM sqlite_master WHERE type = 'index' "
+                               "AND sql IS NOT NULL").fetchall()
+            zeroed = db.execute("PRAGMA secure_delete").fetchone()[0]
+            db.close()
+
+        self.assertEqual(tables, {"intern_profiles", "intern_seen", "intern_meta"})
+        self.assertEqual(index, [("idx_intern_seen_at",)])
+        self.assertEqual(zeroed, 1)
 
 
 class SaveAndLoad(StoreTest):

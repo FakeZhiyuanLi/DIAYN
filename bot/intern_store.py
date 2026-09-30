@@ -1,12 +1,12 @@
 """
 intern_store.py
 ~~~~~~~~~~~~~~~
-Internship profiles on disk: the two `stats.db` tables the finder owns, and
-every read and write of them.
+Internship profiles on disk: the finder's tables in DIAYN's own users.db
+(`intern_profiles`, `intern_seen` and `intern_meta`), and every read and write
+of them. `init_db` creates all three; nothing else creates or alters them.
 
-Split from the Discord modules for the reason `changelog.py` is: it is sqlite3
-and nothing else, so its rules can be tested under bare `python3` against an
-in-memory database.
+Split from the Discord modules because it is sqlite3 and nothing else, so its
+rules can be tested under bare `python3` against an in-memory database.
 
 Three rules shape every function here.
 
@@ -22,8 +22,8 @@ that user is in flight. Every delivery write is an UPDATE of an existing row,
 or an INSERT ... SELECT that finds nothing once the profile is gone, so a send
 that finishes after the delete records nothing. `delete_user` clears every
 `intern_*` table with a `user_id` column — found when it runs, not listed
-here, so a table added later is covered — in one transaction, on a connection
-where SQLite zeroes freed pages.
+here, so a table added later is covered — in one transaction, on the users.db
+connection, where `init_db` has SQLite zero freed pages.
 
 **The cursor only moves forward.** Delivery offers postings first seen after
 the cursor. Moving it back would re-offer rows the user was already past,
@@ -143,16 +143,14 @@ _SEEN_DDL = """
     )
 """
 _SEEN_INDEX = "CREATE INDEX IF NOT EXISTS idx_intern_seen_at ON intern_seen(at)"
-# Character for character what discord_bot.py runs, so whichever creates the
-# table first, the schema is the same (a test compares the two).
 _META_DDL = """
     CREATE TABLE IF NOT EXISTS intern_meta (
         key TEXT PRIMARY KEY,
         value REAL
     )
 """
-#: Future columns, as (name, declaration): added in place, never by recreating
-#: the table, the same additive pattern discord_bot.py uses for intern_pings.
+#: Future columns, as (name, declaration): added in place by `init_db`, never
+#: by recreating the table, so a users.db from an older release keeps its rows.
 _ADDED_COLUMNS: tuple[tuple[str, str], ...] = ()
 
 _COLUMNS = tuple(STORED_COLUMNS)
@@ -190,7 +188,11 @@ _MIGRATE = ("INSERT OR IGNORE INTO intern_profiles "
 # ------------------------------------------------------------------ schema
 
 def init_db(db: sqlite3.Connection) -> None:
-    """Creates the finder's tables if absent. Safe on every boot; raises sqlite3.Error."""
+    """
+    Creates the finder's tables in users.db if absent, and has SQLite zero the
+    pages a delete frees on this connection. Safe on every boot; raises
+    sqlite3.Error. Never creates the old tracker's `intern_pings`.
+    """
     db.execute("PRAGMA secure_delete=ON")
     for ddl in (_PROFILES_DDL, _SEEN_DDL, _SEEN_INDEX, _META_DDL):
         db.execute(ddl)
@@ -344,7 +346,7 @@ def _user_tables(db: sqlite3.Connection) -> list[str]:
 
 
 def delete_user(db: sqlite3.Connection, user_id: int) -> int:
-    """Erases the user from every finder table, legacy one included (D19). Returns rows removed."""
+    """Erases the user from every finder table there is (D19). Returns rows removed."""
     db.execute("PRAGMA secure_delete=ON")        # init_db sets it; this delete depends on it
     tables = _user_tables(db)
     with db:
