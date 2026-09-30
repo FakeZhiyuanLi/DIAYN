@@ -26,6 +26,7 @@ import hashlib
 import io
 import os
 import sqlite3
+import stat
 import sys
 import tempfile
 import unittest
@@ -227,6 +228,16 @@ class WhatIsToFix(_DoctorCase):
         code, out, _ = self.doctor_holding_the_lock()
         self.assertEqual(code, 0)
         self.assertEqual(lines(out)["data directory"], "warn")
+        self.assertIn(hints.command("setup"), out)
+
+    def test_a_loose_data_directory_is_left_for_setup_to_tighten(self):
+        # doctor changes nothing: tightening is setup's.
+        self.healthy()
+        os.chmod(self.data, 0o755)
+        os.chmod(self.db, 0o644)
+        self.doctor_holding_the_lock()
+        self.assertEqual(stat.S_IMODE(os.stat(self.data).st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(os.stat(self.db).st_mode), 0o644)
 
     def test_a_missing_postings_db_fails_and_nothing_is_made(self):
         os.mkdir(self.data, 0o700)

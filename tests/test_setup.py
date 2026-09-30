@@ -16,7 +16,9 @@ here:
 - an existing postings.db is never bootstrapped again, and one with an empty
   ledger is left alone and refused, pointing at `sweep --init`;
 - a first sweep that records nothing, or fails, is a failure;
-- an existing data directory keeps its mode, and a loose one is warned about;
+- a data directory others on the box can read is tightened to 700, and
+  users.db and postings.db, with their -journal, -wal and -shm, to 600, and
+  setup says what it tightened; what it cannot tighten stops it;
 - a held sweeper lock exits 3;
 - the token never reaches the output.
 
@@ -86,6 +88,17 @@ def fetch_nothing_allowed():
     async def fetch_all(etags=None, on_status=None, sector=None):
         raise AssertionError("setup swept a postings.db it should have left alone")
     return fetch_all
+
+
+def refusing_to_tighten(refused_path):
+    """private_files.tighten, except that chmod is refused for `refused_path`."""
+    tighten = host_checks.private_files.tighten
+
+    def refuse(path):
+        if path == refused_path:
+            raise PermissionError(1, "Operation not permitted", path)
+        return tighten(path)
+    return refuse
 
 
 def fetch_raising(error):
@@ -258,14 +271,37 @@ class TheIntent(_SetupCase):
 
 
 class TheDataDirectory(_SetupCase):
-    def test_an_existing_one_keeps_its_mode_and_a_loose_one_is_warned_about(self):
+    @POSIX_MODES
+    def test_a_loose_one_is_tightened_to_700_and_setup_says_so(self):
+        # A grant before setup used to leave it 755, and setup only warned.
         os.mkdir(self.data)
         os.chmod(self.data, 0o755)
         code, out, err = self.setup()
         self.assertEqual(code, 0, err)
-        self.assertEqual(stat.S_IMODE(os.stat(self.data).st_mode), 0o755)
-        self.assertRegex(out, r"(?m)^warn\s+data directory")
-        self.assertIn(f"chmod 700 {self.data}", out)
+        self.assertEqual(mode_of(self.data), PRIVATE_DIRECTORY)
+        self.assertRegex(out, r"(?m)^note\s+data directory: .*was mode 755.*now 700")
+        self.assertNotIn("warn", out)
+
+    @POSIX_MODES
+    def test_a_private_one_is_left_as_it_is(self):
+        os.mkdir(self.data, 0o700)
+        code, out, err = self.setup()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(mode_of(self.data), PRIVATE_DIRECTORY)
+        self.assertRegex(out, r"(?m)^ok\s+data directory")
+
+    @POSIX_MODES
+    def test_one_it_cannot_tighten_stops_setup_before_anything_is_swept(self):
+        os.mkdir(self.data)
+        os.chmod(self.data, 0o755)
+        with mock.patch.object(host_checks.private_files, "tighten",
+                               refusing_to_tighten(self.data)):
+            code, out, err = self.setup(fetch_nothing_allowed())
+        self.assertEqual(code, FAILED)
+        self.assertRegex(err, r"(?m)^fail\s+data directory")
+        self.assertIn(f"chmod 700 {self.data}", err)
+        self.assertFalse(os.path.exists(self.db))
+        self.assertNotIn("oauth2/authorize", out)
 
     def test_a_file_where_the_directory_should_be_is_refused(self):
         os.makedirs(os.path.dirname(self.data), exist_ok=True)
@@ -274,6 +310,54 @@ class TheDataDirectory(_SetupCase):
         code, _, err = self.setup(fetch_nothing_allowed())
         self.assertEqual(code, FAILED)
         self.assertIn("not a directory", err)
+
+
+@POSIX_MODES
+class TheDatabaseFiles(_SetupCase):
+    """users.db and postings.db from before, made where nothing made them private."""
+
+    def setUp(self):
+        super().setUp()
+        loose_umask(self)
+        os.mkdir(self.data, 0o700)
+        self.users = os.path.join(self.data, "users.db")
+
+    def loose(self, path) -> str:
+        with open(path, "a", encoding="ascii"):
+            pass
+        os.chmod(path, 0o644)
+        return path
+
+    def test_loose_ones_and_their_sidecars_are_tightened_to_600_and_named(self):
+        v2_fixture(self.db)
+        loose = [self.loose(self.db)] + [self.loose(self.users + suffix)
+                                         for suffix in ("", "-journal", "-wal", "-shm")]
+        code, out, err = self.setup(fetch_nothing_allowed())
+        self.assertEqual(code, 0, err)
+        for path in loose:
+            with self.subTest(path=os.path.basename(path)):
+                self.assertEqual(mode_of(path), PRIVATE_FILE)
+                self.assertIn(path, out)
+        self.assertRegex(out, r"(?m)^note\s+database files: ")
+        self.assertIn(portal.invite_url(APP_ID), out)
+
+    def test_private_ones_are_not_mentioned(self):
+        v2_fixture(self.db)
+        os.chmod(self.db, 0o600)
+        code, out, err = self.setup(fetch_nothing_allowed())
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("database files", out + err)
+
+    def test_one_it_cannot_tighten_stops_setup(self):
+        v2_fixture(self.db)
+        self.loose(self.users)
+        with mock.patch.object(host_checks.private_files, "tighten",
+                               refusing_to_tighten(self.users)):
+            code, out, err = self.setup(fetch_nothing_allowed())
+        self.assertEqual(code, FAILED)
+        self.assertRegex(err, r"(?m)^fail\s+database files: ")
+        self.assertIn(f"chmod 600 {self.users}", err)
+        self.assertNotIn("oauth2/authorize", out)
 
 
 class TheLedger(_SetupCase):

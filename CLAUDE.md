@@ -35,7 +35,8 @@ your report.**
   database at 600, by whichever command makes it first: `setup`, `grant`,
   `import-legacy`, `run` (users.db), `sweep --init` or `watch --init`. Anything
   new that can make either goes through it; a plain `os.makedirs` or
-  `sqlite3.connect` makes them readable by everyone on the box.
+  `sqlite3.connect` makes them readable by everyone on the box. `setup`
+  tightens what is already there; `doctor` only reports it.
 
 ## When a check goes red, stop and report
 

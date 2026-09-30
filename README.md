@@ -192,15 +192,18 @@ lock. `.venv/bin/python diayn.py <command> --help` lists a command's options.
 ### `setup`
 
 Gets a new host ready, and is safe to run again: nothing that exists is
-changed. In order, stopping at the first failure, it:
+changed, except that what others on the box could read is made private. In
+order, stopping at the first failure, it:
 
 - checks that discord.py is installed, since `run` cannot start the bot
   without it, and warns without pypdf, which reads PDF resumes; either way it
   says how to install them for the Python running it;
 - checks `DISCORD_TOKEN` with Discord, and that the Server Members Intent is
   on: nothing is made until both are;
-- makes the data directory at mode 700, or warns if an existing one is
-  readable by others;
+- makes the data directory at mode 700. One that is there already, and that
+  other users on the box can read, it tightens to 700, and `users.db` and
+  `postings.db`, with their `-journal`, `-wal` and `-shm`, to 600, and says
+  what it tightened;
 - bootstraps `postings.db`, holding the sweeper lock, with a first sweep that
   records every open posting as seen, so none of them is announced. It never
   bootstraps a file that is already there: one with a ledger is left as it is,
@@ -453,7 +456,8 @@ expressions unless it is given `--llm`.
 
 **What is stored**, all of it in the data directory. Whichever command makes
 it first (`setup`, `grant`, `import-legacy` or `sweep --init`) makes it at mode
-700, and each database in it is made at 600:
+700, and each database in it is made at 600. `setup` tightens any of them that
+is looser:
 
 - `postings.db`, the scraper's ledger of public job postings. The bot only
   ever reads it.

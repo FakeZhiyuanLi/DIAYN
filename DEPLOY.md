@@ -67,7 +67,8 @@ mkdir -p "$B" && chmod 700 "$B"
 ```
 
 A host always runs a tag, never a branch, so what runs is exactly what was
-released. `setup` checks the token, makes `$D` at mode 700, bootstraps
+released. `setup` checks the token, makes `$D` at mode 700 (or tightens it,
+and the databases in it, if others on the box can read them), bootstraps
 `postings.db` and prints the invite link; the README says what each step does.
 
 ## The `.env`

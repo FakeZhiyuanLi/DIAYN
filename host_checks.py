@@ -19,8 +19,11 @@ invite link, and `diayn.py doctor`, which checks it again at any time.
    tell in a DM who is a member of a granted server, and Discord refuses the
    login of a bot that asks for an intent its portal toggle has off. Nothing
    is made until it is on.
-3. **The data directory**, DIAYN_DATA, made at mode 700. One that exists keeps
-   the mode it has, with a warning if others on the box can read it.
+3. **The data directory**, DIAYN_DATA, made at mode 700. One that exists, and
+   that others on the box can read, is tightened to 700, and so are users.db
+   and postings.db, with their -journal, -wal and -shm, to 600: grant or
+   import-legacy before setup, or an older DIAYN, could have left them loose.
+   setup names what it tightened, and stops if it cannot.
 4. **postings.db**, bootstrapped as `sweep --init` would: a first sweep that
    records every posting open now as seen, so none of them is announced. A file
    that is already there is never bootstrapped again: with a ledger it is left
@@ -151,7 +154,21 @@ def discord_findings(poller, settings, fetch_application=None):
 def _loose(path: str, mode: int) -> Finding:
     return Finding(WARN, "data directory", f"{path} is mode {mode:o}, so other users on this "
                    f"box can read what it holds, users.db's profiles among them. "
-                   f"chmod 700 {path}")
+                   f"`{hints.command('setup')}` tightens it, as does chmod 700 {path}")
+
+
+def _tighten(path: str, mode: int) -> Finding:
+    """setup's answer to a data directory others can read: take that away, and say so."""
+    try:
+        private_files.tighten(path)
+    except OSError as error:
+        return Finding(FAIL, "data directory", f"{path} is mode {mode:o}, so other users on "
+                       f"this box can read what it holds, and setup could not tighten it: "
+                       f"{type(error).__name__}: {error}. chmod 700 {path}")
+    now = stat.S_IMODE(os.stat(path).st_mode)
+    return Finding(NOTE, "data directory", f"{path} was mode {mode:o}, so other users on this "
+                   f"box could read what it holds, users.db's profiles among them; it is "
+                   f"now {now:o}.")
 
 
 def _make_private(path: str) -> Finding:
@@ -163,23 +180,47 @@ def _make_private(path: str) -> Finding:
     return Finding(OK, "data directory", f"{path} made, mode 700.")
 
 
-def data_directory(path: str, make: bool = False) -> Finding:
-    """What the data directory at `path` is like. With `make`, a missing one is made at
-    mode 700; an existing one is never changed."""
+def data_directory(path: str, fix: bool = False) -> Finding:
+    """What the data directory at `path` is like. With `fix`, as setup asks, a missing one
+    is made at mode 700, and one that others on the box can read is tightened; without,
+    as doctor asks, nothing is changed."""
     if not os.path.isdir(path):
         if os.path.exists(path):
             return Finding(FAIL, "data directory", f"{path} is not a directory. "
                            "Check DIAYN_DATA.")
-        if make:
+        if fix:
             return _make_private(path)
         return Finding(FAIL, "data directory", f"{path} does not exist. "
                        f"`{hints.command('setup')}` makes it.")
     if not os.access(path, os.W_OK | os.X_OK):
         return Finding(FAIL, "data directory", f"{path} is not writable by this user.")
     mode = stat.S_IMODE(os.stat(path).st_mode)
-    if mode & 0o077:
-        return _loose(path, mode)
-    return Finding(OK, "data directory", f"{path}, mode {mode:o}.")
+    if not mode & private_files.GROUP_AND_OTHERS:
+        return Finding(OK, "data directory", f"{path}, mode {mode:o}.")
+    return _tighten(path, mode) if fix else _loose(path, mode)
+
+
+def private_databases(paths) -> list:
+    """
+    setup's findings for the databases at `paths`, and the files sqlite keeps beside
+    each: every one that others on the box can read is tightened, and named. [] when
+    there was nothing to tighten; a failure at the first that cannot be.
+    """
+    tightened = []
+    for path in paths:
+        for name in private_files.database_files(path):
+            try:
+                before = private_files.tighten(name)
+            except OSError as error:
+                return [Finding(FAIL, "database files", f"other users on this box can read "
+                                f"{name}, and setup could not tighten it: "
+                                f"{type(error).__name__}: {error}. chmod 600 {name}")]
+            if before is not None:
+                tightened.append(f"{name} (was mode {before:o})")
+    if not tightened:
+        return []
+    return [Finding(NOTE, "database files", f"other users on this box could read "
+                    f"{', '.join(tightened)}; each is now readable by this user alone.")]
 
 
 # ------------------------------------------------------------------ postings.db
@@ -306,20 +347,22 @@ def _invite(app) -> None:
           "/diayn grant lets others in.")
 
 
-def _steps(poller, settings, fetch_application) -> int:
-    installed = dependencies()
-    for finding in installed:
+def _failed(findings) -> bool:
+    """Reports each of `findings`; returns whether any of them failed."""
+    for finding in findings:
         report(finding)
-    if any(finding.failed for finding in installed):
+    return any(finding.failed for finding in findings)
+
+
+def _steps(poller, settings, fetch_application) -> int:
+    if _failed(dependencies()):
         return FAILED_EXIT
     found, app = discord_findings(poller, settings, fetch_application)
-    for finding in found:
-        report(finding)
-    if app is None or any(finding.failed for finding in found):
+    if _failed(found) or app is None:
         return FAILED_EXIT
-    directory = data_directory(settings.data_dir, make=True)
-    report(directory)
-    if directory.failed:
+    if _failed([data_directory(settings.data_dir, fix=True)]):
+        return FAILED_EXIT
+    if _failed(private_databases((settings.users_db, settings.postings_db))):
         return FAILED_EXIT
     code, ledger = bootstrap(poller, settings)
     report(ledger)
@@ -332,7 +375,8 @@ def _steps(poller, settings, fetch_application) -> int:
 def cmd_setup(poller, argv, fetch_application=None) -> int:
     """
     `setup`: checks the dependencies, the token and the intent, makes the data directory
-    and bootstraps postings.db, then prints the invite link; returns the exit code. The settings are
+    (or tightens it, and the databases in it), bootstraps postings.db, then prints the
+    invite link; returns the exit code. The settings are
     bound first (the scraper's boot()), so the paths are the ones `run` will use.
     `fetch_application` stands in for discord_portal's, for the tests.
     """
@@ -341,7 +385,8 @@ def cmd_setup(poller, argv, fetch_application=None) -> int:
         description="Get this host ready: check the dependencies and the bot's token and "
                     "intent, make the data "
                     "directory, bootstrap postings.db and print the invite link. "
-                    "Safe to run again: nothing that exists is changed.").parse_args(argv)
+                    "Safe to run again: nothing that exists is changed, except that "
+                    "what others on this box could read is made private.").parse_args(argv)
     try:
         poller.boot()
     except poller.ConfigError as error:

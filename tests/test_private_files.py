@@ -10,7 +10,10 @@ to make the data directory or a database makes it through here. What is pinned:
 - one already there is left as it is, and a file in its way is an OSError;
 - a database sqlite makes inside private_umask() is made at mode 600, and its
   -wal, -shm and -journal take that mode from it, even once the block is over;
-- the umask is put back after the block, however it ends, and blocks nest.
+- the umask is put back after the block, however it ends, and blocks nest;
+- tighten, which setup uses, takes every bit for the group and others off a
+  directory or a file that has any, and says what mode it had; it never adds a
+  bit, and leaves alone what is private already or not there.
 
 Every test runs under umask 022, the usual default, which is what made the data
 directory 755 and users.db 644 before, and puts the umask back after. The other
@@ -148,6 +151,49 @@ class PrivateUmask(_Case):
                 pass
             self.assertEqual(current_umask(), private_files.PRIVATE_UMASK)
         self.assertEqual(current_umask(), LOOSE_UMASK)
+
+
+@POSIX_MODES
+class Tighten(_Case):
+    def made(self, name, mode) -> str:
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="ascii"):
+            pass
+        os.chmod(path, mode)
+        return path
+
+    def test_a_file_others_can_read_becomes_600_and_its_old_mode_is_returned(self):
+        path = self.made("users.db", 0o644)
+        self.assertEqual(private_files.tighten(path), 0o644)
+        self.assertEqual(mode_of(path), PRIVATE_FILE)
+
+    def test_a_directory_others_can_enter_becomes_700(self):
+        path = os.path.join(self.tmp, "data")
+        os.mkdir(path)
+        os.chmod(path, 0o755)
+        self.assertEqual(private_files.tighten(path), 0o755)
+        self.assertEqual(mode_of(path), PRIVATE_DIRECTORY)
+
+    def test_it_only_takes_bits_away(self):
+        path = self.made("users.db", 0o444)
+        self.assertEqual(private_files.tighten(path), 0o444)
+        self.assertEqual(mode_of(path), 0o400)
+
+    def test_what_is_private_already_is_left_alone(self):
+        path = self.made("users.db", 0o600)
+        self.assertIsNone(private_files.tighten(path))
+        self.assertEqual(mode_of(path), PRIVATE_FILE)
+
+    def test_what_is_not_there_is_nothing_to_do(self):
+        self.assertIsNone(private_files.tighten(os.path.join(self.tmp, "users.db")))
+        self.assertEqual(os.listdir(self.tmp), [])
+
+
+class DatabaseFiles(unittest.TestCase):
+    def test_a_database_and_the_files_sqlite_keeps_beside_it(self):
+        self.assertEqual(private_files.database_files("/srv/diayn/users.db"),
+                         ("/srv/diayn/users.db", "/srv/diayn/users.db-journal",
+                          "/srv/diayn/users.db-wal", "/srv/diayn/users.db-shm"))
 
 
 class ImportingDoesNothing(unittest.TestCase):

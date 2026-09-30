@@ -11,7 +11,10 @@ scraper's `sweep --init` and `watch --init` (and `discover`, for the directory
 its files go in). sqlite gives a database's -journal, -wal and -shm the
 database's own mode as it makes them, so they follow it.
 
-A directory or a file that is already there keeps its mode here.
+A directory or a file that is already there keeps its mode, except through
+tighten, which is setup's: it takes away what others on the box could read in
+the data directory, users.db and postings.db that an earlier command, or an
+earlier version, left loose. doctor only reports it.
 
 Importing this module does nothing. It stays within what Python 3.9 runs, as
 hints.py does, since the scraper imports it.
@@ -19,13 +22,18 @@ hints.py does, since the scraper imports it.
 
 import contextlib
 import os
+import stat
 import threading
 
 #: A directory only its owner can list or enter.
 DIRECTORY_MODE = 0o700
-#: What the umask takes away while something is made: every bit for the group and
-#: for others. sqlite makes a database at 644 less the umask, so 600.
-PRIVATE_UMASK = 0o077
+#: Every permission bit for the group and for others.
+GROUP_AND_OTHERS = 0o077
+#: What the umask takes away while something is made: all of those. sqlite makes a
+#: database at 644 less the umask, so 600.
+PRIVATE_UMASK = GROUP_AND_OTHERS
+#: The files sqlite keeps beside a database, which take its mode as it makes them.
+SIDECARS = ("-journal", "-wal", "-shm")
 
 # The umask belongs to the process, not to a thread. One block at a time changes
 # it, so that a block ending puts back the umask from before any began; reentrant,
@@ -63,3 +71,25 @@ def make_directory(path) -> bool:
         os.makedirs(path, mode=DIRECTORY_MODE, exist_ok=True)
     os.chmod(path, DIRECTORY_MODE)
     return True
+
+
+def database_files(path) -> tuple:
+    """The database at `path`, then the files sqlite keeps beside it."""
+    return (path,) + tuple(path + suffix for suffix in SIDECARS)
+
+
+def tighten(path):
+    """
+    Takes every permission for the group and for others off the directory or the file
+    at `path`, when it is there and has any; returns the mode it had, or None when
+    there was nothing to take. It never adds a bit: 755 becomes 700, 644 becomes 600,
+    and 444 becomes 400. Raises OSError when the chmod is refused.
+    """
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        return None
+    if not mode & GROUP_AND_OTHERS:
+        return None
+    os.chmod(path, mode & ~GROUP_AND_OTHERS)
+    return mode
