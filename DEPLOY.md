@@ -133,8 +133,11 @@ module.exports = {
 - **`stop_exit_codes: [3, 78]`.** Exit 3 means another `run` or `watch` holds
   the lock. Restarting into it only loops; find the other process instead.
   Exit 78 means Discord refused the Server Members Intent, a toggle in the
-  developer portal that no restart changes, and a loop of refused logins can
-  get the bot's token reset. The log line says which toggle to turn on; then
+  developer portal, or refused `DISCORD_TOKEN` in `.env`. No restart changes
+  either, and a loop of refused logins can get the bot's token reset. `run`
+  asks Discord's REST API about both before it logs in, so even a service
+  manager that restarts it on 78 anyway only repeats that cheap REST call,
+  never a gateway login. The log line says what to fix; then
   `pm2 restart diayn`.
 - **`kill_timeout`.** pm2 stops a process with SIGINT, which `run` treats as
   Ctrl-C, on every supported Python: it logs out of Discord and exits 0. This gives it ten seconds before
@@ -180,8 +183,8 @@ WantedBy=multi-user.target
 - **`Restart=on-failure`** restarts it after a crash, and after it exits 1
   because its sweep loop ended, so the sweeps come back with it.
 - **`RestartPreventExitStatus=3 78`**: another `run` or `watch` holds the lock
-  (3), or Discord refused the Server Members Intent (78), as for pm2 above.
-  Turn the intent on, then `sudo systemctl restart diayn`.
+  (3), or Discord refused the Server Members Intent or the token (78), as for
+  pm2 above. Fix what the log line names, then `sudo systemctl restart diayn`.
 - **`KillSignal=SIGINT`**, the signal pm2 sends too, so both units stop `run` the
   same way: it logs out of Discord and exits 0. `run` treats SIGTERM, systemd's
   default, the same, so a unit without this line also stops cleanly.

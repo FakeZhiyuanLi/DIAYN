@@ -6,6 +6,11 @@ application, before the bot ever logs in: whether DISCORD_TOKEN is a bot token
 Discord accepts, whether the Server Members Intent is on, and whether anyone
 may add the bot to a server. And the link that invites it.
 
+`diayn.py run` asks the same before every login, and refuses to log in on two
+answers only: TokenRefused, a token Discord answers 401 for, and flags Discord
+reported (`intent_reported`) without the intent. Any other PortalError is a
+check that could not be made, and `run` logs in anyway.
+
     app = await discord_portal.fetch_application(token, user_agent=...)
     discord_portal.invite_url(app.id)
 
@@ -28,6 +33,8 @@ import dataclasses
 from urllib.parse import urlencode
 
 import aiohttp
+
+import hints
 
 API = "https://discord.com/api/v10"
 USER_PATH = "/users/@me"
@@ -53,6 +60,11 @@ class PortalError(Exception):
     never carries the token."""
 
 
+class TokenRefused(PortalError):
+    """Discord answered 401: DISCORD_TOKEN is not a bot token it accepts. Unlike every
+    other PortalError, this one no retry changes."""
+
+
 @dataclasses.dataclass(frozen=True)
 class Application:
     """The host's application, as setup and doctor report it."""
@@ -61,6 +73,9 @@ class Application:
     bot_name: str
     members_intent: bool
     public: bool                                # anyone with the link may add the bot
+    #: Whether Discord's answer carried the application's flags at all. Without them
+    #: members_intent is False, but says nothing: the intent is not clearly off.
+    intent_reported: bool = True
 
 
 def user_agent(project_url: str, version: str) -> str:
@@ -77,10 +92,8 @@ def invite_url(application_id: str) -> str:
 
 def _status_error(status: int, path: str) -> PortalError:
     if status == 401:
-        return PortalError(
-            "Discord refused DISCORD_TOKEN (HTTP 401): it is not a bot token Discord "
-            "accepts. In the developer portal, open your application, then Bot, then "
-            "Reset Token, and put the new token in .env.")
+        return TokenRefused("Discord refused DISCORD_TOKEN (HTTP 401): it is not a bot token "
+                            f"Discord accepts. {hints.TOKEN_HOW}")
     if status == 429:
         return PortalError("Discord is rate limiting this address (HTTP 429). "
                            "Try again in a minute.")
@@ -111,13 +124,15 @@ def _bot_name(user: object) -> str:
 def _application(app: object, bot_name: str) -> Application:
     if not isinstance(app, dict):
         raise _unparsed(APPLICATION_PATH)
-    app_id, flags = app.get("id"), app.get("flags") or 0
+    app_id, reported = app.get("id"), app.get("flags")
+    flags = reported or 0
     if not (isinstance(app_id, str) and app_id.isascii() and app_id.isdigit()
             and isinstance(flags, int)):
         raise _unparsed(APPLICATION_PATH)
     return Application(id=app_id, name=str(app.get("name") or ""), bot_name=bot_name,
                        members_intent=bool(flags & MEMBERS_INTENT_FLAGS),
-                       public=bool(app.get("bot_public")))
+                       public=bool(app.get("bot_public")),
+                       intent_reported=reported is not None)
 
 
 async def _ask(session, headers: dict) -> Application:

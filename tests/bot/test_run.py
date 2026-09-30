@@ -25,12 +25,21 @@ cmd_watch. What is pinned here:
 - Discord refusing the Server Members Intent exits 78, once, with one line
   naming the portal toggle: DEPLOY.md's units never restart on 78, since a
   loop of refused logins can get the token reset;
+- before either task starts, once the lock is held, run asks Discord's REST API
+  about the application, as setup and doctor do: a token Discord refuses, or
+  flags that say the intent is off, exit 78 with one line and no gateway login,
+  so a service manager that restarts it anyway repeats only that REST call. A
+  check that cannot be made (no network, a timeout, a 5xx) is logged in one
+  line, and the bot logs in as before;
+- a token discord.py refuses as it logs in (LoginFailure) exits 78 too;
 - the bot reads postings.db through ContractSource on a mode=ro connection of
   its own, never the writer's.
 
 Nothing logs in to Discord and nothing is fetched. Most tests hand `run` a fake
 bot, a coroutine that records what it saw, and need nothing installed. The ones
 that build the real client replace app.serve, and skip without discord.py.
+discord_portal.fetch_application, the REST check, is replaced in every test by a
+fake that says the token is good and the intent on, unless a test says otherwise.
 
 The scraper's .env is never read: load_env_file is replaced, and the scraper's
 variables are cleared from the environment, with DIAYN_DATA pointing at a
@@ -40,6 +49,7 @@ back.
 
 import asyncio
 import contextlib
+import dataclasses
 import io
 import os
 import signal
@@ -47,15 +57,18 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
 import diayn
+import discord_portal as portal
 import hints
 import intern_clock
 import internship_poller as poller
 import postings_source
 from test_cli import v2_fixture
+from test_setup import FakePortal, application
 
 try:
     import discord
@@ -136,6 +149,12 @@ class _RunCase(unittest.TestCase):
         self.env = {"DIAYN_DATA": self.data, "DISCORD_TOKEN": TOKEN}
         saved = poller.SETTINGS, poller.BOARDS, poller.STARTED_AT
         self.addCleanup(self._restore, saved)
+        # The REST check run makes before it logs in: the token is good and the intent
+        # on, unless a test says otherwise. Nothing reaches Discord.
+        self.portal = FakePortal()
+        fetch = mock.patch.object(portal, "fetch_application", self.portal)
+        fetch.start()
+        self.addCleanup(fetch.stop)
 
     @staticmethod
     def _restore(saved):
@@ -685,6 +704,207 @@ class TheIntent(_RunCase):
         self.assertEqual(code, CONFIG, err.getvalue())
 
 
+#: The User-Agent the REST check carries: the one setup and doctor send.
+AGENT = portal.user_agent(poller.PROJECT_URL, poller.__version__)
+
+
+class TheCheckBeforeLogin(_RunCase):
+    """
+    Before the bot opens a gateway connection, run asks Discord's REST API whether the
+    token is good and the Server Members Intent on. A refusal there exits 78 without a
+    login, so even a service manager that restarts on 78 anyway repeats only a REST call.
+    """
+
+    def tasks(self):
+        """(a bot, a sweep loop, and what each was started with). The bot returns at once,
+        so a run that fails to refuse ends, and fails the test, rather than hangs."""
+        started = {"bot": [], "sweep loop": []}
+
+        async def bot(settings):
+            started["bot"].append(settings)
+
+        def watch(conn):
+            started["sweep loop"].append(conn)
+            return forever()
+        return bot, watch, started
+
+    def assert_refused_before_login(self, code, err, started):
+        self.assertEqual(code, CONFIG, err)
+        self.assertEqual(started, {"bot": [], "sweep loop": []})    # no gateway login, no sweep
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn(TOKEN, err)
+        with poller.sweeper_lock(self.db):              # raises if run still held it
+            pass
+
+    def test_the_check_is_made_once_with_the_token_and_discords_user_agent(self):
+        v2_fixture(self.db)
+
+        async def bot(settings):
+            return None
+
+        code, _, err = self.run_diayn(bot=bot, watch=idle)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.portal.calls, [(TOKEN, AGENT)])
+        self.assertEqual(err, "")
+
+    def test_the_intent_off_exits_78_and_neither_task_starts(self):
+        v2_fixture(self.db)
+        self.portal.app = application(members_intent=False)
+        bot, watch, started = self.tasks()
+        code, _, err = self.run_diayn(bot=bot, watch=watch)
+        self.assert_refused_before_login(code, err, started)
+        self.assertIn(hints.INTENT_HOW, err)
+        self.assertEqual(len(self.portal.calls), 1)
+
+    def test_a_token_discord_refuses_exits_78_naming_discord_token_and_env(self):
+        v2_fixture(self.db)
+        self.portal.error = portal.TokenRefused("Discord refused DISCORD_TOKEN (HTTP 401)")
+        bot, watch, started = self.tasks()
+        code, _, err = self.run_diayn(bot=bot, watch=watch)
+        self.assert_refused_before_login(code, err, started)
+        self.assertIn("DISCORD_TOKEN", err)
+        self.assertIn(".env", err)
+        self.assertIn("Reset Token", err)
+        self.assertEqual(len(self.portal.calls), 1)
+
+    def test_a_check_that_cannot_be_made_is_logged_and_the_bot_logs_in_as_before(self):
+        failures = ("could not reach Discord: TimeoutError",
+                    "could not reach Discord: ClientConnectorError",
+                    "Discord answered HTTP 503 for /oauth2/applications/@me.",
+                    "Discord is rate limiting this address (HTTP 429). Try again in a minute.",
+                    "Discord's answer for /oauth2/applications/@me did not parse.")
+        for said in failures:
+            with self.subTest(failure=said):
+                for leftover in (self.db, self.db + "-wal", self.db + "-shm"):
+                    if os.path.exists(leftover):
+                        os.remove(leftover)
+                v2_fixture(self.db)
+                self.portal.error = portal.PortalError(said)
+                logins = []
+
+                async def bot(settings):
+                    logins.append(settings)
+
+                code, _, err = self.run_diayn(bot=bot, watch=idle)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(len(logins), 1)
+                self.assertEqual(len(err.splitlines()), 1, err)
+                self.assertIn(said, err)
+                self.assertNotIn("Traceback", err)
+
+    def test_flags_discord_did_not_report_are_not_clearly_off(self):
+        v2_fixture(self.db)
+        self.portal.app = dataclasses.replace(application(members_intent=False),
+                                              intent_reported=False)
+        logins = []
+
+        async def bot(settings):
+            logins.append(settings)
+
+        code, _, err = self.run_diayn(bot=bot, watch=idle)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(logins), 1)
+
+    def test_a_second_run_exits_3_without_asking_discord(self):
+        v2_fixture(self.db)
+        with poller.sweeper_lock(self.db):
+            code, _, err = self.run_diayn(bot=FakeBot(), watch=idle)
+        self.assertEqual(code, LOCK_HELD, err)
+        self.assertEqual(self.portal.calls, [])
+
+    def test_through_main_the_intent_off_exits_78_before_the_bot_starts(self):
+        v2_fixture(self.db)
+        self.portal.app = application(members_intent=False)
+        bot, _, started = self.tasks()
+        err = io.StringIO()
+        with self.environment(), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err), \
+                mock.patch.object(diayn, "discord_bot", return_value=bot):
+            code = diayn.main(["run"])
+        self.assertEqual(code, CONFIG, err.getvalue())
+        self.assertEqual(started["bot"], [])
+
+
+class LoginFailure(Exception):
+    """discord.py's LoginFailure, for the fake module below."""
+
+
+class PrivilegedIntentsRequired(Exception):
+    """discord.py's, for the fake module below."""
+
+
+class ConnectionClosed(Exception):
+    """discord.py's, for the fake module below: a gateway close with its code."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+#: As much of discord.py as refuses_token and refuses_intent look at.
+FAKE_DISCORD = types.SimpleNamespace(LoginFailure=LoginFailure,
+                                     PrivilegedIntentsRequired=PrivilegedIntentsRequired,
+                                     ConnectionClosed=ConnectionClosed)
+
+
+def raised_while(inner, how):
+    """A RuntimeError raised from `inner` (how="cause") or while handling it ("context")."""
+    try:
+        try:
+            raise inner
+        except type(inner):
+            if how == "cause":
+                raise RuntimeError("logging out failed") from inner
+            raise RuntimeError("logging out failed")
+    except RuntimeError as wrapped:
+        return wrapped
+
+
+class TheTokenAtLogin(_RunCase):
+    """A token the REST check could not see refused, which discord.py refuses as it logs in."""
+
+    def test_a_refused_token_exits_78_once_with_one_line_naming_discord_token(self):
+        v2_fixture(self.db)
+        logins, cancelled = [], []
+
+        async def bot(settings):
+            logins.append(settings)
+            raise diayn.TokenRefused()
+
+        async def watching():
+            try:
+                await forever()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        code, _, err = self.run_diayn(bot=bot, watch=lambda conn: watching())
+        self.assertEqual(code, CONFIG, err)
+        self.assertEqual(len(logins), 1)                # no second login
+        self.assertEqual(cancelled, [True])
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertIn("DISCORD_TOKEN", err)
+        self.assertIn(".env", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn(TOKEN, err)
+
+    def test_login_failure_however_it_is_raised_is_a_refused_token(self):
+        raised = {"itself": LoginFailure("Improper token has been passed."),
+                  "as the cause": raised_while(LoginFailure("Improper token"), "cause"),
+                  "as the context": raised_while(LoginFailure("Improper token"), "context")}
+        for name, error in raised.items():
+            with self.subTest(raised=name):
+                self.assertTrue(diayn.refuses_token(error, FAKE_DISCORD))
+                self.assertFalse(diayn.refuses_intent(error, FAKE_DISCORD))
+
+    def test_nothing_else_is_a_refused_token(self):
+        for error in (RuntimeError("boom"), ConnectionClosed(4000), PrivilegedIntentsRequired(),
+                      raised_while(ConnectionClosed(4004), "cause")):
+            with self.subTest(error=repr(error)):
+                self.assertFalse(diayn.refuses_token(error, FAKE_DISCORD))
+
+
 @needs_discord
 class TheRealClient(_RunCase):
     """The default bot, bot/app.py's client, with app.serve replaced so nothing logs in."""
@@ -780,6 +1000,19 @@ class TheRealClient(_RunCase):
                     code, _, err = self.run_diayn(watch=idle)
                 self.assertEqual(code, CONFIG, err)
                 self.assertEqual(served, [TOKEN])
+
+    def test_discord_refusing_the_token_at_login_exits_78_after_one_login(self):
+        v2_fixture(self.db)
+        served = []
+        refused = self.serving(lambda: discord.LoginFailure("Improper token has been passed."),
+                               served)
+        with mock.patch.object(app, "serve", refused):
+            code, _, err = self.run_diayn(watch=idle)
+        self.assertEqual(code, CONFIG, err)
+        self.assertEqual(served, [TOKEN])
+        self.assertIn("DISCORD_TOKEN", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn(TOKEN, err)
 
     def test_any_other_failure_of_the_bot_is_raised_as_before(self):
         v2_fixture(self.db)

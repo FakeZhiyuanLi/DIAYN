@@ -415,6 +415,36 @@ class Deploy(unittest.TestCase):
                 self.assertNotIn(gone, self.deploy)
 
 
+def passages(text) -> list:
+    """`text` cut into its paragraphs and list items, each on one line."""
+    return [" ".join(item.split()) for item in re.split(r"\n\s*\n|\n(?=- )", text)]
+
+
+class ExitCode78(unittest.TestCase):
+    """
+    What README, DEPLOY.md and CLAUDE.md say exit 78 means, held to `run`: Discord refused
+    the Server Members Intent or DISCORD_TOKEN, and `run` asks Discord's REST API about
+    both before it logs in, so a service manager that restarts it on 78 anyway repeats a
+    REST call, never a gateway login.
+    """
+
+    DOCUMENTS = ("README.md", "DEPLOY.md", "CLAUDE.md")
+    SAYS_78 = re.compile(r"(?i)\bexit(s|ing)? %d\b" % diayn.CONFIG_EXIT)
+
+    def test_each_says_a_refused_token_exits_78_too_and_both_are_checked_before_login(self):
+        for name in self.DOCUMENTS:
+            said = [p for p in passages(read(name)) if self.SAYS_78.search(p)]
+            with self.subTest(document=name):
+                self.assertTrue(said, f"{name} says nothing of exit {diayn.CONFIG_EXIT}")
+                self.assertTrue(any("Server Members Intent" in p and "DISCORD_TOKEN" in p
+                                    and "before it logs in" in p
+                                    and "never a gateway login" in p for p in said), said)
+
+    def test_the_passages_are_cut_at_list_items_and_blank_lines(self):
+        # A cut that kept a whole document as one passage would pass on every run.
+        self.assertEqual(passages("a\nb\n\n- c\n  d\n- e"), ["a b", "- c d", "- e"])
+
+
 class Contract(unittest.TestCase):
     """CONTRACT.md: the rules between the scraper and the bot, inside this repository.
     Runtime messages and docstrings cite its promises by number (P5, B7), so every

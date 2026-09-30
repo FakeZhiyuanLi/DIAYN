@@ -89,9 +89,13 @@ Three things are expected, and are not red:
   manager (`pm2 stop diayn`, `systemctl stop diayn`), which otherwise restarts
   whatever you killed.
 - **Make a service manager restart `run` on exit 78.** It means Discord refused
-  the Server Members Intent: a portal toggle only the host can turn on, and a
-  loop of refused logins can get the bot's token reset. DEPLOY.md's units list
-  78 beside 3 as codes never to restart on; keep them there.
+  the Server Members Intent, a portal toggle only the host can turn on, or
+  `DISCORD_TOKEN`, which only the host can replace; a loop of refused logins
+  can get the bot's token reset. `run` asks Discord's REST API about both
+  before it logs in (`check_before_login`), so even a service manager that
+  restarts it anyway only repeats that REST call, never a gateway login; keep
+  that check ahead of the login. DEPLOY.md's units list 78 beside 3 as codes
+  never to restart on; keep them there.
 - **Load a `.env` from anywhere but `POLLER_ENV_FILE` or the checkout.** Never
   from the working directory or the data directory. Do not open, print or copy
   a `.env`; `diayn.py config` shows what took effect, and prints the Discord

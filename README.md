@@ -248,10 +248,16 @@ stopped. This is what pm2 or systemd runs.
   connection of its own, and keeps its own data in `users.db`.
 - It needs `DISCORD_TOKEN`, and refuses to start without a `postings.db`: it
   never makes one. `setup` does.
-- **Exit 78 is a setting, not a crash.** If Discord refuses the Server Members
-  Intent, `run` says which portal toggle to turn on and exits 78 (EX_CONFIG),
-  after one login, never retrying. DEPLOY.md's pm2 and systemd units do not
-  restart on 78: a loop of refused logins can get the bot's token reset.
+- **Exit 78 is a setting, not a crash.** Once it holds the lock, and before it
+  logs in, `run` asks Discord's REST API, as `setup` does, whether
+  `DISCORD_TOKEN` is a token Discord accepts and the Server Members Intent is
+  on. If Discord refuses the token, or the intent is off, `run` says what to
+  fix and exits 78 (EX_CONFIG) without logging in. DEPLOY.md's pm2 and systemd
+  units do not restart on 78: a loop of refused logins can get the bot's token
+  reset, and even a service manager that restarts it anyway only repeats that
+  cheap REST call, never a gateway login. If the check cannot reach Discord,
+  `run` logs one line and logs in as before, and a refusal at login exits 78
+  too, after one login, never retrying.
 
 ### `grant`
 

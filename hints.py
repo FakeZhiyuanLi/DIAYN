@@ -35,6 +35,9 @@ VENV = ".venv"
 #: refuses the login of a bot whose portal toggle is off.
 INTENT_HOW = ("In the developer portal, open your application, then Bot, and under "
               "Privileged Gateway Intents turn on Server Members Intent.")
+#: Where a bot token Discord accepts comes from, and where it goes.
+TOKEN_HOW = ("In the developer portal, open your application, then Bot, then Reset Token, "
+             "and put the new token in .env as DISCORD_TOKEN.")
 #: The oldest Python DIAYN runs on. On 3.9, macOS's own python3, the scraper and llm
 #: die with a TypeError as they are imported, before anything could say why.
 MIN_PYTHON = (3, 10)
