@@ -22,7 +22,10 @@ from datetime import date
 import intern_profile as profile
 import intern_vocab
 import resume_lexicon
+from club_wording import CLUB
+from intern_places import US_STATES
 from intern_profile import Profile
+from intern_taxonomy import company_norm
 
 TODAY = date(2026, 9, 28)
 #: Fixed rather than time.time(), so a failure repeats.
@@ -432,10 +435,10 @@ class ParseFiltersForm(unittest.TestCase):
 
         self.assertIn("I don't track 'Boing'. Did you mean Boeing?", problems)
 
-    def test_an_untracked_company_points_at_report(self):
+    def test_an_untracked_company_asks_whoever_runs_this_bot(self):
         changes, problems = self.parse(hide="Pfizer")
 
-        self.assertIn("I don't track 'Pfizer' yet. Suggest it with `/report`.", problems)
+        self.assertIn("I don't track 'Pfizer' yet. Ask whoever runs this bot to add it.", problems)
         self.assertEqual(changes["companies_hidden"], ())
 
     def test_companies_are_stored_normalised(self):
@@ -479,6 +482,46 @@ class ParseFiltersForm(unittest.TestCase):
         self.assertEqual(p.locations, ("oc", "unlisted", "st:NY"))
         self.assertEqual((p.terms, p.min_score), (("Summer 2027",), 45))
         self.assertEqual((p.companies_hidden, p.companies_only), (("cvshealth",), ("boeing",)))
+
+
+class NoClubWording(unittest.TestCase):
+    """Both form parsers answer the user with problem sentences. None of them may send the
+    user to a club, its officers or another bot's command: DIAYN has none of those."""
+
+    #: How each kind of problem sentence starts; every one must be produced below.
+    KINDS = ("I didn't recognise '", "Not in my skills list, so kept as keywords:",
+             "Not in my skills list, so left out:", "I couldn't keep these keywords:",
+             "I couldn't read '", "Not a US state:", "I keep at most 10 states,",
+             "I keep at most 30 hidden companies,", "I don't track 'Boing'. Did you mean",
+             "I don't track 'Pfizer' yet.")
+
+    def details(self, majors, grad, skills, keywords) -> tuple[str, ...]:
+        return profile.parse_details_form(majors, None, grad, skills, keywords, today=TODAY,
+                                          current=mech_student())[1]
+
+    def every_problem(self) -> tuple[str, ...]:
+        tracked = tuple(f"Co{i}" for i in range(intern_vocab.MAX_COMPANIES_HIDDEN + 2))
+        known = {**ParseFiltersForm.KNOWN, **{company_norm(name): name for name in tracked}}
+        states = ", ".join(("SoCal", *sorted(US_STATES)[:intern_vocab.MAX_STATES + 2]))
+        full = ", ".join(("x", *(f"kw{i}" for i in range(intern_vocab.MAX_KEYWORDS + 2))))
+        kept = self.details("Viticulture", "", "SolidWorks, lab safety", "")
+        refused = self.details("*bold* stuff", "next year", "Excel (pivot tables)", full)
+        _, filters = profile.parse_filters_form(
+            states, (), ", ".join(("Boing", "Pfizer", *tracked)), "Pfizer, SpaceX", "",
+            today=TODAY, current=fresh(), known_companies=known)
+        return kept + refused + filters
+
+    def test_every_kind_of_problem_sentence_is_exercised(self):
+        problems = self.every_problem()
+
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                self.assertTrue(any(p.startswith(kind) for p in problems))
+
+    def test_no_problem_sentence_names_a_club(self):
+        for sentence in self.every_problem():
+            with self.subTest(sentence=sentence[:60]):
+                self.assertIsNone(CLUB.search(sentence))
 
 
 class Legacy(unittest.TestCase):

@@ -465,7 +465,7 @@ def _untracked(name: str, known: Mapping[str, str]) -> str:
     close = difflib.get_close_matches(name.lower(), list(by_lower), n=1, cutoff=0.75)
     if close:
         return f"I don't track '{_echo(name)}'. Did you mean {_echo(by_lower[close[0]])}?"
-    return f"I don't track '{_echo(name)}' yet. Suggest it with `/report`."
+    return f"I don't track '{_echo(name)}' yet. Ask whoever runs this bot to add it."
 
 
 # ------------------------------------------------------------------ legacy (3.3)

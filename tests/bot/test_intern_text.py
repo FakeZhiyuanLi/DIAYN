@@ -37,6 +37,7 @@ import intern_vocab
 import internship_poller as poller
 import resume_lexicon
 import resume_parse
+from club_wording import CLUB
 
 NOW = 1_790_000_000.0                  # 2026-09-21, a Monday, in Pacific time
 DAY = 86400
@@ -457,8 +458,6 @@ class NoClubWording(unittest.TestCase):
     """DIAYN is run by whoever hosts it, for whoever they let in: nothing it says assumes a
     club, its officers, its server or its other bots' commands."""
 
-    CLUB = re.compile(r"\bclub\b|\bofficers?\b|puzzle-admins|/report", re.I)
-
     def every_reply(self) -> list:
         p = person()
         return [text.disclosure_text(), text.start_card(pdf_ok=True), text.start_card(pdf_ok=False),
@@ -473,7 +472,7 @@ class NoClubWording(unittest.TestCase):
     def test_nothing_the_finder_says_names_a_club(self):
         for body in self.every_reply():
             with self.subTest(body=body[:60]):
-                self.assertIsNone(self.CLUB.search(body))
+                self.assertIsNone(CLUB.search(body))
 
     def test_help_that_needs_the_host_asks_whoever_runs_this_bot(self):
         self.assertIn("whoever runs this bot can install `pypdf`", text.start_card(pdf_ok=False))
