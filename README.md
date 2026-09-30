@@ -308,6 +308,17 @@ Every board is `[platform, slug, company, sector]`. A Workday slug is
 A board added this way behaves like one `discover` found: its open postings are
 all new to the ledger, and arrive at the bot together at the next sweep.
 
+## Privacy
+
+A resume given to the Discord bot is read once and thrown away. It is read in a
+separate, short-lived process that is given none of the bot's environment
+variables (so no bot token or API key), cannot write a byte to any file or leave
+a core dump, is held to 15 seconds of CPU and is killed after 20 seconds. That
+is not a full sandbox: the process runs as the bot's own user, so it can still
+read files that user can, `.env` included, and open network connections. The
+bot process never parses, stores or logs the resume's text; only the vocabulary
+the person confirms is kept. Whoever runs this bot can read what it stores.
+
 ## Tests
 
 ```sh
