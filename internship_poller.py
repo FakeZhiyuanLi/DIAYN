@@ -113,8 +113,9 @@ class Settings:
     to its variable.
     """
 
-    # Data files. Each can point outside the checkout, so the scraper and the
-    # bot can share one data directory.
+    # The data directory, and the data files, which default to it (DATA_FILES).
+    # Each file can still be pointed somewhere else on its own.
+    data_dir: str = DATA_DIR
     postings_db: str = os.path.join(DATA_DIR, "postings.db")
     boards_file: str = os.path.join(DATA_DIR, "boards.json")
     yc_cache: str = os.path.join(DATA_DIR, "yc_cache.json")
@@ -157,10 +158,68 @@ class Settings:
     # the bot's quota panel says so; scraper_meta publishes this for it, and
     # llm_usage.day is the date in this zone (quota_day; CONTRACT.md, P7).
     llm_day_tz: str = "America/Los_Angeles"
+    # The Discord bot (bot/), which reads this same .env. The token is its own
+    # bot's, from the developer portal; repr=False as for the Gemini key.
+    discord_token: Optional[str] = field(default=None, repr=False)
+    # Who owns this bot, and may grant others access. Empty means the Discord
+    # application's owner. Discord ids, so kept out of the repr too.
+    owner_ids: tuple = field(default=(), repr=False)
+    # The zone for alert hours and the bot's daily housekeeping. Separate from
+    # llm_day_tz, which is the zone of Gemini's quota day.
+    tz: str = "UTC"
+    # The Gemini fit check: postings checked per request, and its own budget,
+    # which with the --llm one above must fit the key's quota.
+    fit_batch: int = 15
+    fit_rpd: int = 200
+    fit_rpm: int = 10
 
+
+def absolute_path(raw) -> str:
+    """`raw`, which must be an absolute path; ValueError otherwise.
+
+    A relative one would resolve against the working directory, which under
+    pm2 is wherever the process was started, and a .env does not expand `~`.
+    """
+    if not os.path.isabs(raw):
+        raise ValueError(f"{raw!r} is not an absolute path")
+    return raw
+
+
+# The largest a Discord id can be: it is a 64-bit snowflake, and sqlite
+# stores integers as signed 64-bit. 19 digits at most, which is checked first
+# so a runaway value is never handed to int().
+_MAX_DISCORD_ID = 2 ** 63 - 1
+_MAX_DISCORD_ID_DIGITS = len(str(_MAX_DISCORD_ID))
+
+
+def discord_ids(raw) -> tuple:
+    """Comma-separated Discord user ids as a tuple of ints, each once.
+
+    A refused entry is named by its position, never quoted: it is most likely
+    somebody's id with a typo, and the message goes to a log.
+    """
+    ids = []
+    for n, entry in enumerate(raw.split(","), 1):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if not (entry.isascii() and entry.isdigit()
+                and len(entry) <= _MAX_DISCORD_ID_DIGITS
+                and 0 < int(entry) <= _MAX_DISCORD_ID):
+            raise ValueError(f"entry {n} is not a Discord user id "
+                             "(digits only, separated by commas)")
+        ids.append(int(entry))
+    return tuple(dict.fromkeys(ids))
+
+
+# The data files that live in DIAYN_DATA unless named on their own, each by
+# its file name there.
+DATA_FILES = (("postings_db", "postings.db"), ("boards_file", "boards.json"),
+              ("yc_cache", "yc_cache.json"))
 
 # (field, variable, type), in the order `config` prints them.
 SETTINGS_FROM_ENV = (
+    ("data_dir", "DIAYN_DATA", absolute_path),
     ("postings_db", "POSTINGS_DB", str),
     ("boards_file", "BOARDS_FILE", str),
     ("yc_cache", "YC_CACHE", str),
@@ -177,9 +236,17 @@ SETTINGS_FROM_ENV = (
     ("llm_http_timeout", "GEMINI_HTTP_TIMEOUT", float),
     ("llm_max_batch_failures", "GEMINI_MAX_BATCH_FAILURES", int),
     ("llm_day_tz", "LLM_DAY_TZ", ZoneInfo),
+    ("discord_token", "DISCORD_TOKEN", str),
+    ("owner_ids", "DIAYN_OWNER_IDS", discord_ids),
+    ("tz", "DIAYN_TZ", ZoneInfo),
+    ("fit_batch", "FIT_BATCH", int),
+    ("fit_rpd", "FIT_RPD", int),
+    ("fit_rpm", "FIT_RPM", int),
 )
 # `config` says whether these are set, and never what they are.
-SECRET_VARIABLES = frozenset({"GEMINI_API_KEY"})
+SECRET_VARIABLES = frozenset({"GEMINI_API_KEY", "DISCORD_TOKEN"})
+# `config` says how many of these there are, and never which: Discord ids.
+COUNTED_VARIABLES = frozenset({"DIAYN_OWNER_IDS"})
 _LABEL_WIDTH = max(len(var) for _, var, _ in SETTINGS_FROM_ENV) + 2
 
 # The code defaults, until main() binds what the environment asks for.
@@ -193,7 +260,8 @@ def _parse(var, raw, kind):
     a semaphore nobody can acquire, and every request would wait forever with
     no error. A seconds value may be 0 (no gap, no deadline) but not negative.
     A time zone is checked here and kept as its name, so a misspelt one stops
-    the start instead of failing every later ask for today's quota day.
+    the start instead of failing every later ask for today's quota day. Any
+    other kind is a parser that raises ValueError with its own reason.
     """
     if kind is str:
         return raw
@@ -204,6 +272,11 @@ def _parse(var, raw, kind):
             raise ConfigError(f"{var}={raw!r} is not a time zone "
                               "(for example America/Los_Angeles)") from None
         return raw
+    if kind not in (int, float):
+        try:
+            return kind(raw)
+        except ValueError as e:
+            raise ConfigError(f"{var}: {e}") from None
     try:
         value = kind(raw)
     except ValueError:
@@ -222,12 +295,17 @@ def configure(environ) -> Settings:
     its default, so `POSTINGS_DB=` in a .env switches the line off rather than
     naming a database "" in the working directory. A value that cannot be used
     raises ConfigError, naming its variable, before anything is swept.
+    DIAYN_DATA moves every data file that is not named on its own.
     """
     changes = {}
     for name, var, kind in SETTINGS_FROM_ENV:
         raw = (environ.get(var) or "").strip()
         if raw:
             changes[name] = _parse(var, raw, kind)
+    data_dir = changes.get("data_dir")
+    if data_dir:
+        for name, file_name in DATA_FILES:
+            changes.setdefault(name, os.path.join(data_dir, file_name))
     return Settings(**changes)
 
 
@@ -268,17 +346,21 @@ def load_env_file() -> Optional[str]:
 
 
 def _shown(var, value) -> str:
-    """One setting's value as `config` prints it: a secret only as set or not."""
+    """One setting's value as `config` prints it: a secret only as set or not,
+    and a list of ids only as how many."""
     if var in SECRET_VARIABLES:
         return "set" if value else "not set"
-    return "(not set)" if value in ("", None) else str(value)
+    if var in COUNTED_VARIABLES and value:
+        return f"set ({len(value)} id{'' if len(value) == 1 else 's'})"
+    return "(not set)" if value in ("", None, ()) else str(value)
 
 
 def config_lines(settings, env_file) -> list:
     """What `config` prints: the .env used, then every setting by its variable.
 
-    The key is shown as set or not set, never as a value, so the output can be
-    pasted into an issue or a chat as it stands.
+    The keys are shown as set or not set, never as a value, and the owners
+    only as a count, so the output can be pasted into an issue or a chat as
+    it stands.
     """
     used = env_file or f"none (no {os.path.join(CHECKOUT, '.env')})"
     return ([f"{'env file':<{_LABEL_WIDTH}}{used}"]

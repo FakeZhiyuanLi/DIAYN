@@ -49,8 +49,9 @@ NEEDS_DOTENV = unittest.skipUnless(HAS_DOTENV, "python-dotenv is not installed")
 
 # Every variable the scraper reads, named here rather than taken from the
 # module, so a child process starts clean even if the module's list is wrong.
-SCRAPER_VARIABLES = ("POLLER_ENV_FILE", "POSTINGS_DB", "BOARDS_FILE", "YC_CACHE")
-SCRAPER_PREFIXES = ("POLL_", "GEMINI_", "LLM_")
+SCRAPER_VARIABLES = ("POLLER_ENV_FILE", "POSTINGS_DB", "BOARDS_FILE", "YC_CACHE",
+                     "DISCORD_TOKEN")
+SCRAPER_PREFIXES = ("POLL_", "GEMINI_", "LLM_", "DIAYN_", "FIT_")
 
 # The child process: stub aiohttp if it is missing, then run the copied module
 # as a script. argv is [tests dir, script, *args]. `block_dotenv` makes
@@ -191,6 +192,104 @@ class Configure(unittest.TestCase):
         self.assertNotIn("sk-not-a-real-key-123", repr(settings))
 
 
+class BotSettings(unittest.TestCase):
+    """The Discord bot's settings, read from the same .env by the same configure()."""
+
+    # Not a real token or a real id: shaped like them, so a leak would be seen.
+    TOKEN = "MTIzNDU2Nzg5MDEyMzQ1Njc4.not-a-real-token"
+    OWNER = "112233445566778899"
+
+    def test_the_bot_s_defaults(self):
+        settings = poller.configure({})
+        self.assertIsNone(settings.discord_token)
+        self.assertEqual(settings.owner_ids, ())
+        self.assertEqual(settings.tz, "UTC")
+        self.assertEqual(settings.fit_batch, 15)
+        self.assertEqual(settings.fit_rpd, 200)
+        self.assertEqual(settings.fit_rpm, 10)
+
+    def test_the_data_directory_defaults_to_the_checkout_s_never_the_working_directory(self):
+        self.assertEqual(poller.configure({}).data_dir,
+                         os.path.join(poller.CHECKOUT, "data"))
+        self.assertEqual(poller.configure({}).data_dir, poller.DATA_DIR)
+
+    def test_diayn_data_moves_every_data_file_that_is_not_named_on_its_own(self):
+        settings = poller.configure({"DIAYN_DATA": "/srv/diayn"})
+        self.assertEqual(settings.data_dir, "/srv/diayn")
+        self.assertEqual(settings.postings_db, "/srv/diayn/postings.db")
+        self.assertEqual(settings.boards_file, "/srv/diayn/boards.json")
+        self.assertEqual(settings.yc_cache, "/srv/diayn/yc_cache.json")
+
+    def test_a_data_file_named_on_its_own_still_wins(self):
+        settings = poller.configure({"DIAYN_DATA": "/srv/diayn",
+                                     "POSTINGS_DB": "/var/lib/postings.db"})
+        self.assertEqual(settings.postings_db, "/var/lib/postings.db")
+        self.assertEqual(settings.boards_file, "/srv/diayn/boards.json")
+        self.assertEqual(settings.yc_cache, "/srv/diayn/yc_cache.json")
+
+    def test_a_relative_data_directory_is_refused(self):
+        # It would resolve against the working directory, which under pm2 is
+        # wherever the process was started. `~` is not expanded by a .env.
+        for raw in ("data", "./data", "~/diayn-data"):
+            with self.subTest(raw=raw), self.assertRaises(poller.ConfigError) as caught:
+                poller.configure({"DIAYN_DATA": raw})
+            self.assertIn("DIAYN_DATA", str(caught.exception))
+
+    def test_owner_ids_are_read_as_integers(self):
+        self.assertEqual(poller.configure({"DIAYN_OWNER_IDS": self.OWNER}).owner_ids,
+                         (112233445566778899,))
+        self.assertEqual(
+            poller.configure({"DIAYN_OWNER_IDS": " 11223344, 55667788 ,"}).owner_ids,
+            (11223344, 55667788))
+
+    def test_a_repeated_owner_id_counts_once(self):
+        self.assertEqual(
+            poller.configure({"DIAYN_OWNER_IDS": "11223344,55667788,11223344"}).owner_ids,
+            (11223344, 55667788))
+
+    def test_an_owner_id_that_is_not_a_discord_id_stops_the_start(self):
+        bad = ("owner", "11223344x", "-11223344", "0", "1.5", "11223344;55667788",
+               "11223344 55667788", str(2 ** 64), "\u00b2", "9" * 5000)
+        for raw in bad:
+            with self.subTest(raw=raw), self.assertRaises(poller.ConfigError) as caught:
+                poller.configure({"DIAYN_OWNER_IDS": raw})
+            self.assertIn("DIAYN_OWNER_IDS", str(caught.exception))
+
+    def test_a_refused_owner_id_is_not_repeated_in_the_message(self):
+        # The message goes to a log; the entry is most likely an id with a typo.
+        with self.assertRaises(poller.ConfigError) as caught:
+            poller.configure({"DIAYN_OWNER_IDS": f"55667788,{self.OWNER}x"})
+        self.assertNotIn(self.OWNER, str(caught.exception))
+        self.assertIn("2", str(caught.exception))
+
+    def test_the_bot_s_zone_must_be_a_real_zone(self):
+        self.assertEqual(poller.configure({"DIAYN_TZ": "America/Los_Angeles"}).tz,
+                         "America/Los_Angeles")
+        for raw in ("Mars/Olympus_Mons", "Pacific Time"):
+            with self.subTest(raw=raw), self.assertRaises(poller.ConfigError) as caught:
+                poller.configure({"DIAYN_TZ": raw})
+            self.assertIn("DIAYN_TZ", str(caught.exception))
+
+    def test_the_fit_check_limits_are_counts(self):
+        settings = poller.configure({"FIT_BATCH": "20", "FIT_RPD": "500",
+                                     "FIT_RPM": "15"})
+        self.assertEqual((settings.fit_batch, settings.fit_rpd, settings.fit_rpm),
+                         (20, 500, 15))
+        for var in ("FIT_BATCH", "FIT_RPD", "FIT_RPM"):
+            for raw in ("0", "lots"):
+                with self.subTest(var=var, raw=raw), \
+                        self.assertRaises(poller.ConfigError) as caught:
+                    poller.configure({var: raw})
+                self.assertIn(var, str(caught.exception))
+
+    def test_neither_the_token_nor_the_owners_are_in_the_settings_repr(self):
+        settings = poller.configure({"DISCORD_TOKEN": self.TOKEN,
+                                     "DIAYN_OWNER_IDS": self.OWNER})
+        self.assertEqual(settings.discord_token, self.TOKEN)
+        self.assertNotIn(self.TOKEN, repr(settings))
+        self.assertNotIn(self.OWNER, repr(settings))
+
+
 class EnvFilePath(unittest.TestCase):
     def test_poller_env_file_wins(self):
         self.assertEqual(
@@ -233,6 +332,40 @@ class ConfigLines(unittest.TestCase):
         self.assertEqual(shown(out, "GEMINI_API_KEY"), "not set")
         self.assertEqual(shown(out, "POLL_CONTACT"), "(not set)")
         self.assertTrue(shown(out, "env file").startswith("none"))
+
+
+class BotConfigLines(unittest.TestCase):
+    TOKEN = BotSettings.TOKEN
+    OWNER = BotSettings.OWNER
+
+    def test_the_bot_s_settings_are_shown(self):
+        settings = poller.configure({"DIAYN_TZ": "America/Los_Angeles",
+                                     "DIAYN_DATA": "/srv/diayn", "FIT_RPD": "300"})
+        out = "\n".join(poller.config_lines(settings, None))
+        self.assertEqual(shown(out, "DIAYN_DATA"), "/srv/diayn")
+        self.assertEqual(shown(out, "POSTINGS_DB"), "/srv/diayn/postings.db")
+        self.assertEqual(shown(out, "DIAYN_TZ"), "America/Los_Angeles")
+        self.assertEqual(shown(out, "FIT_BATCH"), "15")
+        self.assertEqual(shown(out, "FIT_RPD"), "300")
+        self.assertEqual(shown(out, "FIT_RPM"), "10")
+
+    def test_the_token_is_shown_as_set_never_as_its_value(self):
+        out = "\n".join(poller.config_lines(
+            poller.configure({"DISCORD_TOKEN": self.TOKEN}), None))
+        self.assertNotIn(self.TOKEN, out)
+        self.assertEqual(shown(out, "DISCORD_TOKEN"), "set")
+        out = "\n".join(poller.config_lines(poller.configure({}), None))
+        self.assertEqual(shown(out, "DISCORD_TOKEN"), "not set")
+
+    def test_the_owners_are_counted_never_listed(self):
+        # `config` output is meant to be pasted into an issue as it stands.
+        settings = poller.configure({"DIAYN_OWNER_IDS": f"{self.OWNER},55667788"})
+        out = "\n".join(poller.config_lines(settings, None))
+        self.assertNotIn(self.OWNER, out)
+        self.assertNotIn("55667788", out)
+        self.assertEqual(shown(out, "DIAYN_OWNER_IDS"), "set (2 ids)")
+        out = "\n".join(poller.config_lines(poller.configure({}), None))
+        self.assertEqual(shown(out, "DIAYN_OWNER_IDS"), "(not set)")
 
 
 class UserAgent(unittest.TestCase):
@@ -427,6 +560,21 @@ class Cli(unittest.TestCase):
         self.assertTrue(shown(result.stdout, "env file").startswith("none"))
         self.assertEqual(shown(result.stdout, "GEMINI_RPD"), "250")
         self.assertEqual(shown(result.stdout, "POLL_CONTACT"), "(not set)")
+
+    def test_a_bad_bot_setting_stops_the_start_naming_it(self):
+        for var, raw in (("DIAYN_TZ", "Pacific Time"), ("DIAYN_OWNER_IDS", "owner"),
+                         ("DIAYN_DATA", "data"), ("FIT_RPM", "0")):
+            with self.subTest(var=var):
+                result = self._config(**{var: raw})
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(var, result.stderr)
+                self.assertIsNone(shown(result.stdout, "FIT_RPD"))
+
+    def test_config_shows_the_token_only_as_set(self):
+        result = self._config(DISCORD_TOKEN=BotSettings.TOKEN)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(shown(result.stdout, "DISCORD_TOKEN"), "set")
+        self.assertNotIn(BotSettings.TOKEN, result.stdout + result.stderr)
 
     def test_a_named_env_file_that_is_missing_stops_the_start(self):
         # Somebody set POLLER_ENV_FILE on purpose; carrying on with the code

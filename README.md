@@ -73,8 +73,14 @@ actually uses:
   stops the start with a message naming the variable.
 
 `python internship_poller.py config` prints the `.env` it used and every
-setting a run would use. It shows `GEMINI_API_KEY` only as set or not set, so
-its output can be pasted anywhere.
+setting a run would use. It shows `GEMINI_API_KEY` and `DISCORD_TOKEN` only as
+set or not set, and `DIAYN_OWNER_IDS` only as a count, so its output can be
+pasted anywhere.
+
+`DIAYN_DATA` is the data directory, the checkout's own `data/` by default.
+`postings.db`, `boards.json` and `yc_cache.json` live in it unless
+`POSTINGS_DB`, `BOARDS_FILE` or `YC_CACHE` names one on its own. It must be an
+absolute path.
 
 ## Commands
 
@@ -209,7 +215,8 @@ if any moved. It is safe to run again.
 ### `config`
 
 Prints the `.env` used and every setting a run would use, by variable name.
-The Gemini key is shown only as set or not set.
+The Gemini key and the Discord token are shown only as set or not set, and the
+owners' ids only as a count.
 
 ## Gemini (`--llm`)
 

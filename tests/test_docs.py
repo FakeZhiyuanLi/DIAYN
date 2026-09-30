@@ -41,7 +41,7 @@ ENV_FILE_VARIABLE = "POLLER_ENV_FILE"
 
 # Shown with an example rather than the default, because the default depends
 # on where the checkout is, or is nobody's address.
-DATA_PATHS = frozenset({"POSTINGS_DB", "BOARDS_FILE", "YC_CACHE"})
+DATA_PATHS = frozenset({"DIAYN_DATA", "POSTINGS_DB", "BOARDS_FILE", "YC_CACHE"})
 EXAMPLE_VALUED = DATA_PATHS | {"POLL_CONTACT"}
 
 # The only BaronChairStair commits any document may name: both are from after

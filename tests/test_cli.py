@@ -42,8 +42,9 @@ import internship_poller as poller  # noqa: E402
 from test_contract import contract_schema, plant, schema, untouched  # noqa: E402
 
 # Every variable the scraper reads, so a child process starts clean.
-SCRAPER_VARIABLES = ("POLLER_ENV_FILE", "POSTINGS_DB", "BOARDS_FILE", "YC_CACHE")
-SCRAPER_PREFIXES = ("POLL_", "GEMINI_", "LLM_")
+SCRAPER_VARIABLES = ("POLLER_ENV_FILE", "POSTINGS_DB", "BOARDS_FILE", "YC_CACHE",
+                     "DISCORD_TOKEN")
+SCRAPER_PREFIXES = ("POLL_", "GEMINI_", "LLM_", "DIAYN_", "FIT_")
 
 # The child: stub aiohttp if it is missing, load the copied module, replace
 # fetch_all, then run main() with the given arguments.
