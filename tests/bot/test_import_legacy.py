@@ -7,8 +7,10 @@ from its bot's stats.db and written into DIAYN's users.db as profiles.
 What is pinned: the old file is opened read-only and left exactly as it was;
 every subscriber becomes a profile or is counted as already having one, and
 anything else refuses success; the import runs once, so a second run cannot
-bring back someone who has since deleted their data; and only counts are
-printed, never a Discord id.
+bring back someone who has since deleted their data; only counts are
+printed, never a Discord id; and an old file or a users.db that cannot be
+opened or made is refused in one line, "diayn.py import-legacy: <reason>",
+exit 1, never with a traceback.
 
 Every database is made in a temporary directory. The scraper's .env is never
 read: load_env_file is replaced, and the scraper's variables are cleared from
@@ -35,6 +37,13 @@ FAILED, USAGE_ERROR = 1, 2
 SETTLE_S = 600
 SCRAPER_VARIABLES = {var for _, var, _ in poller.SETTINGS_FROM_ENV} | {"POLLER_ENV_FILE"}
 AN_ID = re.compile(r"\d{15,}")
+REFUSAL = "diayn.py import-legacy: "
+# A directory this user may read but not write, and a file nobody may read.
+READ_ONLY_DIRECTORY, UNREADABLE_FILE = 0o500, 0o000
+# Permission bits hold only for a user they apply to: root reads and writes anything.
+NEEDS_PERMISSION_BITS = unittest.skipUnless(
+    os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() != 0,
+    "needs POSIX permission bits, and a user they apply to (not root)")
 
 
 def old_bot_db(path, rows=LEGACY, *, legacy=True) -> str:
@@ -179,6 +188,70 @@ class ImportLegacy(unittest.TestCase):
         self.assertEqual(code, FAILED)
         self.assertIn("DIAYN_DATA", err)
         self.assertFalse(os.path.exists(self.users))
+
+    def assert_refused(self, code, err, *said):
+        """One line on stderr, "diayn.py import-legacy: <reason>", exit 1, no traceback."""
+        self.assertEqual(code, FAILED, err)
+        self.assertTrue(err.startswith(REFUSAL), err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertNotIn("Traceback", err)
+        for words in said:
+            self.assertIn(words, err)
+        self.assertIsNone(AN_ID.search(err))
+
+    def lock(self, path, mode):
+        """`path` at `mode` for the test, and writable again for the clean-up."""
+        os.chmod(path, mode)
+        self.addCleanup(os.chmod, path, 0o700)
+
+    def test_a_data_directory_that_is_a_file_is_refused_in_one_line(self):
+        old_bot_db(self.old)
+        with open(self.data, "w", encoding="ascii") as f:
+            f.write("not a directory")
+
+        code, out, err = self.run_import("--from", self.old)
+
+        self.assert_refused(code, err, "users.db")
+        self.assertEqual(out, "")
+
+    @NEEDS_PERMISSION_BITS
+    def test_a_users_db_that_cannot_be_made_is_refused_in_one_line(self):
+        old_bot_db(self.old)
+        os.mkdir(self.data)
+        self.lock(self.data, READ_ONLY_DIRECTORY)
+
+        code, out, err = self.run_import("--from", self.old)
+
+        self.assert_refused(code, err, "users.db", "OperationalError")
+        self.assertFalse(os.path.exists(self.users))
+
+    @NEEDS_PERMISSION_BITS
+    def test_a_data_directory_that_cannot_be_made_is_refused_in_one_line(self):
+        old_bot_db(self.old)
+        locked = os.path.join(self.tmp, "locked")
+        os.mkdir(locked)
+        self.lock(locked, READ_ONLY_DIRECTORY)
+
+        code, out, err = self.run_import("--from", self.old,
+                                         data=os.path.join(locked, "data"))
+
+        self.assert_refused(code, err, "users.db", "PermissionError")
+        self.assertFalse(os.path.exists(os.path.join(locked, "data")))
+
+    @NEEDS_PERMISSION_BITS
+    def test_an_old_database_that_cannot_be_opened_is_refused_in_one_line(self):
+        old_bot_db(self.old)
+        with open(self.old, "rb") as f:
+            before = f.read()
+        self.lock(self.old, UNREADABLE_FILE)
+
+        code, out, err = self.run_import("--from", self.old)
+
+        self.assert_refused(code, err, self.old, "OperationalError")
+        self.assertFalse(os.path.exists(self.users))
+        os.chmod(self.old, 0o600)
+        with open(self.old, "rb") as f:
+            self.assertEqual(f.read(), before)
 
 
 class TheCommandIsBuilt(unittest.TestCase):

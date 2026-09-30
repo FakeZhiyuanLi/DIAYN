@@ -265,7 +265,8 @@ copies its subscribers out of that bot's `stats.db` into `users.db`, as
 profiles. It opens the old file read-only and leaves it as it was. It runs
 once: a second run is refused, so nobody who has since deleted their data comes
 back. It prints counts only, and exits 1 unless every subscriber was either
-imported or already had a profile.
+imported or already had a profile. An old file it cannot open, or a `users.db`
+it cannot open or make, is refused in one line, with exit 1.
 
 ### The sweeper lock
 

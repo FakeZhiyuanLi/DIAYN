@@ -174,6 +174,8 @@ def _read_legacy(store, source):
         old = open_legacy(source)
     except OSError as e:
         return None, str(e)
+    except sqlite3.Error as e:          # a file sqlite cannot open: unreadable, for one
+        return None, f"{source}: {type(e).__name__}: {e}"
     try:
         return store.read_legacy(old), None
     except store.LegacyImportError as e:
@@ -195,8 +197,10 @@ def import_legacy(source, users_path, now) -> int:
     rows, reason = _read_legacy(store, source)
     if reason is not None:
         return _refused(reason)
-    os.makedirs(os.path.dirname(users_path), exist_ok=True)
-    users = sqlite3.connect(users_path)
+    try:
+        users = open_users_db(users_path)
+    except (sqlite3.Error, OSError) as e:
+        return _refused(f"users.db: {type(e).__name__}: {e}")
     try:
         store.init_db(users)
         counts = store.write_migrated(users, rows, now, cursor=delivery.horizon(now))
@@ -209,6 +213,13 @@ def import_legacy(source, users_path, now) -> int:
     print(f"{IMPORT_LEGACY}: {counts.legacy} subscribers in the old tracker; "
           f"{counts.written} imported, {counts.already} already had a profile.")
     return 0
+
+
+def open_users_db(users_path) -> sqlite3.Connection:
+    """users.db at `users_path`, made, with its directory, if it is not there. Raises
+    OSError or sqlite3.Error, which each command turns into its refusal."""
+    os.makedirs(os.path.dirname(users_path), exist_ok=True)
+    return sqlite3.connect(users_path)
 
 
 def cmd_import_legacy(poller, argv) -> int:
@@ -262,8 +273,7 @@ def discord_id(text: str) -> int:
 
 def _write_access(access, command, kind, target, users_path, now) -> bool:
     """Makes users.db and its grants table if need be, then grants or revokes."""
-    os.makedirs(os.path.dirname(users_path), exist_ok=True)
-    users = sqlite3.connect(users_path)
+    users = open_users_db(users_path)
     try:
         access.init_db(users)
         if command == GRANT:
