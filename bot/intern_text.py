@@ -29,7 +29,8 @@ import intern_vocab as vocab
 from intern_location import describe_locations
 from intern_match import BROWSE_MAX, FIRST_MATCHES, MATCHES_MAX, Coverage, Match, Relaxation
 from intern_profile import Profile
-from intern_store import DM_FAILURE_LIMIT, HIDDEN_RETAIN_S, SENT_RETAIN_S, STORED_COLUMNS
+from intern_store import (ACCESS_GRACE_S, DM_FAILURE_LIMIT, HIDDEN_RETAIN_S, SENT_RETAIN_S,
+                          STORED_COLUMNS)
 from message_pack import MAX_CHUNK, pack
 from resume_lexicon import MAJOR_BY_ID, SKILL_BY_ID
 
@@ -153,7 +154,7 @@ def _loc_phrase(p: Profile) -> str:
 
 
 def _ago(ts: float | None, now: float) -> str:
-    """The age format `/internships debug` has always used."""
+    """The age format `/diayn debug` has always used."""
     if not ts:
         return "never"
     d = max(0.0, now - ts)
@@ -806,6 +807,68 @@ def owner_only() -> str:
 def no_access() -> str:
     """The refusal for anyone this bot is not open to. It never names the owner."""
     return "This bot is private. Ask whoever runs it for access."
+
+
+# ------------------------------------------------------------------ /diayn: the owner's commands
+# `who` is a mention: it shows the person's name, and the reply, sent with no mentions
+# allowed, pings nobody. A server's name is escaped: its owner chose it.
+
+SERVER_NAME_MAX = 100
+_LAPSE_DAYS = ACCESS_GRACE_S // _DAY_S
+
+
+def granted_user(who: str, *, added: bool) -> str:
+    if added:
+        return f"{who} may use this bot now."
+    return f"{who} already had access of their own; nothing changed."
+
+
+def granted_server(name: str, *, added: bool) -> str:
+    server = safe_inline(name, SERVER_NAME_MAX)
+    if added:
+        return f"Everyone in **{server}** may use this bot now, here and in DMs."
+    return f"**{server}** already had access; nothing changed."
+
+
+def revoked_user(who: str, *, removed: bool, still: bool) -> str:
+    """`still`: they may use the bot anyway, as its owner or through a server that has access."""
+    through = "they run this bot, or they are in a server that has access."
+    if removed and not still:
+        return (f"{who} no longer has access. Their alerts stop at the next delivery, and their "
+                f"profile is deleted after {_LAPSE_DAYS} days without access.")
+    if removed:
+        return f"{who} lost their own grant but still has access: {through}"
+    if still:
+        return f"{who} had no grant of their own, and still has access: {through}"
+    return f"{who} had no access to take away."
+
+
+def revoked_server(name: str, *, removed: bool) -> str:
+    server = safe_inline(name, SERVER_NAME_MAX)
+    if removed:
+        return (f"**{server}** no longer has access. Its members keep it only through a grant of "
+                "their own or another server's; for everyone else, alerts stop at the next "
+                f"delivery, and profiles are deleted after {_LAPSE_DAYS} days without access.")
+    return f"**{server}** had no grant; nothing changed."
+
+
+def needs_a_server(command: str) -> str:
+    return f"Run `/diayn {command} server` inside the server you mean; there is none here."
+
+
+def access_summary(*, owners: int, users: int, servers: Sequence[str], gone: int) -> list[str]:
+    """`/diayn access`: counts, and the granted servers this bot is in by name. Never a
+    person, and never an id. `gone` counts granted servers this bot is no longer in."""
+    lines = ["**Who may use this bot**",
+             f"Whoever runs it: always ({owners} {'account' if owners == 1 else 'accounts'}).",
+             f"People granted by id: {users}",
+             f"Servers granted: {len(servers) + gone}"]
+    if servers:
+        lines.append(", ".join(sorted(safe_inline(s, SERVER_NAME_MAX) for s in servers)))
+    if gone:
+        lines.append(f"{gone} {'server' if gone == 1 else 'servers'} this bot is no longer in; "
+                     "`diayn.py revoke --server <id>` takes a grant away without Discord.")
+    return lines
 
 
 def not_yours() -> str:

@@ -47,11 +47,12 @@ except ModuleNotFoundError as missing:  # pragma: no cover - depends on the envi
 #: A stub `discord` another test installs has no `__file__` (see test_intern_surface).
 REAL_DISCORD = discord is not None and getattr(discord, "__file__", None) is not None
 if REAL_DISCORD:
+    import diayn_commands
     import intern_alert_views
     import intern_commands
     import intern_ui
 else:  # pragma: no cover - depends on the environment
-    intern_alert_views = intern_commands = intern_ui = None
+    diayn_commands = intern_alert_views = intern_commands = intern_ui = None
 
 needs_discord = unittest.skipUnless(REAL_DISCORD, "discord.py is not installed")
 
@@ -419,8 +420,8 @@ class CommandsReadOnlyTheContract(_ContractCase):
     def test_debug_reports_the_tracker_rather_than_disabled(self):
         from test_intern_surface import fake_interaction
         interaction = fake_interaction(done=True)
-        with mock.patch.object(intern_commands.access, "is_owner", lambda _uid: True):
-            asyncio.run(intern_commands.internships_debug.callback(interaction))
+        with mock.patch.object(diayn_commands.access, "is_owner", lambda _uid: True):
+            asyncio.run(diayn_commands.diayn_debug.callback(interaction))
         text = "\n".join(content for content, _ in interaction.followup.sent)
         self.assertIn("Gemini quota (today)", text)
         self.assertIn("model `gemini-3.5-flash-lite`", text)

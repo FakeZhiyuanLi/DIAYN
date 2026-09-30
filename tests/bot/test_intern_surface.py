@@ -6,8 +6,8 @@ is installed, driven with fakes.
     .venv/bin/python -m unittest discover -s tests
 
 Most of this file reads `intern_ui.py`, `intern_views.py`, `intern_upload.py`,
-`intern_alert_views.py` and `intern_commands.py` with `ast` rather than
-importing them. The rules it pins (spec 8.5, R1-R15) are about every call of a
+`intern_alert_views.py`, `intern_commands.py` and `diayn_commands.py` with `ast`
+rather than importing them. The rules it pins (spec 8.5, R1-R15) are about every call of a
 kind, and a behaviour test only ever reaches the calls it happens to drive: a
 reply that is public by accident, a resume read before its metadata was
 checked, a `view=None` that crashes after the user already saw the message.
@@ -51,17 +51,18 @@ except ModuleNotFoundError as missing:  # pragma: no cover - depends on the envi
 REAL_DISCORD = discord is not None and getattr(discord, "__file__", None) is not None
 if REAL_DISCORD:
     from discord import app_commands
+    import diayn_commands
     import intern_commands
     import intern_ui
 else:  # pragma: no cover - depends on the environment
-    discord = app_commands = intern_commands = intern_ui = None
+    discord = app_commands = diayn_commands = intern_commands = intern_ui = None
 
 needs_discord = unittest.skipUnless(REAL_DISCORD, "discord.py is not installed")
 
 #: The bot's modules, which these tests read as source.
 BOT = pathlib.Path(__file__).resolve().parents[2] / "bot"
 SURFACE = ("intern_ui.py", "intern_views.py", "intern_upload.py", "intern_alert_views.py",
-           "intern_commands.py")
+           "intern_commands.py", "diayn_commands.py")
 PURE = ("message_pack", "intern_places", "intern_vocab", "intern_location", "intern_taxonomy",
         "resume_lexicon", "resume_parse", "resume_worker", "intern_profile", "intern_store",
         "intern_match", "intern_text", "intern_delivery", "postings_contract", "postings_source",
@@ -229,12 +230,16 @@ class ResumesAreCheckedBeforeTheyAreRead(unittest.TestCase):
 
 class OwnerOnly(unittest.TestCase):
     def test_r6_is_owner_comes_before_any_defer(self):
-        fn = functions(tree("intern_commands.py"))["internships_debug"]
-        owner = [c.lineno for c in calls(fn) if chain(c.func).endswith("access.is_owner")]
+        # /diayn debug, which was /internships debug; need_owner asks access.is_owner.
+        module = tree("diayn_commands.py")
+        fn = functions(module)["diayn_debug"]
+        owner = [c.lineno for c in calls(fn) if chain(c.func) == "need_owner"]
         defers = [c.lineno for c in calls(fn)
                   if isinstance(c.func, ast.Attribute) and "defer" in c.func.attr]
-        self.assertTrue(owner, "internships_debug never checks access.is_owner")
+        self.assertTrue(owner, "diayn_debug never checks need_owner")
         self.assertTrue(all(min(owner) < line for line in defers))
+        self.assertTrue([c for c in calls(functions(module)["need_owner"])
+                         if chain(c.func) == "access.is_owner"])
 
     def test_r6_no_module_names_a_list_of_officers(self):
         for name in SURFACE:
@@ -527,14 +532,15 @@ class TheCommandGroupBuilds(unittest.TestCase):
     """Built into a real CommandTree on a client that never logs in."""
 
     OPTIONS = {"profile": 1, "matches": 2, "recent": 4, "ping": 2, "info": 1, "delete": 0,
-               "help": 0, "debug": 0}
+               "help": 0}
 
     def setUp(self):
         self.client = discord.Client(intents=discord.Intents.none())
         self.tree = app_commands.CommandTree(self.client)
         self.tree.add_command(intern_commands.internships)
 
-    def test_the_group_has_exactly_the_eight_subcommands(self):
+    def test_the_group_has_exactly_the_seven_subcommands(self):
+        # debug is the owner's, in /diayn (test_diayn_commands).
         names = {c.name for c in intern_commands.internships.commands}
         self.assertEqual(names, set(self.OPTIONS))
 
@@ -585,20 +591,20 @@ class TheCommandGroupBuilds(unittest.TestCase):
 
 @needs_discord
 class TheDebugCommandIsTheOwners(unittest.TestCase):
-    """R6 driven: anyone but whoever runs this bot gets one private refusal, and
-    nothing is read or deferred for them."""
+    """R6 driven, on /diayn debug: anyone but whoever runs this bot gets one private
+    refusal, and nothing is read or deferred for them."""
 
     def run_debug(self, is_owner):
         i = fake_interaction(done=False)
-        with mock.patch.object(intern_commands.access, "is_owner", is_owner):
-            asyncio.run(intern_commands.internships_debug.callback(i))
+        with mock.patch.object(diayn_commands.access, "is_owner", is_owner):
+            asyncio.run(diayn_commands.diayn_debug.callback(i))
         return i
 
     def test_anyone_else_is_refused_privately(self):
         i = self.run_debug(lambda _uid: False)
         self.assertEqual(len(i.response.sent), 1)
         content, kw = i.response.sent[0]
-        self.assertEqual(content, intern_commands.intern_text.owner_only())
+        self.assertEqual(content, diayn_commands.intern_text.owner_only())
         self.assertIs(kw["ephemeral"], True)
         self.assertEqual(i.followup.sent, [])
 

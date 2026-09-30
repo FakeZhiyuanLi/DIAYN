@@ -99,7 +99,9 @@ application's owner) may use it until someone is granted access. A server
 grant covers anyone using the bot inside that server, and that server's
 members anywhere, DMs included. These write the grant into `users.db`, so they
 work before the bot has ever started, and the running bot sees the change on
-its next check. They print what they did, never an id.
+its next check. They print what they did, never an id. In Discord the owner
+does the same with `/diayn grant` and `/diayn revoke`, sees who has access
+with `/diayn access`, and reads the bot's health with `/diayn debug`.
 
     python diayn.py import-legacy --from /path/to/old/stats.db
 

@@ -613,7 +613,7 @@ def privacy_rows(db: sqlite3.Connection, user_id: int) -> dict[str, object] | No
 
 
 def summary(db: sqlite3.Connection) -> dict[str, int]:
-    """Counts for `/internships debug`. Aggregates only: no key or value names a user."""
+    """Counts for `/diayn debug`. Aggregates only: no key or value names a user."""
     rows = db.execute("SELECT alerts, dm_failures, left_at, fields FROM intern_profiles").fetchall()
     no_access = db.execute("SELECT COUNT(*) FROM intern_profiles "
                            "WHERE access_lapsed_at IS NOT NULL").fetchone()[0]

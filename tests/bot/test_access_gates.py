@@ -59,7 +59,7 @@ else:  # pragma: no cover - depends on the environment
 needs_discord = unittest.skipUnless(REAL_DISCORD, "discord.py is not installed")
 
 BOT = pathlib.Path(__file__).resolve().parents[2] / "bot"
-GATE, MAY_USE, OWNER_CHECK = "intern_ui.need_access", "intern_ui.may_use", "access.is_owner"
+GATE, MAY_USE = "intern_ui.need_access", "intern_ui.may_use"
 REFUSAL = "This bot is private. Ask whoever runs it for access."
 
 #: Every `/internships` subcommand: "gated" checks access first, "open" never does.
@@ -68,7 +68,6 @@ COMMANDS = {
     "internships_recent": "gated", "internships_ping": "gated", "internships_info": "gated",
     "internships_help": "open",       # how it works and what it keeps: for anyone deciding
     "internships_delete": "open",     # removes data: never withheld
-    "internships_debug": "owner",
 }
 #: Every autocomplete. The field and place lists are the finder's fixed vocabulary;
 #: the role list reads postings and the user's own matches, so `_role_choices` checks.
@@ -185,11 +184,9 @@ class EveryCommandIsClassified(unittest.TestCase):
                 with self.subTest(command=name):
                     self.assertEqual(calls_to(fn, GATE) + calls_to(fn, MAY_USE), [])
 
-    def test_the_owners_command_asks_whether_this_is_the_owner_first(self):
-        for name, fn in self.commands().items():
-            if COMMANDS[name] == "owner":
-                with self.subTest(command=name):
-                    self.assertEqual(first_call(fn), OWNER_CHECK)
+    def test_debug_is_the_owners_now_and_no_longer_here(self):
+        # /diayn debug; test_diayn_commands pins that every /diayn command asks first.
+        self.assertNotIn("internships_debug", self.commands())
 
 
 class EveryAutocompleteIsClassified(unittest.TestCase):

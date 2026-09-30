@@ -62,9 +62,9 @@ import postings_source
 from intern_profile import Profile
 
 DELIVERY_MINUTES = 5
-#: B6: a stale sweep is logged at most this often; /internships debug says it every time.
+#: B6: a stale sweep is logged at most this often; /diayn debug says it every time.
 STALE_LOG_EVERY_S = 3600
-#: What each delivery tick records in intern_meta for `/internships debug` (counts only).
+#: What each delivery tick records in intern_meta for `/diayn debug` (counts only).
 REPORT_KEYS = ("delivery_last_at", "delivery_last_due", "delivery_last_sent",
                 "delivery_last_empty", "delivery_last_forbidden")
 _ROLE, _COMPANY = "r:", "c:"

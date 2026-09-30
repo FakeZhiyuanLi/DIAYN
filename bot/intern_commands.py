@@ -1,7 +1,7 @@
 """
 intern_commands.py
 ~~~~~~~~~~~~~~~~~~
-`/internships` itself: the eight subcommands (spec 1.3) and their
+`/internships` itself: the seven subcommands (spec 1.3) and their
 autocompletes, plus every name `app.py` wires in (spec 7.1): the group, the
 delivery loop, the membership hooks and the persistent views. The loop and
 hooks are written in `intern_alert_views`, beside the alerts they keep correct,
@@ -12,8 +12,9 @@ tracker off, not whoever runs this bot, a field nobody could have picked),
 then defers if it will read the window, and answers privately. The bot is
 private: every subcommand but `help` and `delete` checks `intern_ui.need_access`
 before anything else, and so do the role suggestions, which would otherwise
-list postings and the user's own matches to anyone. `/internships debug` carries the Gemini,
-database and sweep diagnostics, read-only.
+list postings and the user's own matches to anyone. The Gemini, database and
+sweep diagnostics are built here (`debug_report`), read-only, for the owner's
+`/diayn debug` (`diayn_commands`).
 
 Nothing here reads the scraper: the blocklist, the quota, the file's path and
 the sweeper's name come from `intern_ui.source`, the contract tables the
@@ -28,7 +29,6 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
-import access
 import intern_alert_views
 import intern_clock
 import intern_delivery
@@ -382,7 +382,7 @@ async def _role_autocomplete(interaction: discord.Interaction, current: str):
                         lambda: _role_choices(interaction.user.id, interaction.guild_id, current))
 
 
-# ------------------------------------------------------------------ debug (whoever runs this bot)
+# ------------------------------------------------------------------ the debug report (/diayn debug)
 
 def _human_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -483,24 +483,18 @@ async def _finder_lines() -> list[str]:
         migrated=intern_store.get_meta(db, intern_store.LEGACY_IMPORT_KEY))
 
 
-@internships.command(name="debug",
-                     description="For whoever runs this bot: sweep health, delivery and coverage by field.")
-async def internships_debug(interaction: discord.Interaction) -> None:
-    """Counts only. Read-only: it reports what the last sweep and tick did rather than
-    running either, so it never changes the numbers it exists to report."""
-    if not access.is_owner(interaction.user.id):
-        await intern_ui.refuse(interaction, intern_text.owner_only())
-        return
-    await intern_ui.defer_reply(interaction)
+async def debug_report() -> list[str]:
+    """`/diayn debug`'s lines, for the owner only (`diayn_commands` asks). Counts only.
+    Read-only: it reports what the last sweep and tick did rather than running either,
+    so it never changes the numbers it exists to report. It reads the window, so the
+    caller defers first."""
     finder = await _finder_lines()
     intern_ui.ensure_postings()                 # read after the await: a reopen may have run
     pconn, source = intern_ui.pconn, intern_ui.source
-    lines = finder + [""] + (
+    return finder + [""] + (
         _gemini_lines(pconn, source) + _store_lines(pconn, source)
         if pconn is not None and source is not None
         else [intern_text.disabled_tracker(intern_ui.pconn_error or "")])
-    for chunk in pack(lines, MAX_CHUNK, "\n"):
-        await intern_ui.private_send(interaction)(chunk)
 
 
 @internships.error

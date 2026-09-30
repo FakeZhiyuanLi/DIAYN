@@ -19,6 +19,10 @@ file that is missing or wrong turns off the tracker, not the bot. users.db is
 the finder's own (`intern_store`): one that cannot be opened or made turns off
 the finder, and `/internships recent` and `info` still work.
 
+**Two command groups**: the finder's `/internships`, and the owner's `/diayn`
+(`diayn_commands`), which grants and revokes access and carries the debug
+report. Both are added whenever the client is built.
+
 **Once, after login** (`setup_hook`): the application's owners are recorded
 for `access`, the global commands are synced (keeping Discord's own Entry
 Point command), and, with the finder on, the persistent buttons are registered
@@ -47,6 +51,7 @@ import discord
 from discord import app_commands
 
 import access
+import diayn_commands
 import intern_commands
 import intern_store
 import intern_ui
@@ -196,6 +201,7 @@ class DiaynBot(discord.Client):
         self.stores = stores
         self.tree = app_commands.CommandTree(self)
         self.tree.add_command(intern_commands.internships)
+        self.tree.add_command(diayn_commands.diayn)
         install_send_defaults(self)
 
     async def setup_hook(self) -> None:

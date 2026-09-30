@@ -159,7 +159,7 @@ pm2 logs diayn --lines 50 --nostream
    last sweep is less than 16 minutes old (the time is UTC).
 5. `ls $D` shows `postings.db`, `postings.db-wal`, `postings.db-shm` and
    `postings.db.lock`.
-6. The bot's `/internships debug` says `DIAYN <version> sweeps every 15m`.
+6. The bot's `/diayn debug` says `DIAYN <version> sweeps every 15m`.
    BaronChairStair's DEPLOY.md, *Verifying the bot*, covers the rest of the
    bot's side.
 
@@ -206,7 +206,7 @@ pm2 start diayn
 - If `$D/postings.db` is gone altogether, the same `.restore` line creates it
   from the backup. That is the one time a new file there is right: it arrives
   with its ledger.
-- The bot notices the restored file by itself. Check `/internships debug`
+- The bot notices the restored file by itself. Check `/diayn debug`
   afterwards.
 
 ## Upgrading by tag
@@ -364,7 +364,7 @@ Gemini verdicts are purged first (owner decision 3 in the migration plan).
 **Checks:**
 
 - The bot's start-up log has no `internship tracker disabled`, and
-  `/internships debug` shows the postings and seen counts from step 5 (or more,
+  `/diayn debug` shows the postings and seen counts from step 5 (or more,
   if a sweep has run since). They match
   `sqlite3 "file:$D/postings.db?mode=ro" "SELECT COUNT(*) FROM postings; SELECT COUNT(*) FROM seen;"`,
   so the bot reads the file under `$D`. Debug does not print the path itself.
@@ -433,7 +433,7 @@ minutes, while the puzzle commands stay up.
    recorded sweep plus 900 seconds has passed, so the gap with no sweeper is at
    most one interval.
 8. Within five minutes, the bot's next delivery tick opens the contract, and
-   `/internships debug` says `DIAYN 1.0.0 sweeps every 15m`.
+   `/diayn debug` says `DIAYN 1.0.0 sweeps every 15m`.
 
 **Why this order is safe:**
 
@@ -449,7 +449,7 @@ minutes, while the puzzle commands stay up.
 
 - `pgrep -af discord_bot.py` prints one line, `pgrep -af 'internship_poller.py watch'`
   prints one, and `pm2 list` shows both online with no restart loop.
-- `/internships debug` says `DIAYN 1.0.0 sweeps every 15m`, and shows a last
+- `/diayn debug` says `DIAYN 1.0.0 sweeps every 15m`, and shows a last
   sweep less than 16 minutes old and the Gemini limits from `scraper_meta`. The
   contract opening at all means the bot's `POSTINGS_DB` is the file DIAYN
   sweeps (B2), and `config` showed that file under `$D` in step 3.
@@ -479,7 +479,7 @@ a column to them until stage 3 is complete; if one has been added anyway, do
 not roll back: stop and report. If the rollback becomes permanent, run
 `PRAGMA journal_mode=DELETE` on `$D/postings.db` with both processes stopped.
 
-**Soak:** 14 days. Each day, `/internships debug` shows no `no sweep for …h`
+**Soak:** 14 days. Each day, `/diayn debug` shows no `no sweep for …h`
 warning, the day's backup is in `$B`, and `diayn`'s restart count in `pm2 list`
 has not moved.
 
@@ -511,7 +511,7 @@ merged, recorded in the migration issue.
 
 **Checks:**
 
-- `/internships debug`, `recent` and `info` work.
+- `/diayn debug` works, and so do `/internships recent` and `info`.
 - `pgrep` shows one bot and one `watch`.
 - `git status --short` is clean in both checkouts.
 

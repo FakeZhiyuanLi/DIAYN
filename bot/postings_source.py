@@ -49,7 +49,7 @@ SOURCE_MEMBERS = ("window_days", "sweep_interval_s", "sweeper_label", "db_path",
 
 @dataclasses.dataclass(frozen=True)
 class Quota:
-    """The Gemini budget the scraper spends, as `/internships debug` shows it. `today` is
+    """The Gemini budget the scraper spends, as `/diayn debug` shows it. `today` is
     the `llm_usage.day` key the budget is counted under right now, a date in `zone`: the
     scraper's LLM_DAY_TZ, where the quota resets at midnight."""
     model: str

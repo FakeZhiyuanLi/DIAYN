@@ -102,7 +102,7 @@ prefix of every name, so it would block everything.
 | B3 | **The bootstrap guard.** At the start of every delivery tick, before `run_tick`, it reads `MIN(first_seen) FROM seen`. If that value exists, and either `cursor_floor` is missing or the value is above the floor, it calls `advance_all_cursors(db, min_first_seen)`. |
 | B4 | It invalidates its window cache when `PRAGMA data_version` changes, checked in `window()` and on each tick. |
 | B5 | A tick that cannot read `postings.db` skips alerts and leaves every cursor alone. |
-| B6 | Heartbeat: if `MAX(sweeps.started)` is older than 3 × `sweep_interval_s`, it warns in `/internships debug` and logs at most once an hour. |
+| B6 | Heartbeat: if `MAX(sweeps.started)` is older than 3 × `sweep_interval_s`, it warns in `/diayn debug` and logs at most once an hour. |
 | B7 | It applies the blocklist as a normalised prefix, with its own `company_norm`. The scraper's `_norm` and the bot's `company_norm` are pinned equal by `contract/company_norm_cases.json`. |
 
 The B3 guard is safe for four reasons:

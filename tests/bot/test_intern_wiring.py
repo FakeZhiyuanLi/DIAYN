@@ -251,7 +251,8 @@ class ImportingTheClientDoesNothing(unittest.TestCase):
     """The tests import app.py, and so may any tool. Importing it must open no
     database, build no client, log in nowhere and change nothing in discord.py."""
 
-    MODULES = ("access", "intern_store", "intern_ui", "intern_commands", "postings_source")
+    MODULES = ("access", "diayn_commands", "intern_store", "intern_ui", "intern_commands",
+               "postings_source")
 
     def test_the_finder_modules_it_wires_are_imported_at_module_scope(self):
         imported = {a.name for s in _tree().body if isinstance(s, ast.Import) for a in s.names}
@@ -422,13 +423,20 @@ class TheCommandIsRegisteredOnce(unittest.TestCase):
         self.assertIs(_function_of(self.registration()), _method("__init__"))
         self.assertEqual(_branches(self.registration()), [])
 
-    def test_no_internships_group_is_built_here(self):
-        built = [c for c in _calls("app_commands.Group") if any(
-            k.arg == "name" and isinstance(k.value, ast.Constant)
-            and k.value.value == "internships" for k in c.keywords)]
-        self.assertEqual(built, [])
+    def owners(self):
+        return _only([c for c in _calls("self.tree.add_command")
+                      if [_dotted(a) for a in c.args] == ["diayn_commands.diayn"]],
+                     "self.tree.add_command(diayn_commands.diayn)")
+
+    def test_the_owners_group_is_added_whenever_the_client_is_built_after_the_finders(self):
+        self.assertIs(_function_of(self.owners()), _method("__init__"))
+        self.assertEqual(_branches(self.owners()), [])
+        self.assertGreater(_position(self.owners()), _position(self.registration()))
+
+    def test_no_group_is_built_here_and_nothing_else_is_added(self):
+        self.assertEqual(_calls("app_commands.Group"), [])
         self.assertEqual(len([c for c in ast.walk(_tree()) if isinstance(c, ast.Call)
-                              and (_dotted(c.func) or "").endswith("tree.add_command")]), 1)
+                              and (_dotted(c.func) or "").endswith("tree.add_command")]), 2)
 
 
 class TheLoopStartsOnlyWhenItCanRun(unittest.TestCase):
@@ -706,11 +714,11 @@ class TheGlobalSyncKeepsTheEntryPoint(_ClientCase):
         entry = {"type": app.ENTRY_POINT_COMMAND_TYPE, "name": "launch"}
         calls = self.run_sync([{"type": 1, "name": "stale"}, entry])
         names = [c["name"] for c in calls["written"]]
-        self.assertEqual(names, ["internships", "launch"])
+        self.assertEqual(names, ["internships", "diayn", "launch"])
         self.assertEqual(calls["read"], 1)
 
     def test_without_one_the_payload_is_the_tree(self):
-        self.assertEqual([c["name"] for c in self.run_sync([])["written"]], ["internships"])
+        self.assertEqual([c["name"] for c in self.run_sync([])["written"]], ["internships", "diayn"])
 
 
 @needs_discord
