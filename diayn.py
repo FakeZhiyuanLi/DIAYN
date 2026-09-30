@@ -46,8 +46,8 @@ the steps.
 
     python diayn.py doctor
 
-checks the host again at any time: the Python version and the platform, the
-settings, the token and the intent, the data directory, postings.db and its
+checks the host again at any time: the Python version and the platform,
+discord.py and pypdf, the settings, the token and the intent, the data directory, postings.db and its
 last sweep, whether anything is sweeping, POLL_CONTACT and the Gemini key. It
 changes nothing, and exits 1 when anything is to fix.
 

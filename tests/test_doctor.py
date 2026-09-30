@@ -3,7 +3,8 @@
 
     python3 -m unittest discover -s tests      # no install needed
 
-doctor checks the Python version, the platform, the settings, the token and
+doctor checks the Python version, the platform, discord.py and pypdf, the
+settings, the token and
 the Server Members Intent, the data directory, postings.db and its last sweep,
 whether anything holds the sweeper lock, POLL_CONTACT, and whether a Gemini
 key is set. It exits 1 when anything is to fix, and 0 otherwise, warnings
@@ -14,8 +15,10 @@ included. What is pinned here:
   no lock file, and a lock nobody held is free again afterwards;
 - the token and the Gemini key are never printed.
 
-Nothing reaches Discord: the portal is replaced. The scraper's .env is never
-read, and boot() rebinds the scraper's globals, which each test puts back.
+Nothing reaches Discord: the portal is replaced, and so is which modules are
+installed, so a bare python3 and a full install give the same lines. The
+scraper's .env is never read, and boot() rebinds the scraper's globals, which
+each test puts back.
 """
 
 import contextlib
@@ -71,6 +74,7 @@ class _DoctorCase(unittest.TestCase):
         self.db = os.path.join(self.data, "postings.db")
         self.env = {"DIAYN_DATA": self.data, "DISCORD_TOKEN": TOKEN, "POLL_CONTACT": CONTACT}
         self.portal = FakePortal()
+        self.missing = set()        # the modules this box is to lack
         saved = poller.SETTINGS, poller.BOARDS, poller.STARTED_AT
         self.addCleanup(self._restore, saved)
 
@@ -102,6 +106,8 @@ class _DoctorCase(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(poller, "load_env_file", return_value=None), \
+                mock.patch.object(host_checks, "_has_module",
+                                  lambda name: name not in self.missing), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = host_checks.cmd_doctor(poller, list(argv), fetch_application=self.portal,
                                           now=NOW)
@@ -133,7 +139,8 @@ class AHealthyHost(_DoctorCase):
         self.assertEqual(code, 0, out + err)
         self.assertEqual(err, "")
         self.assertEqual(lines(out), {
-            "Python": "ok", "platform": "ok", "settings": "ok", "DISCORD_TOKEN": "ok",
+            "Python": "ok", "platform": "ok", "discord.py": "ok", "pypdf": "ok",
+            "settings": "ok", "DISCORD_TOKEN": "ok",
             "Server Members Intent": "ok", "data directory": "ok", "postings.db": "ok",
             "last sweep": "ok", "sweeper": "ok", "POLL_CONTACT": "ok",
             "GEMINI_API_KEY": "note"})
@@ -197,6 +204,15 @@ class WhatIsToFix(_DoctorCase):
         self.assertIn(hints.INTENT_HOW, err)
         self.assertEqual(lines(out)["postings.db"], "ok")     # the rest is still checked
         self.assertIn("1 to fix", out)
+
+    def test_without_discord_py_it_fails_because_run_cannot_start(self):
+        self.healthy()
+        self.missing = {"discord"}
+        code, out, err = self.doctor_holding_the_lock()
+        self.assertEqual(code, FAILED)
+        self.assertEqual(lines(err)["discord.py"], "fail")
+        self.assertIn(hints.install_hint(), err)
+        self.assertEqual(lines(out)["postings.db"], "ok")     # the rest is still checked
 
     def test_a_missing_data_directory_fails_and_is_not_made(self):
         code, out, err = self.doctor()
@@ -276,6 +292,15 @@ class WhatIsWorthAWarning(_DoctorCase):
         self.assertEqual(code, 0)
         self.assertEqual(lines(out)["last sweep"], "warn")
 
+    def test_without_pypdf_it_warns_that_pdfs_cannot_be_read(self):
+        self.healthy()
+        self.missing = {"pypdf"}
+        code, out, _ = self.doctor_holding_the_lock()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines(out)["pypdf"], "warn")
+        self.assertIn("PDF", out)
+        self.assertIn(hints.install_hint(), out)
+
     def test_no_contact_is_a_warning(self):
         self.healthy()
         del self.env["POLL_CONTACT"]
@@ -304,6 +329,14 @@ class PythonAndPlatform(unittest.TestCase):
         found = host_checks.platform_support("nt", "win32")
         self.assertEqual(found.level, "fail")
         self.assertIn("Linux and macOS only", found.said)
+
+    def test_a_module_already_imported_without_a_spec_counts_as_installed(self):
+        # find_spec raises ValueError for one, as for a stub some tests install.
+        stub = type(sys)("diayn_test_stub_module")
+        stub.__spec__ = None
+        with mock.patch.dict(sys.modules, {"diayn_test_stub_module": stub}):
+            self.assertTrue(host_checks._has_module("diayn_test_stub_module"))
+        self.assertFalse(host_checks._has_module("diayn_test_no_such_module"))
 
     def test_a_posix_box_without_resource_fails(self):
         # The resume reader's limits are skipped where resource is missing, so the

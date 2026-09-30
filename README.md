@@ -55,7 +55,8 @@ You need Python 3.10 or newer, on Linux or macOS, and a Discord account.
 
 `.venv/bin/python diayn.py doctor` checks everything again at any time: the
 token, the intent, the data directory, the sweeper, the last sweep,
-`POLL_CONTACT`, the Python version and the platform.
+`POLL_CONTACT`, the Python version, the platform, and that discord.py and
+pypdf are installed.
 
 ## The Discord developer portal
 
@@ -185,6 +186,9 @@ lock. `.venv/bin/python diayn.py <command> --help` lists a command's options.
 Gets a new host ready, and is safe to run again: nothing that exists is
 changed. In order, stopping at the first failure, it:
 
+- checks that discord.py is installed, since `run` cannot start the bot
+  without it, and warns without pypdf, which reads PDF resumes; either way it
+  says how to install them for the Python running it;
 - checks `DISCORD_TOKEN` with Discord, and that the Server Members Intent is
   on: nothing is made until both are;
 - makes the data directory at mode 700, or warns if an existing one is
@@ -198,10 +202,10 @@ changed. In order, stopping at the first failure, it:
 
 ### `doctor`
 
-Checks the host, and changes nothing: the Python version, the platform, the
-settings, the token and the intent, the data directory, `postings.db`, how long
-ago the last sweep began, whether anything holds the sweeper lock,
-`POLL_CONTACT`, and whether a Gemini key is set. Each check prints `ok`,
+Checks the host, and changes nothing: the Python version, the platform,
+discord.py and pypdf, the settings, the token and the intent, the data
+directory, `postings.db`, how long ago the last sweep began, whether anything
+holds the sweeper lock, `POLL_CONTACT`, and whether a Gemini key is set. Each check prints `ok`,
 `warn`, `note` or `fail`, every check runs whatever an earlier one found, and
 it exits 1 when anything is to fix.
 

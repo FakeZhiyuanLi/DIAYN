@@ -9,6 +9,9 @@ invite link, and `diayn.py doctor`, which checks it again at any time.
 
 **setup** goes in this order, and stops at the first failure:
 
+0. **The bot's dependencies.** Without discord.py `run` cannot start the bot,
+   so setup stops before anything is asked or made. Without pypdf a PDF resume
+   cannot be read, which is a warning.
 1. **The token.** DISCORD_TOKEN must be set, and Discord must accept it
    (discord_portal). Nothing is made until it does.
 2. **The intent.** The Server Members Intent must be on. The bot always asks
@@ -25,8 +28,8 @@ invite link, and `diayn.py doctor`, which checks it again at any time.
    the operator can say whether it is new (`sweep --init`) or the wrong file.
 5. **The invite link**, with the scopes the bot needs and no permission.
 
-**doctor** checks the Python version, the platform, the settings, the token
-and the intent, the data directory, postings.db and its last sweep, whether
+**doctor** checks the Python version, the platform, discord.py and pypdf, the
+settings, the token and the intent, the data directory, postings.db and its last sweep, whether
 anything holds the sweeper lock, POLL_CONTACT, and the Gemini key. Every check
 runs, whatever an earlier one found, except those that need settings that
 would not load. It makes nothing and writes nothing. To see whether a sweeper
@@ -64,6 +67,14 @@ PLATFORM_NAMES = {"linux": "Linux", "darwin": "macOS"}
 #: B6: a sweep this many intervals late is reported, as /diayn debug reports it.
 STALE_SWEEPS = 3
 INTENT_HOW = hints.INTENT_HOW
+#: What the bot needs besides the scraper's own: (the module, what pip calls it, the
+#: level when it is missing, and what goes without it). Looked for, never imported:
+#: only `run` imports discord.py.
+DEPENDENCIES = (
+    ("discord", "discord.py", FAIL, "so `run` cannot start the bot"),
+    ("pypdf", "pypdf", WARN, "so a PDF resume cannot be read. A .docx, a .txt or pasted "
+                             "text still fills in a profile"),
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -82,6 +93,28 @@ def report(finding: Finding) -> None:
     """Prints `finding` as one line, to stderr when it is a failure."""
     print(f"{finding.level:<5} {finding.what}: {finding.said}",
           file=sys.stderr if finding.failed else sys.stdout, flush=True)
+
+
+# ------------------------------------------------------------------ dependencies
+
+def _has_module(name: str) -> bool:
+    """Whether `name` can be imported here, without importing it."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ValueError:          # already imported, with no spec, as a stub is
+        return sys.modules.get(name) is not None
+
+
+def dependencies() -> list:
+    """A finding for each of DEPENDENCIES: ok when it is installed."""
+    found = []
+    for module, name, level, without in DEPENDENCIES:
+        if _has_module(module):
+            found.append(Finding(OK, name, "installed."))
+        else:
+            found.append(Finding(level, name, f"not installed, {without}. "
+                                 f"{hints.install_hint()}"))
+    return found
 
 
 # ------------------------------------------------------------------ Discord
@@ -280,6 +313,11 @@ def _invite(app) -> None:
 
 
 def _steps(poller, settings, fetch_application) -> int:
+    installed = dependencies()
+    for finding in installed:
+        report(finding)
+    if any(finding.failed for finding in installed):
+        return FAILED_EXIT
     found, app = discord_findings(poller, settings, fetch_application)
     for finding in found:
         report(finding)
@@ -299,14 +337,15 @@ def _steps(poller, settings, fetch_application) -> int:
 
 def cmd_setup(poller, argv, fetch_application=None) -> int:
     """
-    `setup`: checks the token and the intent, makes the data directory and bootstraps
-    postings.db, then prints the invite link; returns the exit code. The settings are
+    `setup`: checks the dependencies, the token and the intent, makes the data directory
+    and bootstraps postings.db, then prints the invite link; returns the exit code. The settings are
     bound first (the scraper's boot()), so the paths are the ones `run` will use.
     `fetch_application` stands in for discord_portal's, for the tests.
     """
     argparse.ArgumentParser(
         prog="diayn.py setup",
-        description="Get this host ready: check the bot's token and intent, make the data "
+        description="Get this host ready: check the dependencies and the bot's token and "
+                    "intent, make the data "
                     "directory, bootstrap postings.db and print the invite link. "
                     "Safe to run again: nothing that exists is changed.").parse_args(argv)
     try:
@@ -318,10 +357,6 @@ def cmd_setup(poller, argv, fetch_application=None) -> int:
 
 
 # ------------------------------------------------------------------ doctor
-
-def _has_module(name: str) -> bool:
-    return importlib.util.find_spec(name) is not None
-
 
 def python_version(version=None) -> Finding:
     """Python `version` (default: this one), which must be 3.10 or newer."""
@@ -394,8 +429,8 @@ def database_findings(poller, path: str, now: float) -> list:
     """postings.db, its last sweep and its sweeper. Nothing is made: a missing file is
     only reported."""
     if not os.path.exists(path):
-        return [_refused(f"{path} does not exist. `{hints.command('setup')}` makes one, with a first "
-                         "sweep that records every open posting as seen.")]
+        return [_refused(f"{path} does not exist. `{hints.command('setup')}` makes one, with "
+                         "a first sweep that records every open posting as seen.")]
     ledger = read_ledger(poller, path)
     if isinstance(ledger, Finding):
         return [ledger]
@@ -450,8 +485,9 @@ def cmd_doctor(poller, argv, fetch_application=None, now=None) -> int:
     """
     argparse.ArgumentParser(
         prog="diayn.py doctor",
-        description="Check this host: the token and intent, the data directory, "
-                    "postings.db, the sweeper, and the settings. Changes nothing.").parse_args(argv)
+        description="Check this host: the dependencies, the token and intent, the data "
+                    "directory, postings.db, the sweeper, and the settings. "
+                    "Changes nothing.").parse_args(argv)
     findings = []
 
     def check(*found):
@@ -459,7 +495,7 @@ def cmd_doctor(poller, argv, fetch_application=None, now=None) -> int:
             report(finding)
             findings.append(finding)
 
-    check(python_version(), platform_support())
+    check(python_version(), platform_support(), *dependencies())
     try:
         env_file = poller.boot()
     except poller.ConfigError as error:

@@ -8,6 +8,8 @@ data directory at mode 700, bootstraps postings.db with a first sweep that
 records every open posting as seen, and prints the invite link. What is pinned
 here:
 
+- discord.py missing stops setup before anything is asked or made, and pypdf
+  missing is a warning, each with the install command for this Python;
 - nothing is made until the token checks out;
 - the Server Members Intent being off is a failure, naming the portal toggle,
   and nothing is made: the bot cannot log in without it;
@@ -19,6 +21,8 @@ here:
 - the token never reaches the output.
 
 Nothing reaches Discord or a job board: the portal and fetch_all are replaced.
+Which modules are installed is replaced too, so the suite says the same on a box
+with requirements.txt installed and on a bare python3.
 The scraper's .env is never read, and boot() rebinds the scraper's globals,
 which each test puts back.
 """
@@ -96,6 +100,7 @@ class _SetupCase(unittest.TestCase):
         self.db = os.path.join(self.data, "postings.db")
         self.env = {"DIAYN_DATA": self.data, "DISCORD_TOKEN": TOKEN}
         self.portal = FakePortal()
+        self.missing = set()        # the modules this box is to lack
         saved = poller.SETTINGS, poller.BOARDS, poller.STARTED_AT
         self.addCleanup(self._restore, saved)
 
@@ -112,11 +117,15 @@ class _SetupCase(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(poller, "load_env_file", return_value=None), \
                 mock.patch.object(poller, "fetch_all", fetch_all), \
+                mock.patch.object(host_checks, "_has_module", self.installed), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = host_checks.cmd_setup(poller, list(argv), fetch_application=self.portal)
         output = out.getvalue() + err.getvalue()
         self.assertNotIn(TOKEN, output)
         return code, out.getvalue(), err.getvalue()
+
+    def installed(self, name) -> bool:
+        return name not in self.missing
 
     def seen(self) -> int:
         conn = sqlite3.connect(self.db)
@@ -161,6 +170,32 @@ class ANewHost(_SetupCase):
         _, out, _ = self.setup()
         self.assertIn("diayn-test#0420", out)
         self.assertIn("DIAYN test", out)
+
+
+class TheDependencies(_SetupCase):
+    def test_without_discord_py_nothing_is_asked_or_made(self):
+        self.missing = {"discord"}
+        code, out, err = self.setup(fetch_nothing_allowed())
+        self.assertEqual(code, FAILED)
+        self.assertRegex(err, r"(?m)^fail\s+discord.py")
+        self.assertIn(hints.install_hint(), err)
+        self.assertEqual(self.portal.calls, [])
+        self.assertFalse(os.path.exists(self.data))
+
+    def test_without_pypdf_it_warns_and_carries_on(self):
+        self.missing = {"pypdf"}
+        code, out, err = self.setup()
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"(?m)^warn\s+pypdf")
+        self.assertIn("PDF", out)
+        self.assertIn(hints.install_hint(), out)
+        self.assertIn(portal.invite_url(APP_ID), out)
+
+    def test_both_installed_are_ok(self):
+        code, out, err = self.setup()
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"(?m)^ok\s+discord.py")
+        self.assertRegex(out, r"(?m)^ok\s+pypdf")
 
 
 class TheToken(_SetupCase):
