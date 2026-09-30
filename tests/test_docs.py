@@ -330,6 +330,11 @@ class ClaudeMd(unittest.TestCase):
             with self.subTest(named=named):
                 self.assertIn(named, self.claude)
 
+    def test_says_the_key_alone_turns_on_the_fit_check(self):
+        # Not only --llm: the key is enough for every profile's labels to go to Google.
+        self.assertIn("Setting `GEMINI_API_KEY` alone turns on the fit check", self.claude)
+        self.assertIn("profile labels to Google", self.claude)
+
 
 def shell_commands(text) -> list:
     """Every line of `text`, with a line ending in a backslash joined to the next, as the
@@ -394,6 +399,10 @@ class Deploy(unittest.TestCase):
         for command in self.commands:
             with self.subTest(command=command):
                 self.assertNotRegex(command, r"^(cp|mv|rsync|scp)\b.*\.db\b")
+
+    def test_says_the_key_alone_turns_on_the_fit_check(self):
+        self.assertIn("Setting `GEMINI_API_KEY` turns on the fit check", self.deploy)
+        self.assertIn("profile labels go to Google", self.deploy)
 
     def test_upgrades_by_tag(self):
         self.assertIn("git fetch --tags", self.deploy)

@@ -77,6 +77,14 @@ and the databases in it, if others on the box can read them), bootstraps
 `DISCORD_TOKEN` and `POLL_CONTACT`; `DIAYN_TZ`, `DIAYN_DATA`, `DIAYN_OWNER_IDS`
 and `GEMINI_API_KEY` are worth a look.
 
+- **Setting `GEMINI_API_KEY` turns on the fit check**, not only `--llm`. From
+  the next start, before each alert, that person's profile labels go to Google
+  (majors, minors, degree, graduation date, kinds of role, fields, skills,
+  keywords, places and terms, with each role's title, company, location and
+  term), once they have been shown the notice, and every request counts
+  against the key's quota (`FIT_RPD`, `FIT_RPM`). Leave it empty and nothing
+  goes to Google. The README's *Gemini* and *Privacy* sections say exactly
+  what is sent.
 - **The process environment wins over the file.** DIAYN loads its `.env`
   without overriding what is already set, so a value in pm2's daemon
   environment or in a systemd `Environment=` line beats the file.

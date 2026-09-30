@@ -180,8 +180,10 @@ aiohttp stub pattern (`tests/aiohttp_stub.py`), so the suite runs on a bare
 Report these and stop; do not act on them unasked.
 
 - **Putting `GEMINI_API_KEY` in a host's `.env`, or turning on `--llm` there.**
-  Either spends a budget and sends data to a third party: the fit check sends
-  each person's profile labels.
+  Setting `GEMINI_API_KEY` alone turns on the fit check, with no flag: from
+  the next start it sends each person's profile labels to Google before their
+  alerts. `--llm` sends posting titles and locations. Either spends a budget
+  and sends data to a third party.
 - **Changing what the fit check sends to Gemini**, or what the bot stores
   about a person.
 - **Granting or revoking access on a real host**, with `grant`, `revoke` or
