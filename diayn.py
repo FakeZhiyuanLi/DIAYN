@@ -47,12 +47,10 @@ the steps.
     python diayn.py doctor
 
 checks the host again at any time: the Python version and the platform,
-discord.py and pypdf, the settings, the token and the intent, the data directory, postings.db and its
-last sweep, whether anything is sweeping, POLL_CONTACT and the Gemini key. It
-changes nothing, and exits 1 when anything is to fix.
-
-A command not built yet goes in PLANNED_COMMANDS, which says so and exits 2,
-without importing the scraper or touching a file. None is left.
+discord.py and pypdf, the settings, the token and the intent, the data
+directory, postings.db and its last sweep, whether anything is sweeping,
+POLL_CONTACT and the Gemini key. It changes nothing, and exits 1 when anything
+is to fix.
 
 Before anything else, main() checks that Python is 3.10 or newer. The scraper
 and host_checks use 3.10's syntax, and on 3.9, macOS's own python3, they die
@@ -60,9 +58,8 @@ with a TypeError as they are imported, before doctor could say why. So this
 module, and hints.py, the one module of the checkout it imports at the top,
 stay within what Python 3.9 parses and runs; tests/test_diayn.py checks both.
 
-Importing this module is inert. The scraper is imported only when a scraper
-command, a bot command, or the list of commands is asked for, so the planned
-commands work on a box without aiohttp. The Discord client, and discord.py with
+Importing this module is inert. The scraper is imported only when a command,
+or the list of commands, is asked for. The Discord client, and discord.py with
 it, is imported only by `run`.
 """
 
@@ -84,10 +81,8 @@ IMPORT_LEGACY = "import-legacy"
 GRANT, REVOKE = "grant", "revoke"
 RUN = "run"
 SETUP, DOCTOR = "setup", "doctor"
-# DIAYN's own commands that are built.
+# DIAYN's own commands.
 BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE, RUN, SETUP, DOCTOR)
-# DIAYN's own commands, each built in a later change.
-PLANNED_COMMANDS = ()
 # What the scraper needs that only a POSIX system has: DIAYN runs on Linux and macOS.
 POSIX_ONLY_MODULES = ("fcntl",)
 HELP_FLAGS = ("-h", "--help")
@@ -156,11 +151,8 @@ def python_refusal(version=None):
 
 
 def usage(scraper_commands) -> str:
-    planned = (f"DIAYN's commands (not built yet): {', '.join(PLANNED_COMMANDS)}\n"
-               if PLANNED_COMMANDS else "")
     return ("usage: diayn.py <command> [options]\n\n"
             f"DIAYN's commands: {', '.join(BOT_COMMANDS)}\n"
-            f"{planned}"
             f"The scraper's commands: {', '.join(scraper_commands)}\n"
             "`diayn.py <command> --help` lists that command's options.")
 
@@ -539,9 +531,6 @@ def main(argv=None) -> int:
         return FAILED_EXIT
     argv = sys.argv[1:] if argv is None else list(argv)
     command = argv[0] if argv else None
-    if command in PLANNED_COMMANDS:
-        print(f"diayn.py {command}: not built yet", file=sys.stderr)
-        return USAGE_EXIT
     try:
         poller = scraper()
     except ModuleNotFoundError as e:

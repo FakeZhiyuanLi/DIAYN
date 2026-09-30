@@ -182,9 +182,8 @@ class ImportLegacy(unittest.TestCase):
 
 
 class TheCommandIsBuilt(unittest.TestCase):
-    def test_it_is_one_of_diayn_s_commands_and_no_longer_planned(self):
+    def test_it_is_one_of_diayn_s_commands(self):
         self.assertIn("import-legacy", diayn.BOT_COMMANDS)
-        self.assertNotIn("import-legacy", diayn.PLANNED_COMMANDS)
 
 
 if __name__ == "__main__":

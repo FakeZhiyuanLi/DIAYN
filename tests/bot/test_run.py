@@ -151,9 +151,8 @@ class _RunCase(unittest.TestCase):
 
 
 class TheCommand(unittest.TestCase):
-    def test_run_is_built_and_no_longer_planned(self):
+    def test_run_is_one_of_diayn_s_commands(self):
         self.assertIn("run", diayn.BOT_COMMANDS)
-        self.assertNotIn("run", diayn.PLANNED_COMMANDS)
 
     def test_main_hands_run_its_arguments(self):
         with mock.patch.object(diayn, "cmd_run", return_value=0) as cmd_run:

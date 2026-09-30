@@ -136,9 +136,8 @@ class _SetupCase(unittest.TestCase):
 
 
 class TheCommand(unittest.TestCase):
-    def test_setup_is_built_and_no_longer_planned(self):
+    def test_setup_is_one_of_diayn_s_commands(self):
         self.assertIn("setup", diayn.BOT_COMMANDS)
-        self.assertNotIn("setup", diayn.PLANNED_COMMANDS)
 
     def test_main_hands_setup_its_arguments(self):
         with mock.patch.object(host_checks, "cmd_setup", return_value=0) as cmd_setup:

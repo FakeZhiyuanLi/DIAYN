@@ -6,8 +6,7 @@
 Every command of the scraper runs through it with the same arguments and the
 same exit codes (0 done, 1 failed, 2 a usage error, 3 another sweeper holds the
 lock), so a pm2 or systemd unit, or a log reader, cannot tell the two apart.
-DIAYN's own commands are placeholders until they are built: each says so and
-exits 2, having imported nothing and touched nothing.
+DIAYN's own commands are its own, and none is the scraper's.
 
 The first tests call `diayn.main` in process with the scraper's `main`
 replaced, so no .env is read. The rest run copies of both scripts in a child
@@ -42,7 +41,6 @@ import internship_poller as poller  # noqa: E402
 from test_cli import CHILD as SCRAPER_CHILD  # noqa: E402
 from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, copy_scraper, v2_fixture  # noqa: E402
 
-PLANNED = ()
 BUILT = ("import-legacy", "grant", "revoke", "run", "setup", "doctor")
 # The modules diayn.py imports from its checkout, besides the scraper's.
 DIAYN_FILES = ("diayn.py", "hints.py", "host_checks.py", "discord_portal.py")
@@ -97,23 +95,13 @@ def run_main(argv):
     return code, out.getvalue(), err.getvalue()
 
 
-class Planned(unittest.TestCase):
-    def test_each_planned_command_says_it_is_not_built_and_exits_2(self):
-        for command in PLANNED:
-            with self.subTest(command=command), \
-                    mock.patch.object(poller, "main") as scraper_main:
-                code, out, err = run_main([command, "--anything"])
-                self.assertEqual(code, USAGE_ERROR)
-                self.assertIn("not built yet", out + err)
-                scraper_main.assert_not_called()
-
-    def test_the_planned_commands_are_not_scraper_commands(self):
-        self.assertEqual(set(diayn.PLANNED_COMMANDS), set(PLANNED))
-        self.assertEqual(set(PLANNED) & set(scraper_commands()), set())
-
-    def test_diayn_s_built_commands_are_neither_planned_nor_the_scraper_s(self):
+class DiaynsOwn(unittest.TestCase):
+    def test_diayn_s_commands_are_not_the_scraper_s(self):
         self.assertEqual(set(diayn.BOT_COMMANDS), set(BUILT))
-        self.assertEqual(set(BUILT) & (set(PLANNED) | set(scraper_commands())), set())
+        self.assertEqual(set(BUILT) & set(scraper_commands()), set())
+
+    def test_every_one_is_built_and_the_placeholder_for_one_that_is_not_is_gone(self):
+        self.assertFalse(hasattr(diayn, "PLANNED_COMMANDS"))
 
 
 class AnOldPython(unittest.TestCase):
@@ -218,7 +206,7 @@ class Usage(unittest.TestCase):
                     mock.patch.object(poller, "main") as scraper_main:
                 code, out, _ = run_main([flag])
                 self.assertEqual(code, 0)
-                for command in PLANNED + BUILT + tuple(scraper_commands()):
+                for command in BUILT + tuple(scraper_commands()):
                     self.assertIn(command, out)
                 scraper_main.assert_not_called()
 
@@ -235,7 +223,7 @@ class Usage(unittest.TestCase):
             code, _, err = run_main(["sweeep"])
         self.assertEqual(code, USAGE_ERROR)
         self.assertIn("sweeep", err)
-        for command in PLANNED + BUILT + tuple(scraper_commands()):
+        for command in BUILT + tuple(scraper_commands()):
             self.assertIn(command, err)
         scraper_main.assert_not_called()
 
@@ -301,17 +289,6 @@ class Script(unittest.TestCase):
             result = self._diayn("prune")
         self.assertEqual(result.returncode, LOCK_HELD, result.stderr)
         self.assertIn(self.db + ".lock", result.stderr)
-
-    def test_a_planned_command_run_as_a_script_touches_nothing(self):
-        # Run as pm2 would run it. The scraper is never imported, so this works
-        # without aiohttp, and no data directory or lock file appears.
-        for command in PLANNED:
-            with self.subTest(command=command):
-                result = self._subprocess([sys.executable, "-B", self.script, command])
-                self.assertEqual(result.returncode, USAGE_ERROR)
-                self.assertIn("not built yet", result.stdout + result.stderr)
-        self.assertFalse(os.path.exists(self.data))
-        self.assertEqual(sorted(os.listdir(self.checkout)), self.copied())
 
     def copied(self):
         return sorted(DIAYN_FILES + ("internship_poller.py", "llm.py"))

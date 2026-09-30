@@ -122,9 +122,8 @@ class _DoctorCase(unittest.TestCase):
 
 
 class TheCommand(unittest.TestCase):
-    def test_doctor_is_built_and_nothing_is_planned_any_more(self):
+    def test_doctor_is_one_of_diayn_s_commands(self):
         self.assertIn("doctor", diayn.BOT_COMMANDS)
-        self.assertEqual(diayn.PLANNED_COMMANDS, ())
 
     def test_main_hands_doctor_its_arguments(self):
         with mock.patch.object(host_checks, "cmd_doctor", return_value=0) as cmd_doctor:
