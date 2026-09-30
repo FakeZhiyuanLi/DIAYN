@@ -33,6 +33,7 @@ from contextlib import redirect_stderr
 from unittest import mock
 
 import access
+import intern_delivery
 import intern_profile
 import intern_store
 import intern_text
@@ -452,6 +453,47 @@ class TheCommandsAreGated(_GateCase):
         self.assertFalse(refused(owner))
         self.assertIn("failed: OperationalError", log)
         self.assertNotIn("access_grants", log)
+
+
+@needs_discord
+class ARevocationStopsTheDmsNotYetSent(_GateCase):
+    """A tick asks who may be DMed before each DM, against the grants as they are then,
+    so `/diayn revoke` or `diayn.py revoke` stops the DMs a running tick has not sent."""
+
+    def test_the_answer_is_the_grants_as_they_are_when_asked(self):
+        self.grant("user", GRANTED)
+        allowed = intern_ui.dm_access()
+        self.assertTrue(allowed(GRANTED))
+
+        access.revoke(self.db, "user", GRANTED)
+
+        self.assertFalse(allowed(GRANTED))
+
+    def test_revoked_between_two_sends_the_second_is_not_sent(self):
+        for uid in (GRANTED, MEMBER):                  # delivered in this order, by id
+            self.grant("user", uid)
+            self.enrol(uid, alerts="hourly")
+        rows = intern_delivery.intern_match.tag_rows([(
+            1, "greenhouse", "ext1", "Acme", "Software Engineer Intern", "Irvine, CA",
+            "https://example.com/jobs/1", NOW + 60, NOW + 60)])
+        sent = []
+
+        async def send_dm(uid, msg):
+            sent.append(uid)
+            if uid == GRANTED:
+                access.revoke(self.db, "user", MEMBER)
+
+        async def load_window():
+            return list(rows)
+
+        with mock.patch.object(intern_delivery, "SEND_GAP_S", 0):
+            report = asyncio.run(intern_delivery.run_tick(
+                self.db, load_window=load_window, send_dm=send_dm, now=NOW + 2 * 3600,
+                companies_watched=0, allowed=intern_ui.dm_access()))
+
+        self.assertEqual(sent, [GRANTED])
+        self.assertEqual((report.due, report.sent), (2, 1))
+        self.assertEqual(intern_store.load(self.db, MEMBER).cursor, NOW)   # left for access back
 
 
 @needs_discord

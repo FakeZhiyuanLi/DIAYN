@@ -176,11 +176,12 @@ def has_access(user_id: int, guild_id: int | None = None) -> bool:
 
 
 def dm_access() -> Callable[[int], bool]:
-    """Who may be DMed now: `access.allowed` as in a DM, against one read of the grants,
-    for a delivery tick to ask about each person in turn. Raises sqlite3.Error, so a
-    tick that cannot read the grants sends nothing."""
-    granted = access.grants(db)
-    return lambda user_id: access.allowed(granted, user_id, None, _member_of(user_id))
+    """Who may be DMed: `access.allowed` as in a DM, for a delivery tick to ask about each
+    person in turn. Every answer reads the grants afresh (one small SELECT), so a
+    revocation that lands while a tick waits on the fit check or on Discord stops the
+    DMs it has not sent yet. The answer raises sqlite3.Error, so a tick that cannot read
+    the grants sends nothing to anyone it could not ask about."""
+    return lambda user_id: has_access(user_id, None)
 
 
 def may_use(user_id: int, guild_id: int | None = None) -> bool:

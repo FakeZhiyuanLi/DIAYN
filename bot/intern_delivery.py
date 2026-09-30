@@ -35,7 +35,8 @@ someone may use the bot (`access.allowed`, as in a DM), and every entry point
 must be given it. Someone without access is never due and never sent a note;
 their cursor stays where it was, so access given back brings one digest of
 what arrived meanwhile, not a flood. An alert asks again right before its send,
-so a revocation during a tick stops the DMs not yet sent.
+so a revocation during a tick stops the DMs not yet sent, as long as `allowed`
+reads the grants when it is asked (`intern_ui.dm_access` does).
 
 **Only the settled past is offered, once.** A user's cursor is a `first_seen`
 watermark. A tick offers rows first seen after it and at least SETTLE_S ago

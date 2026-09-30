@@ -30,9 +30,10 @@ nothing from postings.db, so the delivery loop starts whenever the finder is
 on, runs it in a `try` of its own, and only skips alerts and quiet notes while
 postings.db is down (a change to spec 5.1, which gated the loop on both).
 
-**Only those the bot is open to are DMed.** Each tick reads the grants once
-(`intern_ui.dm_access`) and hands delivery the answer, so a revocation stops
-alerts and notes at the next tick. The same answer starts, or stops, the 30
+**Only those the bot is open to are DMed.** Each tick hands delivery
+`intern_ui.dm_access`, which reads the grants every time it is asked, and
+delivery asks again right before each DM, so a revocation stops the alerts and
+notes a running tick has not sent yet. The same answer starts, or stops, the 30
 days a profile outlives its owner's access; it is recorded before housekeeping
 runs, so access given back that morning is seen before anything is deleted.
 Grants that cannot be read stop the DMs, start no clock, and never stop the

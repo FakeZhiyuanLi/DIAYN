@@ -725,8 +725,10 @@ class Notices(DeliveryTest):
 
 
 class OnlyThoseWhoMayUseTheBotAreDmed(DeliveryTest):
-    """Plan 3.3: revoking access stops alerts at the next tick, and a tick asks before
-    every DM. Stop, Pause and delete need no access; being DMed does."""
+    """Plan 3.3: revoking access stops alerts, and a tick asks before every DM, so a
+    revocation mid-tick stops the DMs not yet sent (with the real `allowed`, which reads
+    the grants when asked: test_access_gates.ARevocationStopsTheDmsNotYetSent). Stop,
+    Pause and delete need no access; being DMed does."""
 
     def test_someone_without_access_is_not_due_and_keeps_their_cursor(self):
         self.enrol(ALICE, alerts="hourly")

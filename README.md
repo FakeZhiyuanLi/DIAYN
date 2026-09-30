@@ -148,7 +148,8 @@ contact. `/internships delete`, the profile card's "Delete my data" and its
 confirmation, and the alert buttons "Stop" and "Pause". Nobody is ever stuck
 with their data or their alerts.
 
-**Taking access away** stops alerts at the next delivery tick. A profile whose
+**Taking access away** stops alerts at once: a delivery tick asks again before
+every DM, so even one already running sends nothing more. A profile whose
 owner has had no access for 30 days is deleted, as is one whose owner has left
 every server the bot shares with them for 30 days.
 
