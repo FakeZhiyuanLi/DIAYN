@@ -104,6 +104,10 @@ MIN_PYTHON = (3, 10)
 CONFIG_EXIT = 78
 # The gateway's close code for an intent the portal has not turned on.
 DISALLOWED_INTENTS = 4014
+# Seconds the bot has to stop once the sweep loop has ended and it has been cancelled.
+# Logging out of Discord takes a second or two. A bot still stopping after this is
+# left behind, and the process exits non-zero anyway, so that it is started again.
+BOT_SHUTDOWN_S = 30
 
 
 class IntentRefused(Exception):
@@ -375,11 +379,13 @@ async def run_together(bot, sweep) -> int:
     returns the exit code: 0 when the bot stopped, FAILED_EXIT when the sweep loop ended.
 
     The sweep loop is not meant to end: the scraper's cmd_watch outlives a failed
-    sweep. If it ends anyway, a done-callback logs why and stops the bot, and the
-    process exits non-zero, so pm2 or systemd starts it again with its sweeps.
-    Otherwise the bot would go on answering from a ledger nothing updates. When the
-    bot stops first, the sweep loop is cancelled and waited for, so it is finished
-    before its connection closes. An exception from the bot is raised from here.
+    sweep. If it ends anyway, a done-callback cancels the bot, first, so that nothing
+    after it can leave the bot running, then logs why; and the process exits non-zero,
+    so pm2 or systemd starts it again with its sweeps. Otherwise the bot would go on
+    answering from a ledger nothing updates. The bot gets BOT_SHUTDOWN_S to stop; one
+    still stopping then is left behind. When the bot stops first, the sweep loop is
+    cancelled and waited for, so it is finished before its connection closes. An
+    exception from the bot is raised from here.
     """
     bot_task = asyncio.create_task(bot, name="bot")
     sweep_task = asyncio.create_task(sweep, name="sweep loop")
@@ -388,23 +394,40 @@ async def run_together(bot, sweep) -> int:
     def on_sweep_done(task):
         if bot_task.done():             # the bot stopped first, and cancelled it
             return
+        bot_task.cancel()
         ended.append(_how_it_ended(task))
         if not task.cancelled() and task.exception() is not None:
             traceback.print_exception(task.exception(), file=sys.stderr)
         scraper().log(f"sweep loop ended ({ended[0]}); stopping the bot, so that whatever "
                       "runs DIAYN starts both again", file=sys.stderr)
-        bot_task.cancel()
 
     sweep_task.add_done_callback(on_sweep_done)
     try:
-        await bot_task
-    except asyncio.CancelledError:
-        if not ended:
-            raise
-    finally:
+        await asyncio.wait([bot_task, sweep_task], return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:      # the process is stopping: Ctrl-C, or pm2's SIGINT
+        bot_task.cancel()
         sweep_task.cancel()
-        await asyncio.wait([sweep_task])
-    return FAILED_EXIT if ended else 0
+        await asyncio.wait([bot_task, sweep_task])
+        raise
+    if ended:
+        await _let_the_bot_stop(bot_task)
+        return FAILED_EXIT
+    sweep_task.cancel()
+    await asyncio.wait([sweep_task])
+    bot_task.result()                   # raises what the bot raised
+    return 0
+
+
+async def _let_the_bot_stop(bot_task) -> None:
+    """Waits up to BOT_SHUTDOWN_S for the cancelled bot, and says so when it has not
+    stopped, or when it failed as it stopped. What it is left doing is cancelled again
+    as the event loop closes."""
+    done, _ = await asyncio.wait([bot_task], timeout=BOT_SHUTDOWN_S)
+    if not done:
+        scraper().log(f"the bot had not stopped {BOT_SHUTDOWN_S}s after it was told to; "
+                      "exiting anyway", file=sys.stderr)
+    elif not bot_task.cancelled() and bot_task.exception() is not None:
+        scraper().log(f"the bot stopped with {_how_it_ended(bot_task)}", file=sys.stderr)
 
 
 def _run_arguments(poller, argv) -> argparse.Namespace:

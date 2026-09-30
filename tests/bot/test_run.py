@@ -16,7 +16,9 @@ cmd_watch. What is pinned here:
   Python that is running, and nothing is made, not even the lock file;
 - a sweep that raises is logged, and the bot goes on;
 - a sweep loop that ends, however it ends, stops the bot and exits non-zero,
-  so pm2 or systemd restarts the process and its sweeps with it;
+  so pm2 or systemd restarts the process and its sweeps with it: the bot is
+  cancelled before anything is logged, and a bot still stopping after
+  BOT_SHUTDOWN_S is left behind;
 - Discord refusing the Server Members Intent exits 78, once, with one line
   naming the portal toggle: DEPLOY.md's units never restart on 78, since a
   loop of refused logins can get the token reset;
@@ -357,6 +359,68 @@ class TheSweepLoop(_RunCase):
         self.assertIn("sweep loop ended", err)
         self.assertIn("OperationalError: disk I/O error", err)
 
+    def test_the_bot_is_cancelled_even_when_logging_the_end_fails(self):
+        # A log pipe that has gone away must not leave a bot running with no sweeps.
+        v2_fixture(self.db)
+        outcome = []
+
+        async def bot(settings):
+            try:
+                await asyncio.sleep(2)
+                outcome.append("never cancelled")
+            except asyncio.CancelledError:
+                outcome.append("cancelled")
+                raise
+
+        async def returns():
+            return None
+
+        with mock.patch.object(poller, "log", side_effect=BrokenPipeError("log pipe closed")), \
+                self.assertLogs("asyncio", level="ERROR"):
+            code, _, err = self.run_diayn(bot=bot, watch=lambda conn: returns())
+        self.assertEqual(code, FAILED, err)
+        self.assertEqual(outcome, ["cancelled"])
+
+    def test_a_bot_that_does_not_stop_in_time_is_left_behind_and_it_exits_non_zero(self):
+        v2_fixture(self.db)
+        stages = []
+
+        async def bot(settings):
+            try:
+                await forever()
+            except asyncio.CancelledError:
+                stages.append("cancelled")
+                await asyncio.sleep(2)          # a logout that hangs
+                stages.append("stopped")
+                raise
+
+        async def returns():
+            return None
+
+        with mock.patch.object(diayn, "BOT_SHUTDOWN_S", 0.05):
+            code, _, err = self.run_diayn(bot=bot, watch=lambda conn: returns())
+        self.assertEqual(code, FAILED, err)
+        self.assertEqual(stages, ["cancelled"])
+        self.assertIn("sweep loop ended", err)
+        self.assertIn("the bot had not stopped", err)
+
+    def test_a_bot_that_fails_as_it_stops_says_so(self):
+        v2_fixture(self.db)
+
+        async def bot(settings):
+            try:
+                await forever()
+            except asyncio.CancelledError:
+                raise RuntimeError("logging out failed") from None
+
+        async def returns():
+            return None
+
+        code, _, err = self.run_diayn(bot=bot, watch=lambda conn: returns())
+        self.assertEqual(code, FAILED, err)
+        self.assertIn("the bot stopped with RuntimeError: logging out failed", err)
+        self.assertNotIn("never retrieved", err)    # said by run, not left to asyncio
+
     def test_through_main_the_exit_code_is_the_processs(self):
         v2_fixture(self.db)
         bot = FakeBot()
@@ -388,6 +452,30 @@ class TheSweepLoop(_RunCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(cancelled, [True])
         self.assertNotIn("sweep loop ended", err)
+
+
+class Stopping(unittest.TestCase):
+    def test_a_stop_from_outside_cancels_both_tasks_and_waits_for_them(self):
+        # What Ctrl-C, or pm2's SIGINT, does to run_together through asyncio.run.
+        bot, cancelled = FakeBot(), []
+
+        async def watching():
+            try:
+                await forever()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        async def stop_it():
+            task = asyncio.create_task(diayn.run_together(bot(None), watching()))
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(stop_it())
+        self.assertTrue(bot.cancelled)
+        self.assertEqual(cancelled, [True])
 
 
 class TheIntent(_RunCase):
