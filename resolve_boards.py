@@ -41,17 +41,23 @@ import internship_poller as poller
 ACCEPT = "text/html,application/json;q=0.9,*/*;q=0.8"
 
 
-def agent_headers() -> dict:
-    """Request headers carrying the scraper's User-Agent, contact and all.
+def boot_settings():
+    """The scraper's settings, read the way its own boot() reads them, and bound.
 
-    The contact is read the way the scraper's own main() reads it: its .env
-    (POLLER_ENV_FILE, else the checkout's, never the working directory's),
-    under whatever the environment already sets. Raises poller.ConfigError
-    on a setting the scraper would refuse too.
+    Its .env (POLLER_ENV_FILE, else the checkout's, never the working
+    directory's), under whatever the environment already sets. Bound into
+    poller.SETTINGS because the host gate reads its spacing and concurrency
+    from there, so polite_session paces this tool exactly as it paces a sweep.
+    Raises poller.ConfigError on a setting the scraper would refuse too.
     """
     poller.load_env_file()
-    contact = poller.configure(os.environ).contact
-    return {"User-Agent": poller.user_agent(contact), "Accept": ACCEPT}
+    poller.SETTINGS = poller.configure(os.environ)
+    return poller.SETTINGS
+
+
+def agent_headers(settings) -> dict:
+    """Request headers carrying the scraper's User-Agent, contact and all."""
+    return {"User-Agent": poller.user_agent(settings.contact), "Accept": ACCEPT}
 
 # ATS fingerprints, checked against the final URL and the page HTML.
 FINGERPRINTS = [
@@ -204,13 +210,13 @@ async def main():
         sys.exit(2)
 
     try:
-        headers = agent_headers()
+        headers = agent_headers(boot_settings())
     except poller.ConfigError as e:
         print(e, file=sys.stderr)
         sys.exit(1)
 
     conn = aiohttp.TCPConnector(limit=6)
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=40),
+    async with poller.polite_session(timeout=aiohttp.ClientTimeout(total=40),
                                      connector=conn, headers=headers) as sess:
         sem = asyncio.Semaphore(6)
 

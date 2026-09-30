@@ -19,8 +19,10 @@ the tests that need it to load a file are skipped without it.
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -278,11 +280,49 @@ class UserAgent(unittest.TestCase):
         # The contact comes from the scraper's own settings. load_env_file is
         # replaced, so no .env on this box is read.
         with mock.patch.object(poller, "load_env_file", return_value=None), \
+                mock.patch.object(poller, "SETTINGS", poller.SETTINGS), \
                 mock.patch.dict(os.environ, {"POLL_CONTACT": "ops@example.org"}):
-            headers = resolve_boards.agent_headers()
+            headers = resolve_boards.agent_headers(resolve_boards.boot_settings())
         self.assertEqual(headers["User-Agent"], poller.user_agent("ops@example.org"))
         with open(resolve_boards.__file__, encoding="utf-8") as f:
             self.assertNotIn("Mozilla", f.read())
+
+    def test_resolve_boards_paces_its_requests_through_the_host_gate(self):
+        # Many careers URLs on one host (Workday tenants, one company's pages)
+        # would otherwise go out six at a time with no gap between them. The
+        # gate reads its spacing from poller.SETTINGS, so those must be the
+        # configured settings by the time a request goes out.
+        import resolve_boards
+        sessions, contacts = [], []
+
+        class Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        def polite_session(**kwargs):
+            sessions.append(kwargs)
+            return Session()
+
+        async def resolve(sess, url, name=None):
+            contacts.append(poller.SETTINGS.contact)
+            return {"input": url, "ok": False, "why": "not fetched", "name": name}
+
+        argv = ["resolve_boards.py", "https://careers.example.com"]
+        with mock.patch.object(poller, "load_env_file", return_value=None), \
+                mock.patch.object(poller, "SETTINGS", poller.SETTINGS), \
+                mock.patch.object(poller, "polite_session", polite_session), \
+                mock.patch.object(resolve_boards, "resolve", resolve), \
+                mock.patch.object(sys, "argv", argv), \
+                mock.patch.dict(os.environ, {"POLL_CONTACT": "ops@example.org"}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            asyncio.run(resolve_boards.main())
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["headers"]["User-Agent"],
+                         poller.user_agent("ops@example.org"))
+        self.assertEqual(contacts, ["ops@example.org"])
 
 
 class Cli(unittest.TestCase):

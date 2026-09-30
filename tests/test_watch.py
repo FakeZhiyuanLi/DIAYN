@@ -6,10 +6,14 @@ does not sweep early.
 
 pm2 restarts a process that exits. The loop used to sweep the moment it
 started, so a crash loop would have swept every ATS host on every restart; its
-first sweep now waits until one is due, MAX(sweeps.started) + interval. A sweep
-that raises is rolled back — none of its rows committed, and none left pending
-for the next sweep's commit to carry in — then logged, and the loop goes on.
-Each sweep is one line in the log, whatever happened.
+first sweep now waits until one is due, an interval after the last sweep that
+began. A sweep that raises is rolled back — none of its rows committed, and
+none left pending for the next sweep's commit to carry in — then logged, and
+the loop goes on. Each sweep is one line in the log, whatever happened.
+
+A sweep that never finishes — the process killed mid-fetch — commits no sweeps
+row, so each attempt is also written into the lock file before any request
+goes out, and the wait counts from the later of the two.
 
 Each test runs cmd_watch in process against a database in a temporary
 directory, with a canned fetch and an injected sleep and clock. The sleep
@@ -68,7 +72,7 @@ def fetch_in_turn(*results):
     async def fetch_all(etags=None, on_status=None, sector=None):
         fetch_all.calls += 1
         result = queue.pop(0)
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             raise result
         return list(result), {"ok": 1, "not_modified": 0, "error": 0,
                               "new_etags": {}}
@@ -96,6 +100,10 @@ class Watch(TempDirTest):
         self.addCleanup(booted.__exit__, None, None, None)
         self.conn = poller.db_init(create=True)
         self.addCleanup(self.conn.close)
+        # watch always runs holding the lock, and records its attempts there.
+        held = poller.sweeper_lock(self.path)
+        self.lock = held.__enter__()
+        self.addCleanup(held.__exit__, None, None, None)
         self.out, self.err = io.StringIO(), io.StringIO()
 
     def _plant_sweep(self, started):
@@ -104,14 +112,14 @@ class Watch(TempDirTest):
                           (started,))
         self.conn.commit()
 
-    def _watch(self, fetch, sleeper):
-        """Run cmd_watch until `sleeper` stops it, with its output captured."""
+    def _watch(self, fetch, sleeper, now=NOW, ends=Stop):
+        """Run cmd_watch until it raises `ends`, with its output captured."""
         with mock.patch.object(poller, "fetch_all", fetch), \
                 contextlib.redirect_stdout(self.out), \
                 contextlib.redirect_stderr(self.err):
-            with self.assertRaises(Stop):
+            with self.assertRaises(ends):
                 asyncio.run(poller.cmd_watch(self.conn, INTERVAL, sleep=sleeper,
-                                             clock=lambda: NOW))
+                                             clock=lambda: now))
 
     def _count(self, sql):
         other = sqlite3.connect(self.path)
@@ -157,6 +165,59 @@ class FirstSweep(Watch):
         sleeper = Sleeper(1)
         self._watch(fetch_in_turn([posting("1")]), sleeper)
         self.assertEqual(sleeper.waits, [INTERVAL])
+
+
+class Killed(BaseException):
+    """The process dying mid-sweep: nothing the loop's `except Exception` catches."""
+
+
+class KilledMidSweep(Watch):
+    def test_the_next_start_waits_although_no_sweep_was_committed(self):
+        # The OOM killer takes the first watch during its fetch. pm2 restarts
+        # it 100 s later: the attempt counts, so it waits out the interval
+        # instead of fetching every board again straight away.
+        self._watch(fetch_in_turn(Killed()), Sleeper(1), ends=Killed)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM sweeps"), [(0,)])
+        fetch, sleeper = fetch_in_turn([posting("1")]), Sleeper(1)
+        self._watch(fetch, sleeper, now=NOW + 100)
+        self.assertEqual(sleeper.waits, [INTERVAL - 100])
+        self.assertEqual(fetch.calls, 0)
+
+    def test_the_attempt_is_recorded_before_the_first_request(self):
+        recorded = []
+
+        async def fetch_all(etags=None, on_status=None, sector=None):
+            recorded.append(poller.last_attempt(self.lock))
+            raise Killed
+
+        self._watch(fetch_all, Sleeper(1), ends=Killed)
+        self.assertEqual(recorded, [NOW])
+
+    def test_a_later_attempt_outweighs_an_older_success(self):
+        self._plant_sweep(NOW - 5000)
+        poller.note_attempt(self.lock, NOW - 300)
+        sleeper = Sleeper(1)
+        self._watch(fetch_in_turn([posting("1")]), sleeper)
+        self.assertEqual(sleeper.waits, [INTERVAL - 300])
+
+    def test_a_later_success_outweighs_an_older_attempt(self):
+        poller.note_attempt(self.lock, NOW - 5000)
+        self._plant_sweep(NOW - 300)
+        sleeper = Sleeper(1)
+        self._watch(fetch_in_turn([posting("1")]), sleeper)
+        self.assertEqual(sleeper.waits, [INTERVAL - 300])
+
+    def test_a_lock_file_that_records_nothing_readable_is_no_attempt(self):
+        # A fresh lock file is empty; one from an older release, or cut short,
+        # may hold anything. Neither delays the first sweep.
+        for content in ("", "not a time\n"):
+            with self.subTest(content=content):
+                with open(self.lock, "w") as f:
+                    f.write(content)
+                self.assertIsNone(poller.last_attempt(self.lock))
+        fetch = fetch_in_turn([posting("1")])
+        self._watch(fetch, Sleeper(1))
+        self.assertEqual(fetch.calls, 1)
 
 
 class Failures(Watch):

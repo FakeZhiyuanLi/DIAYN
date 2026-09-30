@@ -225,6 +225,83 @@ class NoSilentDatabase(TempDirTest):
             poller.db_init().close()
 
 
+def plant(path, *statements):
+    """A SQLite file at `path` holding `statements`: some other app's database."""
+    conn = sqlite3.connect(path)
+    try:
+        for statement in statements:
+            conn.execute(statement)
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+def untouched(path):
+    """What a refusal must leave as it found it: bytes, journal mode, version."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    conn = sqlite3.connect(path)
+    try:
+        return (raw, conn.execute("PRAGMA journal_mode").fetchone()[0],
+                conn.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        conn.close()
+
+
+class NotAPostingsDb(TempDirTest):
+    """P6 again: an existing file is adopted only if it is a v2 postings.db.
+
+    A typo in POSTINGS_DB can name a file that does exist: the bot's stats.db,
+    another app's database. Without --init nothing but an exact user_version 2
+    is opened, and the refusal comes before the WAL switch or any DDL. It does
+    not suggest --init either, which would bootstrap into the wrong file.
+    """
+
+    def test_a_file_with_no_user_version_is_refused_before_anything_is_written(self):
+        with scraper(self.dir) as path:
+            plant(path, "CREATE TABLE unrelated(x)")
+            before = untouched(path)
+            with self.assertRaises(poller.DatabaseRefused) as caught:
+                poller.db_init()
+        self.assertIn(path, str(caught.exception))
+        self.assertNotIn("--init", str(caught.exception))
+        self.assertEqual(untouched(path), before)
+        self.assertEqual(before[1:], ("delete", 0))
+
+    def test_an_empty_file_is_refused_without_create(self):
+        with scraper(self.dir) as path:
+            open(path, "wb").close()
+            with self.assertRaises(poller.DatabaseRefused):
+                poller.db_init()
+        self.assertEqual(os.path.getsize(path), 0)
+
+    def test_create_adopts_an_empty_file(self):
+        with scraper(self.dir) as path:
+            open(path, "wb").close()
+            poller.db_init(create=True).close()
+        self.assertEqual(untouched(path)[1:], ("wal", 2))
+
+    def test_create_still_refuses_a_file_that_holds_another_schema(self):
+        # --init makes a new postings.db; it never stamps v2 over tables it
+        # did not create.
+        with scraper(self.dir) as path:
+            plant(path, "CREATE TABLE unrelated(x)")
+            before = untouched(path)
+            with self.assertRaises(poller.DatabaseRefused):
+                poller.db_init(create=True)
+        self.assertEqual(untouched(path), before)
+
+    def test_another_schema_version_is_refused(self):
+        with scraper(self.dir) as path:
+            plant(path, "CREATE TABLE seen(x)", "PRAGMA user_version = 3")
+            before = untouched(path)
+            with self.assertRaises(poller.SchemaMismatch) as caught:
+                poller.db_init()
+        self.assertIn("v3", str(caught.exception))
+        self.assertEqual(untouched(path), before)
+
+
 class ContractTables(TempDirTest):
     def _published(self, **environ):
         with scraper(self.dir, **environ) as path:

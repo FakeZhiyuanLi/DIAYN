@@ -75,6 +75,14 @@ class SweeperLock(TempDirTest):
         self.assertIn("--init", str(caught.exception))
         self.assertEqual(os.listdir(self.dir), [])
 
+    def test_taking_it_again_keeps_the_attempt_it_records(self):
+        # The lock file carries the last sweep attempt across restarts, so
+        # taking the lock must never empty it.
+        with poller.sweeper_lock(self.db) as lock:
+            poller.note_attempt(lock, 1_790_000_000.0)
+        with poller.sweeper_lock(self.db) as lock:
+            self.assertEqual(poller.last_attempt(lock), 1_790_000_000.0)
+
     def test_create_makes_the_lock_file_and_its_directory(self):
         db = os.path.join(self.dir, "new", "postings.db")
         with poller.sweeper_lock(db, create=True) as path:

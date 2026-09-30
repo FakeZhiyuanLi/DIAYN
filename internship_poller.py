@@ -66,6 +66,7 @@ import asyncio
 import contextlib
 import fcntl
 import hashlib
+import math
 import os
 import json
 import re
@@ -372,6 +373,9 @@ CONTRACT_VERSION = "1"
 BUSY_TIMEOUT_MS = 5000
 # `watch`'s gap between sweeps, in seconds, unless --interval says otherwise.
 DEFAULT_INTERVAL_S = 900
+# The shortest --interval accepted. Less would sweep every board all but back
+# to back, and publish that to the bot as the gap to expect.
+MIN_INTERVAL_S = 60
 # Where the traffic comes from, named in every request.
 PROJECT_URL = "https://github.com/FakeZhiyuanLi/DIAYN"
 
@@ -2001,18 +2005,17 @@ def _journal_mode(conn) -> str:
     return conn.execute("PRAGMA journal_mode").fetchone()[0]
 
 
-def _open(path, create):
-    """A connection to `path`, which must already exist unless `create` is set.
+def _open(path, mode="rw"):
+    """A connection to `path` in sqlite's `mode`: "ro", "rw" or "rwc".
 
-    mode=rw rather than a plain sqlite3.connect, which creates a file that is
-    not there. An empty file at the wrong path — a typo in POSTINGS_DB, a
-    volume not mounted yet — is an empty ledger, and its first sweep records
-    every open posting as new (CONTRACT.md, P6). Only `create` makes the
-    file, and its directory with it.
+    rw rather than a plain sqlite3.connect, which creates a file that is not
+    there. An empty file at the wrong path — a typo in POSTINGS_DB, a volume
+    not mounted yet — is an empty ledger, and its first sweep records every
+    open posting as new (CONTRACT.md, P6). Only rwc makes the file, and its
+    directory with it.
     """
-    if create:
+    if mode == "rwc":
         _parent_made(path)
-    mode = "rwc" if create else "rw"
     try:
         return sqlite3.connect(f"file:{quote(os.path.abspath(path))}?mode={mode}",
                                uri=True)
@@ -2070,7 +2073,33 @@ def sweeper_lock(db_path, create=False):
         os.close(fd)
 
 
-def _prepare(conn):
+def _refuse_unless_ours(conn, path, create=False):
+    """Raise, having written nothing, unless `conn` is a postings.db to use.
+
+    That is a v2 file, or with `create` a file that holds nothing yet. A typo
+    in POSTINGS_DB can name a file that does exist — the bot's stats.db,
+    another app's database — and adopting it would switch it to WAL and write
+    the postings schema into it before anything else could refuse (P6). So
+    user_version 0 is refused too, and the refusal does not suggest --init,
+    which would bootstrap into the wrong file. Raises instead of sys.exit: the
+    CLI turns both errors into exit(1).
+    """
+    ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    if ver == SCHEMA_VERSION:
+        return
+    if ver:
+        raise SchemaMismatch(
+            f"{path}: db schema v{ver} != v{SCHEMA_VERSION}. The bot reads this "
+            "file too: see CONTRACT.md before changing either side.")
+    if create and conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone() is None:
+        return
+    raise DatabaseRefused(
+        f"{path} is not a postings.db: its user_version is 0, not "
+        f"{SCHEMA_VERSION}. Nothing was written to it. Check POSTINGS_DB; "
+        "`internship_poller.py config` prints the path in use.")
+
+
+def _prepare(conn, path, create=False):
     """`conn`, with the schema in place, in WAL mode and waiting on locks.
 
     WAL so the bot's reads and the scraper's writes never block each other,
@@ -2078,16 +2107,12 @@ def _prepare(conn):
     itself, so it is made only when the file is not WAL already; the busy
     timeout is set first, so the switch and every write after it wait out
     another connection's lock rather than failing on it. Closes `conn` and
-    raises if the file is another schema version.
+    raises, before any of that, unless the file is one to use
+    (_refuse_unless_ours).
     """
     try:
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-        ver = conn.execute("PRAGMA user_version").fetchone()[0]
-        if ver and ver != SCHEMA_VERSION:
-            # Raise instead of sys.exit: the CLI turns this into exit(1).
-            raise SchemaMismatch(
-                f"db schema v{ver} != v{SCHEMA_VERSION}. The bot reads this file "
-                "too: see CONTRACT.md before changing either side.")
+        _refuse_unless_ours(conn, path, create)
         if _journal_mode(conn) != "wal":
             conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
@@ -2111,10 +2136,30 @@ def _prepare(conn):
 def db_init(create=False):
     """postings.db, ready to use. Raises DatabaseRefused if it does not exist.
 
-    Every command opens the database through this, and only `create` —
-    `sweep --init` and `watch --init` — may make a new one.
+    Every command that writes opens the database through this, and only
+    `create` — `sweep --init` and `watch --init` — may make a new one.
     """
-    return _prepare(_open(SETTINGS.postings_db, create))
+    path = SETTINGS.postings_db
+    return _prepare(_open(path, "rwc" if create else "rw"), path, create)
+
+
+def db_read_only():
+    """postings.db for `stats`, the one command that opens it only to read.
+
+    mode=ro, and none of _prepare's work: no WAL switch, no DDL, no
+    user_version stamp. So it takes no lock and changes nothing under a writer
+    that holds none — before stage 2's upgrade-db, the bot's own in-process
+    sweep (P5). The same files are refused as db_init refuses.
+    """
+    path = SETTINGS.postings_db
+    conn = _open(path, "ro")
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        _refuse_unless_ours(conn, path)
+    except Exception:
+        conn.close()
+        raise
+    return conn
 
 
 def open_for_sweeping(init, interval=DEFAULT_INTERVAL_S):
@@ -2233,12 +2278,12 @@ def cmd_upgrade_db(interval=DEFAULT_INTERVAL_S):
     autocomplete values (P3). Safe to run again.
     """
     path = SETTINGS.postings_db
-    conn = _open(path, create=False)
+    conn = _open(path)
     try:
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         _refuse_to_upgrade(conn, path)
         mode, before = _journal_mode(conn), census(conn)
-        _prepare(conn)
+        _prepare(conn, path)
         publish_registry(conn, interval)
         conn.commit()
         after = census(conn)
@@ -2485,17 +2530,43 @@ async def cmd_llm_diff(conn, limit):
     print("--llm. Where it is wrong, tighten the prompt, not the regex.")
 
 
-def seconds_until_due(conn, interval, now) -> float:
-    """How long until the next sweep is due: MAX(sweeps.started) + interval.
+def note_attempt(lock, when):
+    """Record in the held lock file that a sweep begins at `when`."""
+    with open(lock, "w", encoding="ascii") as f:
+        f.write(f"{when!r}\n")
 
-    0 for a ledger that has never been swept, or a sweep overdue. Never more
-    than one interval, so a sweep stamped in the future — the clock set back
-    since — cannot stall the loop for longer than one gap.
+
+def last_attempt(lock) -> Optional[float]:
+    """When the last sweep began, as the lock file records it, or None.
+
+    A sweep killed before it commits — the OOM killer, a SIGKILL — leaves no
+    sweeps row, so MAX(started) alone would let each restart of that crash
+    loop sweep every board at once. The record lives in the lock file, which
+    only the process holding it writes, and which is not part of the contract.
+    A file that records nothing readable — a new one, or one cut short — is no
+    attempt.
+    """
+    try:
+        with open(lock, encoding="ascii") as f:
+            when = float(f.read())
+    except (FileNotFoundError, ValueError, UnicodeDecodeError):
+        return None
+    return when if math.isfinite(when) else None
+
+
+def seconds_until_due(conn, interval, now, attempted=None) -> float:
+    """How long until the next sweep is due: an interval after the last began.
+
+    The last is the later of MAX(sweeps.started) and `attempted`, the last
+    attempt, finished or not. 0 when neither is known, or a sweep is overdue.
+    Never more than one interval, so a sweep stamped in the future — the clock
+    set back since — cannot stall the loop for longer than one gap.
     """
     last = conn.execute("SELECT MAX(started) FROM sweeps").fetchone()[0]
-    if last is None:
+    began = max((t for t in (last, attempted) if t is not None), default=None)
+    if began is None:
         return 0.0
-    return min(float(interval), max(0.0, last + interval - now))
+    return min(float(interval), max(0.0, began + interval - now))
 
 
 def _roll_back(conn) -> str:
@@ -2513,7 +2584,9 @@ async def cmd_watch(conn, interval, use_llm=False, sleep=asyncio.sleep,
 
     pm2 restarts a process that exits, at once. A loop that swept as soon as
     it started would sweep every ATS host on every restart of a crash loop,
-    so the first sweep waits until one is due. A sweep that raises is rolled
+    so the first sweep waits until one is due — counting from the last sweep
+    that began, which each sweep records in the lock file before its first
+    request, so a sweep killed midway counts too. A sweep that raises is rolled
     back — otherwise its rows would stay pending, holding the write lock, and
     ride in on the next sweep's commit — logged, and followed a full interval
     later by the next. Anything that is not an Exception, Ctrl-C among them,
@@ -2524,12 +2597,14 @@ async def cmd_watch(conn, interval, use_llm=False, sleep=asyncio.sleep,
     are for the tests.
     """
     log(f"watching {len(BOARDS)} boards every {interval}s. Ctrl-C to stop.")
-    wait = seconds_until_due(conn, interval, clock())
+    lock = lock_path(SETTINGS.postings_db)
+    wait = seconds_until_due(conn, interval, clock(), last_attempt(lock))
     if wait:
         log(f"next sweep due in {wait:.0f}s")
         await sleep(wait)
     while True:
         try:
+            note_attempt(lock, clock())
             result = await cmd_sweep(conn, quiet=True, use_llm=use_llm,
                                      interval=interval)
             log(f"sweep: {result.summary}")
@@ -2594,7 +2669,8 @@ def arguments() -> argparse.ArgumentParser:
                     help="llm-diff: how many stored postings to compare")
     ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_S,
                     help="watch: seconds between sweeps, which scraper_meta tells "
-                         f"the bot to expect (default {DEFAULT_INTERVAL_S})")
+                         f"the bot to expect (default {DEFAULT_INTERVAL_S}, "
+                         f"at least {MIN_INTERVAL_S})")
     ap.add_argument("--init", action="store_true",
                     help="sweep/watch: create postings.db if it is missing, and "
                          "allow a first sweep into an empty ledger")
@@ -2630,7 +2706,7 @@ def run(a, env_file):
         asyncio.run(cmd_list(a.us, a.dupes, a.category, a.sector, a.all_roles,
                              a.max_age, a.strict, a.llm))
     elif a.cmd == "stats":
-        cmd_stats(db_init())
+        cmd_stats(db_read_only())
     elif a.cmd == "prune":
         conn = db_init()
         n = prune(conn, a.max_age, a.dry_run)
@@ -2659,6 +2735,10 @@ def main():
         ap.error(f"prune --max-age {a.max_age}: the bot shows postings up to "
                  f"{PRUNE_DAYS} days old, so prune never deletes a younger row. "
                  f"Pass {PRUNE_DAYS} or more.")
+    if a.interval < MIN_INTERVAL_S:
+        ap.error(f"--interval {a.interval}: sweeps are at least {MIN_INTERVAL_S} "
+                 "seconds apart, and scraper_meta tells the bot to expect the gap. "
+                 f"Pass {MIN_INTERVAL_S} or more.")
     try:
         env_file = boot()
         with lock_for(a):

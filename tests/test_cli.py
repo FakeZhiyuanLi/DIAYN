@@ -39,7 +39,7 @@ from aiohttp_stub import stub_aiohttp  # noqa: E402
 stub_aiohttp()
 
 import internship_poller as poller  # noqa: E402
-from test_contract import contract_schema, schema  # noqa: E402
+from test_contract import contract_schema, plant, schema, untouched  # noqa: E402
 
 # Every variable the scraper reads, so a child process starts clean.
 SCRAPER_VARIABLES = ("POLLER_ENV_FILE", "POSTINGS_DB", "BOARDS_FILE", "YC_CACHE")
@@ -216,7 +216,7 @@ class MissingDatabase(Cli):
         self.assertFalse(os.path.exists(self.data))
 
     def test_watch_refuses_a_missing_file_and_creates_nothing(self):
-        result = self._run("watch", "--interval", "1")
+        result = self._run("watch", "--interval", "60")
         self._assert_refused(result, self.db, "--init")
         self.assertFalse(os.path.exists(self.data))
 
@@ -265,7 +265,7 @@ class EmptyLedger(Cli):
 
     def test_watch_refuses_an_empty_ledger(self):
         self._empty_ledger()
-        self._assert_refused(self._run("watch", "--interval", "1"), "empty", "--init")
+        self._assert_refused(self._run("watch", "--interval", "60"), "empty", "--init")
 
     def test_sweep_init_accepts_an_empty_ledger(self):
         self._empty_ledger()
@@ -345,6 +345,90 @@ class UpgradeDb(Cli):
         finally:
             conn.close()
         self.assertEqual(tables, {"unrelated"})
+
+
+class Stats(Cli):
+    """`stats` only reads: no WAL switch, no contract tables, no lock (P5).
+
+    It runs beside a sweeper, and before stage 2's upgrade-db beside the bot's
+    own in-process sweep, so a write from it would change the live file under
+    a writer that holds no lock of ours.
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.mkdir(self.data)
+
+    def _tables(self):
+        conn = sqlite3.connect(self.db)
+        try:
+            return {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        finally:
+            conn.close()
+
+    def test_it_leaves_a_pre_contract_file_exactly_as_it_was(self):
+        v2_fixture(self.db)
+        before, tables = untouched(self.db), self._tables()
+        result = self._run("stats")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("recent sweeps", result.stdout)
+        self.assertEqual(untouched(self.db), before)
+        self.assertEqual(self._tables(), tables)
+        self.assertEqual(before[1], "delete")
+        self.assertNotIn("scraper_meta", tables)
+
+    def test_it_changes_nothing_while_a_sweeper_holds_the_lock(self):
+        v2_fixture(self.db)
+        before = untouched(self.db)
+        with poller.sweeper_lock(self.db):
+            result = self._run("stats")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(untouched(self.db), before)
+
+    def test_it_reads_a_file_the_scraper_has_upgraded(self):
+        v2_fixture(self.db)
+        self.assertEqual(self._run("upgrade-db").returncode, 0)
+        result = self._run("stats")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("3 postings", result.stdout)
+
+    def test_it_refuses_a_file_that_is_not_a_postings_db(self):
+        plant(self.db, "CREATE TABLE unrelated(x)")
+        before = untouched(self.db)
+        result = self._run("stats")
+        self._assert_refused(result, self.db)
+        self.assertNotIn("--init", result.stderr)
+        self.assertEqual(untouched(self.db), before)
+
+
+class WatchInterval(Cli):
+    """--interval is published to the bot, and paces every sweep after the first.
+
+    0 or a negative number would sweep every board back to back, and tell the
+    bot to expect it; the floor is a minute.
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.mkdir(self.data)
+        v2_fixture(self.db)
+
+    def test_an_interval_under_a_minute_is_refused_before_anything_runs(self):
+        before = snapshot(self.db)
+        for command in ("watch", "sweep", "upgrade-db"):
+            for seconds in ("0", "-60", "59"):
+                with self.subTest(command=command, seconds=seconds):
+                    result = self._run(command, "--interval", seconds)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("60", result.stderr)
+                    self.assertNotIn("fetch_all was called", result.stderr)
+        self.assertEqual(snapshot(self.db), before)
+        self.assertFalse(os.path.exists(self.db + ".lock"))
+
+    def test_a_minute_is_allowed(self):
+        result = self._run("sweep", "--interval", "60", canned=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class Prune(Cli):
