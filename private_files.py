@@ -21,6 +21,7 @@ hints.py does, since the scraper imports it.
 """
 
 import contextlib
+import errno
 import os
 import stat
 import threading
@@ -83,7 +84,8 @@ def tighten(path):
     Takes every permission for the group and for others off the directory or the file
     at `path`, when it is there and has any; returns the mode it had, or None when
     there was nothing to take. It never adds a bit: 755 becomes 700, 644 becomes 600,
-    and 444 becomes 400. Raises OSError when the chmod is refused.
+    and 444 becomes 400. Raises OSError when the chmod is refused, and when it is
+    accepted but the mode is unchanged, as on some network, FUSE and vfat mounts.
     """
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -92,4 +94,7 @@ def tighten(path):
     if not mode & GROUP_AND_OTHERS:
         return None
     os.chmod(path, mode & ~GROUP_AND_OTHERS)
+    now = stat.S_IMODE(os.stat(path).st_mode)
+    if now & GROUP_AND_OTHERS:
+        raise PermissionError(errno.EPERM, f"the filesystem kept mode {now:o} after chmod", path)
     return mode

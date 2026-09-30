@@ -76,6 +76,7 @@ class _DoctorCase(unittest.TestCase):
         self.env = {"DIAYN_DATA": self.data, "DISCORD_TOKEN": TOKEN, "POLL_CONTACT": CONTACT}
         self.portal = FakePortal()
         self.missing = set()        # the modules this box is to lack
+        self.env_path = None        # the .env boot() reports, when a test makes one
         saved = poller.SETTINGS, poller.BOARDS, poller.STARTED_AT
         self.addCleanup(self._restore, saved)
 
@@ -106,7 +107,7 @@ class _DoctorCase(unittest.TestCase):
         env.update(self.env)
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, env, clear=True), \
-                mock.patch.object(poller, "load_env_file", return_value=None), \
+                mock.patch.object(poller, "load_env_file", return_value=self.env_path), \
                 mock.patch.object(host_checks, "_has_module",
                                   lambda name: name not in self.missing), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -266,6 +267,19 @@ class WhatIsToFix(_DoctorCase):
 
 
 class WhatIsWorthAWarning(_DoctorCase):
+    @unittest.skipUnless(os.name == "posix", "needs POSIX file modes")
+    def test_an_env_file_others_can_read_is_a_warning_and_is_left_alone(self):
+        self.healthy()
+        path = os.path.join(os.path.dirname(self.data), ".env")
+        with open(path, "w", encoding="ascii") as f:
+            f.write("# a test .env\n")
+        os.chmod(path, 0o644)
+        self.env_path = path
+        code, out, _ = self.doctor()
+        self.assertEqual(lines(out)[".env"], "warn")
+        self.assertIn(f"chmod 600 {path}", out)
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
+
     def test_no_lock_file_means_nothing_is_sweeping_and_none_is_made(self):
         self.healthy()
         code, out, _ = self.doctor()

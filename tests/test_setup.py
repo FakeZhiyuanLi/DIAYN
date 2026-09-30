@@ -116,12 +116,21 @@ class _SetupCase(unittest.TestCase):
         self.env = {"DIAYN_DATA": self.data, "DISCORD_TOKEN": TOKEN}
         self.portal = FakePortal()
         self.missing = set()        # the modules this box is to lack
+        self.env_path = None        # the .env boot() reports, when a test makes one
         saved = poller.SETTINGS, poller.BOARDS, poller.STARTED_AT
         self.addCleanup(self._restore, saved)
 
     @staticmethod
     def _restore(saved):
         poller.SETTINGS, poller.BOARDS, poller.STARTED_AT = saved
+
+    def make_env_file(self, mode) -> str:
+        path = os.path.join(os.path.dirname(self.data), ".env")
+        with open(path, "w", encoding="ascii") as f:
+            f.write("# a test .env; the settings come from the environment\n")
+        os.chmod(path, mode)
+        self.env_path = path
+        return path
 
     def setup(self, fetch_all=None, *argv) -> tuple:
         """host_checks.cmd_setup in process: (exit code, stdout, stderr)."""
@@ -130,7 +139,7 @@ class _SetupCase(unittest.TestCase):
         fetch_all = fetch_all or canned_fetch([posting("1"), posting("2")])
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, env, clear=True), \
-                mock.patch.object(poller, "load_env_file", return_value=None), \
+                mock.patch.object(poller, "load_env_file", return_value=self.env_path), \
                 mock.patch.object(poller, "fetch_all", fetch_all), \
                 mock.patch.object(host_checks, "_has_module", self.installed), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -358,6 +367,46 @@ class TheDatabaseFiles(_SetupCase):
         self.assertRegex(err, r"(?m)^fail\s+database files: ")
         self.assertIn(f"chmod 600 {self.users}", err)
         self.assertNotIn("oauth2/authorize", out)
+
+
+@POSIX_MODES
+class TheRealTighten(_SetupCase):
+    """setup through private_files.tighten itself, not a stand-in for it."""
+
+    def test_a_refused_chmod_on_the_data_directory_fails_setup(self):
+        os.mkdir(self.data)
+        os.chmod(self.data, 0o755)
+        real = os.chmod
+
+        def refuse(path, mode, *args, **kwargs):
+            if os.path.realpath(path) == os.path.realpath(self.data):
+                raise PermissionError(1, "Operation not permitted", path)
+            return real(path, mode, *args, **kwargs)
+
+        with mock.patch.object(host_checks.private_files.os, "chmod", refuse):
+            code, out, err = self.setup(fetch_nothing_allowed())
+        self.assertEqual(code, host_checks.FAILED_EXIT)
+        self.assertIn("could not tighten", out + err)
+
+
+@POSIX_MODES
+class TheEnvFile(_SetupCase):
+    """.env holds the bot's token and any Gemini key: nobody else on the box reads it."""
+
+    def test_setup_makes_a_readable_env_file_private_and_says_so(self):
+        path = self.make_env_file(0o644)
+        code, out, err = self.setup()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        self.assertIn(".env", out)
+        self.assertIn("644", out)
+
+    def test_a_private_env_file_is_left_as_it_is(self):
+        path = self.make_env_file(0o600)
+        code, out, err = self.setup()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        self.assertNotIn(".env", out)
 
 
 class TheLedger(_SetupCase):

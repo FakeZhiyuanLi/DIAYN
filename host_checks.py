@@ -223,6 +223,33 @@ def private_databases(paths) -> list:
                     f"{', '.join(tightened)}; each is now readable by this user alone.")]
 
 
+def env_file_finding(path, fix: bool = False) -> list:
+    """
+    The .env at `path`, which holds the bot's token and any Gemini key, when others on
+    the box can read it: setup (`fix`) tightens it to 600 and says so; doctor warns and
+    changes nothing. [] when there is none, or it is private.
+    """
+    if not path:
+        return []
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return []
+    if not mode & private_files.GROUP_AND_OTHERS:
+        return []
+    exposed = f"{path} is mode {mode:o}, so other users on this box can read the bot's token"
+    if not fix:
+        return [Finding(WARN, ".env", f"{exposed}. `{hints.command('setup')}` tightens it, "
+                        f"as does chmod 600 {path}")]
+    try:
+        private_files.tighten(path)
+    except OSError as error:
+        return [Finding(FAIL, ".env", f"{exposed}, and setup could not tighten it: "
+                        f"{type(error).__name__}: {error}. chmod 600 {path}")]
+    return [Finding(NOTE, ".env", f"{path} was mode {mode:o}, so other users on this box could "
+                    "read the bot's token; it is now readable by this user alone.")]
+
+
 # ------------------------------------------------------------------ postings.db
 
 def _seen(conn) -> int:
@@ -354,7 +381,7 @@ def _failed(findings) -> bool:
     return any(finding.failed for finding in findings)
 
 
-def _steps(poller, settings, fetch_application) -> int:
+def _steps(poller, settings, fetch_application, env_path=None) -> int:
     if _failed(dependencies()):
         return FAILED_EXIT
     found, app = discord_findings(poller, settings, fetch_application)
@@ -363,6 +390,8 @@ def _steps(poller, settings, fetch_application) -> int:
     if _failed([data_directory(settings.data_dir, fix=True)]):
         return FAILED_EXIT
     if _failed(private_databases((settings.users_db, settings.postings_db))):
+        return FAILED_EXIT
+    if _failed(env_file_finding(env_path, fix=True)):
         return FAILED_EXIT
     code, ledger = bootstrap(poller, settings)
     report(ledger)
@@ -375,8 +404,8 @@ def _steps(poller, settings, fetch_application) -> int:
 def cmd_setup(poller, argv, fetch_application=None) -> int:
     """
     `setup`: checks the dependencies, the token and the intent, makes the data directory
-    (or tightens it, and the databases in it), bootstraps postings.db, then prints the
-    invite link; returns the exit code. The settings are
+    (or tightens it, the databases in it, and the .env), bootstraps postings.db, then
+    prints the invite link; returns the exit code. The settings are
     bound first (the scraper's boot()), so the paths are the ones `run` will use.
     `fetch_application` stands in for discord_portal's, for the tests.
     """
@@ -388,11 +417,11 @@ def cmd_setup(poller, argv, fetch_application=None) -> int:
                     "Safe to run again: nothing that exists is changed, except that "
                     "what others on this box could read is made private.").parse_args(argv)
     try:
-        poller.boot()
+        env_path = poller.boot()
     except poller.ConfigError as error:
         report(Finding(FAIL, "settings", str(error)))
         return FAILED_EXIT
-    return _steps(poller, poller.SETTINGS, fetch_application)
+    return _steps(poller, poller.SETTINGS, fetch_application, env_path)
 
 
 # ------------------------------------------------------------------ doctor
@@ -542,6 +571,7 @@ def cmd_doctor(poller, argv, fetch_application=None, now=None) -> int:
         return _verdict(findings)
     settings = poller.SETTINGS
     check(_settings_finding(poller, env_file))
+    check(*env_file_finding(env_file))
     check(*discord_findings(poller, settings, fetch_application)[0])
     check(data_directory(settings.data_dir))
     check(*database_findings(poller, settings.postings_db, time.time() if now is None else now))

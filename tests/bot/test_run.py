@@ -593,7 +593,8 @@ class TheRunnerIsUsed(unittest.TestCase):
     def test_run_goes_through_run_until_stopped_and_nothing_calls_asyncio_run(self):
         # asyncio.run would bring 3.10's teardown, and no SIGTERM handling, back.
         import ast
-        tree = ast.parse(open(diayn.__file__, encoding="utf-8").read())
+        with open(diayn.__file__, encoding="utf-8") as source:
+            tree = ast.parse(source.read())
         calls = {(n.func.value.id if isinstance(n.func, ast.Attribute)
                   and isinstance(n.func.value, ast.Name) else None,
                   n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", None))

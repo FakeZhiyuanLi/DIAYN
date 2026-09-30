@@ -26,6 +26,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
@@ -187,6 +188,22 @@ class Tighten(_Case):
     def test_what_is_not_there_is_nothing_to_do(self):
         self.assertIsNone(private_files.tighten(os.path.join(self.tmp, "users.db")))
         self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_a_refused_chmod_is_an_oserror(self):
+        path = self.made("users.db", 0o644)
+        refused = PermissionError(1, "Operation not permitted", path)
+        with mock.patch.object(private_files.os, "chmod", side_effect=refused), \
+                self.assertRaises(OSError):
+            private_files.tighten(path)
+
+    def test_a_chmod_the_filesystem_ignores_is_an_oserror_too(self):
+        # Some mounts (vfat with `quiet`, some network and FUSE filesystems) accept a
+        # chmod and change nothing; calling the file tightened then would be false.
+        path = self.made("users.db", 0o644)
+        with mock.patch.object(private_files.os, "chmod"), \
+                self.assertRaises(OSError) as caught:
+            private_files.tighten(path)
+        self.assertIn("644", str(caught.exception))
 
 
 class DatabaseFiles(unittest.TestCase):
