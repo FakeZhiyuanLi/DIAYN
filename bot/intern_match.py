@@ -97,6 +97,9 @@ class Match:
     group_key: str
     ledger: tuple[str, ...]    # (rep.rk_hash, rep.ck_hash)
     more: int
+    #: The fit check's (verdict, reason) for this role, where it has one (intern_fit);
+    #: nothing here sets it.
+    fit: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)

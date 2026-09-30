@@ -66,7 +66,7 @@ SURFACE = ("intern_ui.py", "intern_views.py", "intern_upload.py", "intern_alert_
 PURE = ("message_pack", "intern_places", "intern_vocab", "intern_location", "intern_taxonomy",
         "resume_lexicon", "resume_parse", "resume_worker", "intern_profile", "intern_store",
         "intern_match", "intern_text", "intern_delivery", "postings_contract", "postings_source",
-        "rate_limit", "access")
+        "rate_limit", "access", "intern_fit")
 #: Where the finder reads postings from, and the one request it makes to a job board.
 POSTINGS = ("postings_source.py", "postings_contract.py", "posting_details.py")
 PURE_FINDER = ("intern_vocab", "intern_places", "intern_location", "intern_taxonomy",
@@ -312,6 +312,21 @@ class NoAiPath(unittest.TestCase):
             for word in banned:
                 with self.subTest(file=name, banned=word):
                     self.assertNotIn(word, source(name))
+
+    def test_r11d_the_fit_check_is_the_finders_one_way_to_gemini(self):
+        # The owner's decision (plan 3.5): Gemini checks whether a role suits someone.
+        # It goes through llm.py, the scraper's own request code, from intern_fit and
+        # nowhere else in the finder, and it never touches a resume.
+        self.assertIn("llm.generate_json", source("intern_fit.py"))
+        everything = imported(ast.walk(tree("intern_fit.py")))
+        self.assertFalse(everything & {"resume_parse", "resume_worker", "intern_upload",
+                                       "discord", "intern_ui"})
+        for path in sorted(BOT.glob("*.py")):
+            if path.name == "intern_fit.py":
+                continue
+            with self.subTest(file=path.name):
+                self.assertNotIn("llm", imported(ast.walk(tree(path.name))))
+                self.assertNotIn("generate_json", source(path.name))
 
     def test_r11b_nothing_reads_a_poller(self):
         # The finder reads a postings_source.Source. The scraper sweeps in its own

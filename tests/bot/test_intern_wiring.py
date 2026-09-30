@@ -197,13 +197,14 @@ def _run_function(name: str, **names) -> dict:
     return namespace
 
 
-def _open_users(init_db, grants_init=None) -> tuple:
-    """Runs `_open_users` with `init_db` standing in for the finder's and `grants_init`
-    (default: a healthy one) for the access grants'. Returns what it returned and what
-    it printed to stderr."""
+def _open_users(init_db, grants_init=None, fit_init=None) -> tuple:
+    """Runs `_open_users` with `init_db` standing in for the finder's, `grants_init` for the
+    access grants' and `fit_init` for the fit check's (both default to a healthy one).
+    Returns what it returned and what it printed to stderr."""
     stderr = io.StringIO()
     namespace = _run_function("_open_users", intern_store=types.SimpleNamespace(init_db=init_db),
                               access=types.SimpleNamespace(init_db=grants_init or _healthy),
+                              intern_fit=types.SimpleNamespace(init_db=fit_init or _healthy),
                               sqlite3=sqlite3, sys=types.SimpleNamespace(stderr=stderr),
                               postings_source=postings_source)
     result = namespace["_open_users"](":memory:")
@@ -297,6 +298,20 @@ class TheFinderFailsAlone(unittest.TestCase):
         (finder,) = _calls("intern_store.init_db")
         self.assertTrue(any(call is n for s in self.block().body for n in ast.walk(s)))
         self.assertGreater(_position(call), _position(finder))
+
+    def test_the_fit_checks_tables_are_made_in_the_same_try_after_the_grants(self):
+        (call,) = _calls("intern_fit.init_db")
+        (grants,) = _calls("access.init_db")
+        self.assertTrue(any(call is n for s in self.block().body for n in ast.walk(s)))
+        self.assertGreater(_position(call), _position(grants))
+
+    def test_fit_tables_that_cannot_be_made_turn_the_finder_off(self):
+        # Delivery asks the fit check before every alert; without its tables every
+        # check would fail and log, so the finder reports itself off instead.
+        (db, error), printed = _open_users(_healthy, fit_init=_locked)
+        self.assertIsNone(db)
+        self.assertEqual(error, BROKEN)
+        self.assertTrue(printed.startswith("internship finder disabled: "), printed)
 
     def test_grants_that_cannot_be_made_turn_the_finder_off(self):
         (db, error), printed = _open_users(_healthy, _locked)
