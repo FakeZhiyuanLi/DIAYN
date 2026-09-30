@@ -1,9 +1,10 @@
 # Running DIAYN for good
 
 The README's [quick start](README.md#quick-start) gets the bot answering from a
-terminal. This file keeps it running on a Linux or macOS host: a service
-manager to start it at boot and restart it after a crash, daily backups, a
-restore, and upgrades from one release tag to the next.
+terminal. This file keeps it running on a Linux or macOS host: a fresh VPS
+made ready for it, a service manager to start it at boot and restart it after a
+crash, a box shared with another bot, a takeover from an older tracker, daily
+backups, a restore, and upgrades from one release tag to the next.
 
 DIAYN is one process, `diayn.py run`: the Discord bot and the sweeper together.
 It is the only process that writes `postings.db`, and it holds the sweeper lock
@@ -25,6 +26,86 @@ Four rules hold everywhere below:
 - **One running copy per bot token.** Two processes on one token answer every
   command twice. The lock stops a second `run` on the same data directory, but
   it cannot see a copy on another machine.
+
+## A fresh VPS
+
+From a new server to *Installing*, on Ubuntu 24.04 or 22.04, or Debian 12.
+Hetzner Cloud is the example here; any provider's VPS goes the same way. On a
+box that already runs another bot, most of this is done: check each step
+rather than repeat it, and read *Sharing the box with another bot* before
+*Installing*.
+
+**The server.** In Hetzner's Cloud Console, add a server with the Ubuntu 24.04
+image and your SSH key. A small instance, 2 GB of memory for example, is
+enough. DIAYN is one Python process, plus at most two resume-reader children at
+a time while people upload resumes, each killed after 20 seconds and, on Linux,
+held to 1 GiB of address space. Once it runs, `systemctl status diayn` or
+`pm2 list` shows what it uses.
+
+**A user with sudo, not root.** Hetzner's images let you in as root, with your
+key. Make a normal user, give it sudo and your key, and do everything after
+this as that user. On Debian, `apt install -y sudo` first if there is no
+`sudo`.
+
+```sh
+ssh root@<server-ip>
+adduser <user> && usermod -aG sudo <user>
+install -d -m 700 -o <user> -g <user> /home/<user>/.ssh
+install -m 600 -o <user> -g <user> ~/.ssh/authorized_keys /home/<user>/.ssh/
+exit
+ssh <user>@<server-ip>
+sudo -v                                   # asks for <user>'s password, then prints nothing
+```
+
+**The packages.** `flock` is part of util-linux, which each of these systems
+already has.
+
+```sh
+sudo apt update && sudo apt install -y git sqlite3 python3-venv
+python3 --version                         # 3.10 or newer: 3.12 on 24.04, 3.10 on 22.04, 3.11 on Debian 12
+sqlite3 --version && git --version && flock --version    # three versions, no error
+```
+
+**The clock.** Sweeps are spaced by it, and alert hours are read from it.
+
+```sh
+timedatectl                               # System clock synchronized: yes, and NTP service: active
+```
+
+If it says `no`, `sudo timedatectl set-ntp true` and look again in a minute. If
+that fails, the box has no time service, and
+`sudo apt install -y systemd-timesyncd` adds one. The box can stay in UTC:
+`DIAYN_TZ` sets the zone for alert hours and the daily housekeeping, whatever
+the box's own. The backups' cron line, below, runs at the box's own 04:15.
+
+**The firewall.** DIAYN listens on no port. It only connects out: HTTPS to the
+job boards, to Discord's API and, with a key, to Gemini, and a WebSocket to
+Discord's gateway, all on port 443. Nothing needs opening for it. With ufw,
+which Ubuntu has and Debian gets with `sudo apt install -y ufw`, look first at
+what the box already serves: turning ufw on closes every port it was not told
+to allow, and on a box shared with another bot, that bot may be serving on one.
+Allow SSH, and whatever else that list needs, before turning it on, or it can
+cut off the session you are typing in, or the other bot:
+
+```sh
+sudo ufw status                           # inactive: nothing is filtered yet
+sudo ss -tlnp                             # what listens now: sshd on 22, and whatever else the box serves
+sudo ufw allow OpenSSH && sudo ufw enable
+sudo ufw status                           # Status: active, and OpenSSH ALLOW
+```
+
+A port `ss` shows on `127.0.0.1` or `[::1]` is reachable only from the box
+itself, and needs no rule. If ufw is already active, leave it as it is: DIAYN
+needs nothing added.
+
+A Hetzner Cloud Firewall needs no inbound rule for DIAYN either: keep the one
+for SSH, TCP 22, and leave outbound open, as it is while the firewall has no
+outbound rule. If you restrict outbound, DIAYN needs DNS and TCP 443, and the
+clock needs NTP, UDP 123.
+
+Then, as that user, set the two names in *Where things live* and go through
+*Installing* from `git clone` on. A host taking over from an older tracker
+stops before `setup`: *Taking over from an older tracker* says why.
 
 ## Where things live
 
@@ -53,8 +134,8 @@ CI fails if any of it is ever tracked.
 ## Installing
 
 Python 3.10 or newer, git, the `sqlite3` shell, and `flock`: part of
-util-linux on Linux, and `brew install flock` on macOS. Then pm2 or systemd,
-below.
+util-linux on Linux, and `brew install flock` on macOS. On a new VPS, *A fresh
+VPS*, above, installs them. Then pm2 or systemd, below.
 
 ```sh
 git clone https://github.com/FakeZhiyuanLi/DIAYN.git ~/DIAYN
@@ -93,6 +174,24 @@ and `GEMINI_API_KEY` are worth a look.
 - **Settings are read once, at the start.** After editing `.env`, restart the
   service.
 - **Never paste the `.env` anywhere.** Paste `config`'s output instead.
+
+## Choosing pm2 or systemd
+
+On a Linux VPS, use systemd. Its `RestartPreventExitStatus=3 78` holds on every
+start, the first after a reboot included, and the unit below adds
+`UMask=0077`, `NoNewPrivileges` and `PrivateTmp`, which the pm2 config does not
+set. journald keeps and rotates its log.
+
+pm2 is fine where the box already runs its other apps under pm2, as when it is
+shared with another bot: one tool for everything on the box. It has one caveat.
+[pm2 issue #5601](https://github.com/Unitech/pm2/issues/5601) reports
+`stop_exit_codes` ignored after `pm2 resurrect`, which is how pm2 brings its
+apps back at boot, so after a reboot pm2 may restart DIAYN on exit 3 or 78.
+DIAYN stays safe: `run` asks Discord's REST API about the token and the Server
+Members Intent before it logs in, so a restart on 78 repeats that REST call and
+never a gateway login, and a restart on 3 meets the lock again, exits 3 again,
+and backs off. Still, check `pm2 list`'s restart count after a reboot
+(*After a reboot*, below).
 
 ## Running it as a service
 
@@ -206,6 +305,228 @@ The commands that only read (`stats`, `config`, `verify`, `list` without
 holds the lock: stop the service first, and start it again after.
 `grant` and `revoke` write only `users.db`, and are safe at any time.
 
+## Sharing the box with another bot
+
+DIAYN runs beside another bot on one VPS as long as the two share nothing but
+the machine.
+
+- **Its own checkout, `.env` and token.** DIAYN lives in `~/DIAYN`, with a
+  `.env` of its own and a `DISCORD_TOKEN` from its own application in the
+  developer portal. Never reuse the other bot's token: two processes on one
+  token answer every command twice, and DIAYN's start would replace that bot's
+  slash commands with its own.
+- **Its own data and backups.** `$D` and `$B`, as in *Where things live*, apart
+  from the other bot's files, with DIAYN's own `~/diayn-backup.sh` and cron
+  line.
+- **Nothing of the other bot's in DIAYN's environment.** The environment wins
+  over DIAYN's `.env` (*The `.env`*, above), and an app pm2 starts inherits the
+  environment of the shell it was started from. A `DISCORD_TOKEN` exported
+  there for the other bot would log DIAYN in as that bot. Start DIAYN from a
+  shell without such exports; the log's `DIAYN is logged in as …` names the bot
+  it logged in as.
+- **One service manager for DIAYN.** DIAYN under systemd beside another bot
+  under pm2 is fine. DIAYN under both is two copies on one token.
+
+Under pm2, beside another bot that pm2 runs:
+
+- **Its own app name and config file:** `name: "diayn"`, in
+  `~/diayn.config.cjs`, apart from the other bot's config. Check `pm2 list`
+  first: no other app may be called `diayn` already.
+- **DIAYN by name in every command:** `pm2 restart diayn`, `pm2 stop diayn`,
+  `pm2 logs diayn`. Never `pm2 restart all` or `pm2 stop all`, which restart or
+  stop the other bot too, and never `pm2 kill`, which stops pm2 itself and
+  every app it runs.
+- **`pm2 save` saves every app in `pm2 list`**, as the list stands, and a
+  reboot brings back exactly that. Check the list before saving:
+
+  ```sh
+  pm2 list                  # both bots, each online or stopped as it should be after a reboot
+  pm2 save
+  ```
+
+- **`pm2 startup` once per user.** It writes the systemd unit, `pm2-<user>`,
+  that brings pm2 and its saved apps back at boot. If the other bot set it up,
+  it is done: do not run it again.
+
+  ```sh
+  systemctl is-enabled "pm2-$USER"          # enabled: already set up
+  ```
+
+- **Logs.** pm2 keeps each app's log under `~/.pm2/logs`, and never trims it.
+  `pm2 install pm2-logrotate`, once for the whole pm2 daemon, rotates every
+  app's log, both bots' included. If the other bot installed it, `pm2 list`
+  shows it among its modules, and there is nothing to do.
+
+Under systemd, journald keeps DIAYN's log and rotates it itself:
+`journalctl -u diayn`.
+
+**A user of its own.** One user for both bots is the simplest. A separate Unix
+user for DIAYN is stronger isolation: the other bot's process cannot read
+DIAYN's `.env` or `users.db`, and DIAYN's resume reader, which can read
+whatever its user can, reaches the other bot's files only as far as their
+modes let anyone. The extra steps:
+
+```sh
+sudo adduser --disabled-password diayn    # Enter through its questions; no password, reached only through sudo
+sudo -iu diayn                            # a shell as diayn, in /home/diayn
+```
+
+Then everything from *Installing* on as `diayn`, with `/home/diayn` in the
+paths, except what needs `sudo`, which `diayn` does not have: do that from your
+own user. systemd suits it best: `User=diayn` in the unit, which you write and
+start with `sudo` from your own user, and no second pm2.
+Under pm2, `diayn` has a pm2 daemon of its own, so `pm2 startup` and
+`pm2-logrotate` are once more, for it; `pm2 startup` prints a command to run
+with `sudo` from your own user.
+
+## Taking over from an older tracker
+
+For a host where another bot used to sweep the job boards into a `postings.db`
+of its own, and kept its `/internships ping` subscribers in its own `stats.db`.
+DIAYN takes over the ledger, so nothing already announced is announced again,
+and the subscribers, as profiles. The commands use one more name:
+
+```sh
+OLD=/path/to/the/old/data      # the directory holding the old bot's postings.db and stats.db
+```
+
+If the two files are in different directories, use each one's own path where
+the commands below say `$OLD`.
+
+1. **Stop the old bot's sweeping first.** Exactly one process may write a
+   `postings.db`, and DIAYN's lock cannot see the old bot's. Turn the old bot's
+   sweep off, however that bot does it, or stop the bot. If it also sends
+   alerts, turn those off too, or everyone imported hears of each role twice.
+   Then check that nothing sweeps: the newest sweep in its file stays where it
+   was, from before you stopped it. The time is UTC.
+
+   ```sh
+   sqlite3 "file:$OLD/postings.db?mode=ro" "SELECT datetime(MAX(started), 'unixepoch') FROM sweeps;"
+   ```
+
+   Run it again 20 minutes later: the same time.
+2. **Install DIAYN** as *Installing* says, up to and including the `.env`, and
+   make `$B`, but do not run `setup` yet (step 8 says why). Then make the data
+   directory, and check that it is empty:
+
+   ```sh
+   mkdir -p "$D" && chmod 700 "$D"
+   ls -A "$D"                                     # nothing
+   ```
+
+3. **Copy the ledger with `.backup`**, never `cp`, and compare the two:
+
+   ```sh
+   (umask 077 && sqlite3 "file:$OLD/postings.db?mode=ro" ".backup '$D/postings.db'")
+   sqlite3 "file:$OLD/postings.db?mode=ro" \
+     "SELECT COUNT(*), MAX(rowid) FROM seen; SELECT COUNT(*), MAX(rowid) FROM postings;"
+   sqlite3 "file:$D/postings.db?mode=ro" \
+     "SELECT COUNT(*), MAX(rowid) FROM seen; SELECT COUNT(*), MAX(rowid) FROM postings;"
+   ```
+
+   The last two print the same four numbers. `postings`'s rowids are the bot's
+   autocomplete values, and `.backup` keeps them. `umask 077` makes the copy
+   readable by you alone, as DIAYN makes its own databases.
+4. **Bring its boards**, if it had them: `boards.json`, what `discover` found,
+   and `yc_cache.json`, its Y Combinator cache.
+
+   ```sh
+   ls "$OLD"                                      # boards.json and yc_cache.json, if it has them
+   cp "$OLD/boards.json" "$D/"                    # if it has one
+   cp "$OLD/yc_cache.json" "$D/"                  # if it has one
+   ```
+
+   DIAYN then polls the boards in `boards.json`, plus the seed boards built into
+   `internship_poller.py` (`SEED_BOARDS`), less any company in its
+   `BLOCKED_COMPANIES`; the ledger does not choose them. A board it polls and
+   the old tracker did not hands its whole open board to the first sweep as
+   new, and so does a company the old tracker blocked and DIAYN does not:
+   compare the two before the first start.
+5. **Bring the ledger up to the contract:**
+
+   ```sh
+   cd ~/DIAYN
+   .venv/bin/python diayn.py upgrade-db
+   ```
+
+   It prints `integrity_check: ok`, then each table's rows and highest rowid
+   before and after, which must match, and ends naming `$D/postings.db` as its
+   `db_path`. It refuses, having changed nothing, a file that fails the check or
+   is not schema version 2, and is safe on one that has the contract's tables
+   already.
+6. **Import the subscribers**, once:
+
+   ```sh
+   sqlite3 "file:$OLD/stats.db?mode=ro" "SELECT COUNT(*) FROM intern_pings;"
+   .venv/bin/python diayn.py import-legacy --from "$OLD/stats.db"
+   ```
+
+   The first prints how many subscribers the old tracker has. `import-legacy`
+   must print the same number, as `N subscribers in the old tracker; W
+   imported, A already had a profile.`, with W and A adding up to N; otherwise
+   it exits 1 and imports nothing. It opens `stats.db` read-only, and runs
+   once: a second run is refused, so nobody who has since deleted their data
+   comes back.
+7. **Grant access before the first start**, to each server whose members should
+   keep their alerts:
+
+   ```sh
+   .venv/bin/python diayn.py grant --server <id>
+   ```
+
+   An imported profile is only as good as its owner's access. Without a grant
+   that covers them, nobody imported gets an alert, and 30 days after the bot
+   first finds them without access, their profiles are deleted. The id is the
+   server's **Copy Server ID** in Discord, with Developer Mode on; `grant`
+   prints what it did, never the id.
+8. **`setup` only now.** `setup` is for a new ledger: on a box with no
+   `postings.db` it bootstraps one with a first sweep, and the old ledger could
+   then come in only by a `.restore` over it. With the copied ledger in place it
+   only checks: the token, the intent, the data directory and the files in it,
+   tightening what others could read, and it leaves `postings.db` as it is. Run
+   it now for its invite link, since DIAYN's own bot still has to join the
+   server:
+
+   ```sh
+   .venv/bin/python diayn.py setup
+   ```
+
+9. **Start DIAYN** under its service manager, with the unit or the config from
+   *Running it as a service* in place:
+
+   ```sh
+   sudo systemctl daemon-reload && sudo systemctl enable --now diayn
+   ```
+
+   or, under pm2, `pm2 start ~/diayn.config.cjs`, then `pm2 list` and
+   `pm2 save`, as in *Sharing the box with another bot*. Then go through
+   *Checking it runs*. In Discord, `/diayn access` shows the servers you
+   granted, by name, with the counts.
+
+With a separate `diayn` user, `diayn` cannot read the old bot's files, and
+your own user cannot read `diayn`'s data directory. Run steps 3 and 4 from your
+own user instead, with `D=/home/diayn/DIAYN/data` and `sudo` before every
+command in them, inside the parentheses for the copy
+(`(umask 077 && sudo sqlite3 …)`). Then give the copies to `diayn`:
+
+```sh
+sudo chown -R diayn: "$D"
+```
+
+For step 6, count the old subscribers the same way, and copy the old
+`stats.db` to a file only `diayn` can read:
+
+```sh
+sudo sqlite3 "file:$OLD/stats.db?mode=ro" "SELECT COUNT(*) FROM intern_pings;"
+(umask 077 && sudo sqlite3 "file:$OLD/stats.db?mode=ro" ".backup '/home/diayn/old-stats.db'")
+sudo chown diayn: /home/diayn/old-stats.db
+```
+
+Then, as `diayn`, in `~/DIAYN`,
+`.venv/bin/python diayn.py import-legacy --from ~/old-stats.db`, and once it
+has printed its counts, `rm ~/old-stats.db`: the copy holds the old bot's
+Discord ids.
+
 ## Checking it runs
 
 1. `pm2 list` or `systemctl status diayn` shows it online, with a restart count
@@ -232,6 +553,21 @@ holds the lock: stop the service first, and start it again after.
 
    `scraper_version` is the tag you deployed, `db_path` is `$D/postings.db`
    and `sweep_interval_s` is 900. The time is UTC.
+
+## After a reboot
+
+1. `systemctl status diayn` shows it `active (running)`, or `pm2 list` shows it
+   `online`, and, on a shared box, the other bot back as you saved it.
+2. The restart count is not climbing: `systemctl show diayn -p NRestarts`, or
+   the ↺ column of `pm2 list`, the same a minute apart. Under pm2, a count that
+   climbs with exit 3 or 78 in the log is the caveat in *Choosing pm2 or
+   systemd*: `pm2 stop diayn`, fix what the log line names, then
+   `pm2 start diayn`.
+3. `.venv/bin/python diayn.py doctor`, in `~/DIAYN`, ends
+   `doctor: nothing to fix`.
+4. A `sweep: …` line in the log within 15 minutes of the start:
+   `journalctl -u diayn -n 50 --no-pager`, or
+   `pm2 logs diayn --lines 50 --nostream`.
 
 ## Backups
 

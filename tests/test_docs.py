@@ -14,10 +14,14 @@ documents, and the module's own tables.
 """
 
 import ast
+import contextlib
+import io
 import os
 import re
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
@@ -104,6 +108,23 @@ DECLARED = re.compile(r'^@(\w+)\.command\(name="([a-z-]+)"', re.M)
 # One of DIAYN's scripts run with bare `python`: stock macOS and Ubuntu have no such
 # command, and where there is one it is not the venv the quick start installs into.
 BARE_PYTHON = re.compile(r"(?<![\w./-])python (diayn|internship_poller|resolve_boards)\.py\b")
+# DEPLOY.md's sections, in the order a new host goes through them.
+DEPLOY_SECTIONS = (
+    "A fresh VPS", "Where things live", "Installing", "The `.env`", "Choosing pm2 or systemd",
+    "Running it as a service", "Sharing the box with another bot",
+    "Taking over from an older tracker", "Checking it runs", "After a reboot", "Backups",
+    "Restoring", "Upgrading by tag",
+)
+# One of DIAYN's commands as a document types it, `diayn.py grant --server <id>`: the
+# script, the command, and its arguments up to whatever ends a shell command or a code span.
+TYPED_COMMAND = re.compile(r"\b(diayn|internship_poller)\.py ([a-z][a-z-]*)([^`#;&|)\n]*)")
+FLAG = re.compile(r"(?<!\S)(--[a-z][\w-]*)")
+# What DEPLOY.md's firewall advice rests on: nothing in the code accepts a connection.
+LISTENS = re.compile(r"\b(TCPSite|UnixSite|start_server|create_server|HTTPServer|"
+                     r"socketserver|run_app)\b|\.listen\(|\.bind\(")
+# A Markdown link to a heading, in this file or another: `(#grant)`, `(DEPLOY.md#a-fresh-vps)`.
+HEADING_LINK = re.compile(r"\]\(([\w/.-]*\.md)?#([\w-]+)\)")
+NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four"}
 
 
 def read(name) -> str:
@@ -198,6 +219,35 @@ def section(text, heading) -> str:
     return text[start:end if end != -1 else len(text)]
 
 
+def help_text(command) -> str:
+    """What `diayn.py <command> --help` prints: every option that command's parser takes.
+    Each command parses its arguments before it reads a setting or a file, so asking for
+    its help reads nothing and changes nothing. The scraper's loaders refuse meanwhile,
+    so a command that stopped parsing first fails here instead of loading a .env."""
+    def refused(*_args, **_kwargs):
+        raise AssertionError(f"diayn.py {command} --help read its settings before parsing")
+    out = io.StringIO()
+    with mock.patch.object(poller, "boot", refused), \
+            mock.patch.object(poller, "load_env_file", refused), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            diayn.main([command, "--help"])
+        except SystemExit:
+            pass
+    return out.getvalue()
+
+
+def slug(heading) -> str:
+    """The anchor GitHub gives a heading: lower case, punctuation gone, spaces as hyphens."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def headings(name) -> set:
+    """The anchors of every heading in document `name`, outside its code blocks."""
+    prose = re.sub(r"```.*?```", "", read(name), flags=re.S)
+    return {slug(h) for h in re.findall(r"(?m)^#{1,6} (.+)$", prose)}
+
+
 class Readme(unittest.TestCase):
     """The README, written for a stranger who has only the repository."""
 
@@ -227,6 +277,12 @@ class Readme(unittest.TestCase):
                 found = quick_start.find(step, at + 1)
                 self.assertGreater(found, at)
                 at = found
+
+    def test_the_quick_start_points_a_new_vps_at_deploy_in_one_line(self):
+        # The quick start stays short: the VPS itself is DEPLOY.md's.
+        lines = [ln for ln in section(self.readme, "Quick start").splitlines()
+                 if "DEPLOY.md#a-fresh-vps" in ln]
+        self.assertEqual(len(lines), 1)
 
     def test_the_configuration_table_names_only_variables_the_code_reads(self):
         read_by_code = {var for _, var, _ in poller.SETTINGS_FROM_ENV} | {ENV_FILE_VARIABLE}
@@ -330,6 +386,16 @@ class ClaudeMd(unittest.TestCase):
             with self.subTest(named=named):
                 self.assertIn(named, self.claude)
 
+    def test_points_at_deploy_for_a_vps_and_a_shared_box(self):
+        self.assertIn("from a fresh VPS to one shared with another bot, is in",
+                      " ".join(self.claude.split()))
+
+    def test_stops_diayn_by_its_own_name(self):
+        # On a box shared with another bot, `all` reaches that bot too.
+        for never in ("`pm2 stop all`", "`pm2 restart all`"):
+            with self.subTest(never=never):
+                self.assertIn(never, self.claude)
+
     def test_says_the_key_alone_turns_on_the_fit_check(self):
         # Not only --llm: the key is enough for every profile's labels to go to Google.
         self.assertIn("Setting `GEMINI_API_KEY` alone turns on the fit check", self.claude)
@@ -408,11 +474,229 @@ class Deploy(unittest.TestCase):
         self.assertIn("git fetch --tags", self.deploy)
         self.assertIn("git checkout --detach vX.Y.Z", self.deploy)
 
+    def test_keeps_its_sections_in_the_order_a_host_goes_through_them(self):
+        at = [self.deploy.find(f"\n## {heading}\n") for heading in DEPLOY_SECTIONS]
+        for heading, found in zip(DEPLOY_SECTIONS, at):
+            with self.subTest(heading=heading):
+                self.assertNotEqual(found, -1)
+        self.assertEqual(at, sorted(at))
+
+    def test_every_command_it_types_is_a_real_one_with_real_options(self):
+        # A guide that names a command or a flag the CLI does not have fails on the host,
+        # at the one step nobody can check from here.
+        typed = [(m.group(1), m.group(2), FLAG.findall(m.group(3)))
+                 for m in TYPED_COMMAND.finditer(self.deploy)]
+        helps = {}
+        for script, command, flags in typed:
+            known = poller.COMMANDS + (diayn.BOT_COMMANDS if script == "diayn" else ())
+            with self.subTest(command=f"{script}.py {command}"):
+                self.assertIn(command, known)
+            if command not in known:
+                continue
+            helps.setdefault(command, help_text(command))
+            for flag in flags:
+                with self.subTest(command=f"{script}.py {command}", flag=flag):
+                    self.assertRegex(helps[command], rf"(?<![\w-]){re.escape(flag)}(?![\w-])")
+        # A scan that found nothing would pass on every run.
+        self.assertTrue({"setup", "doctor", "run", "config", "grant", "upgrade-db",
+                         "import-legacy"} <= {command for _, command, _ in typed})
+        self.assertTrue({"--server", "--from"} <= {f for *_, flags in typed for f in flags})
+
+    def test_the_help_it_checks_against_lists_real_options(self):
+        # help_text of a command that printed nothing would refuse every flag, or, read
+        # the other way, prove nothing.
+        self.assertIn("--server", help_text("grant"))
+        self.assertIn("--from", help_text("import-legacy"))
+        self.assertIn("--init", help_text("sweep"))
+        self.assertNotIn("--from", help_text("grant"))
+
+    def test_asking_for_help_never_reads_the_settings(self):
+        # Every command parses its arguments before it loads a .env; one that stopped
+        # would load the host's own here, so help_text refuses instead.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                os.environ, {"POLLER_ENV_FILE": os.path.join(tmp, "absent.env")}):
+            for loader in ("boot", "load_env_file"):
+                def reads_settings_first(argv, loader=loader):
+                    getattr(poller, loader)()
+                with self.subTest(loader=loader), \
+                        mock.patch.object(diayn, "main", reads_settings_first):
+                    with self.assertRaisesRegex(AssertionError, "before parsing"):
+                        help_text("sweep")
+
+    def test_a_fresh_vps_installs_what_installing_needs_and_checks_it(self):
+        fresh = section(self.deploy, "A fresh VPS")
+        for said in ("sudo apt install -y git sqlite3 python3-venv", "python3 --version",
+                     "3.10 or newer", "flock --version", "timedatectl", "DIAYN_TZ",
+                     "Hetzner"):
+            with self.subTest(said=said):
+                self.assertIn(said, fresh)
+
+    def test_a_fresh_vps_keeps_ssh_open_before_the_firewall_goes_on(self):
+        fresh = section(self.deploy, "A fresh VPS")
+        self.assertLess(fresh.index("sudo ufw allow OpenSSH"), fresh.index("sudo ufw enable"))
+        self.assertIn("listens on no port", fresh)
+
+    def test_a_fresh_vps_lists_what_listens_before_the_firewall_goes_on(self):
+        # On a box shared with another bot, ufw closes every port not allowed, and that
+        # bot may be serving on one: DIAYN needs none, the other bot might.
+        fresh = section(self.deploy, "A fresh VPS")
+        self.assertLess(fresh.index("sudo ss -tlnp"), fresh.index("sudo ufw enable"))
+
+    def test_a_fresh_vps_says_what_diayn_runs_as_the_resume_reader_does(self):
+        # The memory it asks for rests on these: one process, and a bounded number of
+        # short-lived readers.
+        worker = read(os.path.join("bot", "resume_worker.py"))
+        most = int(re.search(r"(?m)^MAX_CONCURRENT = (\d+)$", worker).group(1))
+        timeout = float(re.search(r"(?m)^TIMEOUT_S = ([\d.]+)$", worker).group(1))
+        fresh = " ".join(section(self.deploy, "A fresh VPS").split())
+        self.assertIn(f"at most {NUMBER_WORDS[most]} resume-reader children", fresh)
+        self.assertIn(f"killed after {timeout:g} seconds", fresh)
+
+    def test_recommends_systemd_and_says_what_pm2_does_after_a_reboot(self):
+        choosing = " ".join(section(self.deploy, "Choosing pm2 or systemd").split())
+        for said in ("use systemd", "RestartPreventExitStatus", "#5601", "pm2 resurrect",
+                     "stop_exit_codes", "restart count", "before it logs in"):
+            with self.subTest(said=said):
+                self.assertIn(said, choosing)
+
+    def test_never_stops_or_restarts_every_pm2_app(self):
+        # On a shared box `all` is the other bot too, and `pm2 kill` its daemon.
+        for command in self.commands:
+            with self.subTest(command=command):
+                self.assertNotRegex(command, r"^pm2\s+((restart|stop|reload|delete)\s+all|kill)\b")
+        sharing = section(self.deploy, "Sharing the box with another bot")
+        for said in ("`pm2 restart all`", "`pm2 stop all`", "`pm2 kill`"):
+            with self.subTest(said=said):
+                self.assertIn(said, sharing)
+
+    def test_sharing_keeps_diayn_apart_from_the_other_bot(self):
+        sharing = " ".join(section(self.deploy, "Sharing the box with another bot").split())
+        for said in ("~/DIAYN", "DISCORD_TOKEN", "~/diayn.config.cjs", 'name: "diayn"',
+                     "pm2 install pm2-logrotate", "once", "pm2 startup", "journald",
+                     "sudo adduser --disabled-password diayn", "User=diayn"):
+            with self.subTest(said=said):
+                self.assertIn(said, sharing)
+
+    def test_sharing_checks_the_list_before_pm2_save(self):
+        # pm2 save saves every app in the list, the other bot included.
+        # Command lines, at whatever indent a list item gives its code block.
+        sharing = section(self.deploy, "Sharing the box with another bot")
+        listed = re.search(r"(?m)^\s*pm2 list\b", sharing)
+        self.assertIsNotNone(listed)
+        self.assertIsNotNone(re.compile(r"(?m)^\s*pm2 save\b").search(sharing, listed.end()))
+
+    def test_a_takeover_copies_the_old_ledger_with_backup_and_compares_it(self):
+        takeover = [c.strip() for c in shell_commands(
+            section(self.deploy, "Taking over from an older tracker"))]
+        self.assertTrue(any('"file:$OLD/postings.db?mode=ro" ".backup \'$D/postings.db\'"' in c
+                            for c in takeover))
+        for db in ("$OLD/postings.db", "$D/postings.db"):
+            with self.subTest(db=db):
+                self.assertTrue(any(f'"file:{db}?mode=ro"' in c and "COUNT(*)" in c
+                                    and "MAX(rowid)" in c for c in takeover))
+
+    def test_a_takeover_goes_in_its_order(self):
+        # One writer first; the ledger before anything reads it; the grant before the
+        # first start, or everyone imported has no access and is deleted 30 days on.
+        takeover = section(self.deploy, "Taking over from an older tracker")
+        steps = ('"file:$OLD/postings.db?mode=ro" "SELECT datetime(MAX(started)',
+                 ".backup '$D/postings.db'", "diayn.py upgrade-db",
+                 "diayn.py import-legacy --from", "diayn.py grant --server",
+                 "sudo systemctl enable --now diayn")
+        at = [takeover.find(step) for step in steps]
+        for step, found in zip(steps, at):
+            with self.subTest(step=step):
+                self.assertNotEqual(found, -1)
+        self.assertEqual(at, sorted(at))
+        self.assertIn("/diayn access", takeover[at[-1]:])
+
+    def test_a_takeover_names_what_decides_the_boards_polled(self):
+        # boards.json, the seed boards and the blocked companies decide what the first
+        # sweep polls, and so what it hands the bot as new; the ledger does not.
+        takeover = section(self.deploy, "Taking over from an older tracker")
+        for name in ("SEED_BOARDS", "BLOCKED_COMPANIES"):
+            with self.subTest(name=name):
+                self.assertIn(f"`{name}`", takeover)
+                self.assertTrue(hasattr(poller, name))
+
+    def test_a_takeover_runs_setup_only_once_the_ledger_is_in(self):
+        # Before the copy, setup would bootstrap a new ledger of its own.
+        takeover = section(self.deploy, "Taking over from an older tracker")
+        copied = takeover.index(".backup '$D/postings.db'")
+        runs = [m.start() for m in re.finditer(r"diayn\.py setup", takeover)]
+        for at in runs:
+            with self.subTest(at=at):
+                self.assertGreater(at, copied)
+        self.assertIn("bootstraps", takeover)
+
+    def test_a_takeover_as_a_user_of_its_own_reads_through_sudo(self):
+        # diayn cannot read the old bot's files, and your own user cannot read diayn's
+        # data directory: every command there that touches either goes through sudo.
+        takeover = section(self.deploy, "Taking over from an older tracker")
+        apart = takeover[takeover.index("With a separate `diayn` user"):]
+        typed = "".join(re.findall(r"```sh\n(.*?)```", apart, flags=re.S))
+        touching = [c.strip() for c in shell_commands(typed)
+                    if "$OLD" in c or "$D" in c or "/home/diayn/" in c]
+        self.assertTrue(touching)
+        for command in touching:
+            with self.subTest(command=command):
+                self.assertRegex(command, r"^(\(umask 077 && )?sudo ")
+        self.assertIn('sudo chown -R diayn: "$D"', apart)
+        self.assertIn("diayn.py import-legacy --from ~/old-stats.db", apart)
+
+    def test_after_a_reboot_checks_the_restarts_doctor_and_a_sweep(self):
+        after = " ".join(section(self.deploy, "After a reboot").split())
+        for said in ("restart count", "diayn.py doctor", "doctor: nothing to fix",
+                     f"within {poller.DEFAULT_INTERVAL_S // 60} minutes"):
+            with self.subTest(said=said):
+                self.assertIn(said, after)
+
     def test_the_move_from_an_in_process_sweep_is_gone(self):
         for gone in ("INTERN_SWEEP", "in-process", "Stage 1", "Stage 2", "Stage 3",
                      PROVENANCE_NAME):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, self.deploy)
+
+
+class NothingListens(unittest.TestCase):
+    """DEPLOY.md opens no port for DIAYN, because it listens on none: the bot and the
+    sweeper only connect out. A server added to the code would need the firewall too."""
+
+    def test_no_module_accepts_a_connection(self):
+        for name in modules():
+            for number, line in enumerate(read(name).splitlines(), 1):
+                with self.subTest(module=name, line=number):
+                    self.assertIsNone(LISTENS.search(line), line)
+
+    def test_the_pattern_sees_a_server(self):
+        # A pattern with a typo would pass on every run and protect nothing.
+        for server in ("web.TCPSite(runner)", "await asyncio.start_server(h, port=80)",
+                       "sock.bind(('', 8080))", "sock.listen(5)"):
+            with self.subTest(server=server):
+                self.assertIsNotNone(LISTENS.search(server))
+
+
+class HeadingLinks(unittest.TestCase):
+    """Every link to a heading lands on one: a renamed section breaks no link silently."""
+
+    def test_every_link_to_a_heading_finds_it(self):
+        found = []
+        for name in documents():
+            if not name.endswith(".md"):
+                continue
+            for target, anchor in HEADING_LINK.findall(read(name)):
+                where = os.path.normpath(os.path.join(os.path.dirname(name), target)) \
+                    if target else name
+                found.append((where, anchor))
+                with self.subTest(document=name, link=f"{target}#{anchor}"):
+                    self.assertIn(anchor, headings(where))
+        # A scan that found no link would pass on every run.
+        self.assertIn(("DEPLOY.md", "a-fresh-vps"), found)
+        self.assertIn(("README.md", "quick-start"), found)
+
+    def test_the_anchor_is_githubs(self):
+        self.assertEqual(slug("The `.env`"), "the-env")
+        self.assertEqual(slug("Choosing pm2 or systemd"), "choosing-pm2-or-systemd")
 
 
 def passages(text) -> list:

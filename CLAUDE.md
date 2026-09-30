@@ -4,8 +4,9 @@ DIAYN is a self-hosted Discord bot that finds internships: a scraper that
 sweeps public job boards into `postings.db`, and a bot that matches what it
 finds to each person's profile and DMs them. `.venv/bin/python diayn.py run`
 runs both, in one process. This file holds the rules. What the commands do is in
-[`README.md`](README.md), running it on a host is in [`DEPLOY.md`](DEPLOY.md),
-and what the bot may assume about `postings.db` is in
+[`README.md`](README.md), running it on a host, from a fresh VPS to one shared
+with another bot, is in [`DEPLOY.md`](DEPLOY.md), and what the bot may assume
+about `postings.db` is in
 [`CONTRACT.md`](CONTRACT.md). Follow DEPLOY.md in the order it gives: the order
 is load-bearing.
 
@@ -87,7 +88,8 @@ Three things are expected, and are not red:
   machine.
 - **Stop a process by PID, or with `pkill -f`.** Stop DIAYN through its service
   manager (`pm2 stop diayn`, `systemctl stop diayn`), which otherwise restarts
-  whatever you killed.
+  whatever you killed, and by its own name: never `pm2 stop all` or
+  `pm2 restart all`, which on a box shared with another bot reach that one too.
 - **Make a service manager restart `run` on exit 78.** It means Discord refused
   the Server Members Intent, a portal toggle only the host can turn on, or
   `DISCORD_TOKEN`, which only the host can replace; a loop of refused logins

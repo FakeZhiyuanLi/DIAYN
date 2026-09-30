@@ -19,13 +19,14 @@ about a role.
 - [Quick start](#quick-start) · [The Discord developer portal](#the-discord-developer-portal) · [Configuration](#configuration)
 - [Who may use it](#who-may-use-it) · [Commands](#commands) · [Gemini](#gemini) · [Privacy](#privacy)
 - [The politeness gate](#the-politeness-gate) · [Adding boards](#adding-boards) · [Linux and macOS only](#linux-and-macos-only)
-- [DEPLOY.md](DEPLOY.md): running it for good, under pm2 or systemd, with backups and upgrades
+- [DEPLOY.md](DEPLOY.md): running it for good, from a fresh VPS, under pm2 or systemd, beside another bot, with backups and upgrades
 - [CONTRACT.md](CONTRACT.md): the rules between the scraper and the bot
 - [CLAUDE.md](CLAUDE.md): the rules for working in this repository
 
 ## Quick start
 
 You need Python 3.10 or newer, on Linux or macOS, and a Discord account.
+On a new VPS, [DEPLOY.md's *A fresh VPS*](DEPLOY.md#a-fresh-vps) gets the box ready first.
 
 1. **In the [Discord developer portal](https://discord.com/developers/applications):**
    create an application, then open **Bot**, press **Reset Token** and copy the
