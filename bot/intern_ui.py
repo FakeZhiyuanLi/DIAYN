@@ -9,6 +9,12 @@ the log.
 It exists so the rules below live in one place instead of being re-derived in
 each view and command.
 
+**The bot is private.** `need_access` is the first check of every callback
+that shows or stores anything, and each callback makes it itself rather than
+a shared base view, so the ones that only remove data or reduce contact can
+leave it out: nobody is ever stuck with their data or their alerts. Who may
+use the bot is `access.allowed`; the member cache it is handed is the client's.
+
 **Every personal reply is private and mentions nobody.** `refuse` and
 `private_send` are the only send paths the finder's modules use for text of
 their own; both set `ephemeral=True` and `allowed_mentions=NO_MENTIONS`.
@@ -46,6 +52,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
+import access
 import intern_clock
 import intern_delivery
 import intern_match
@@ -145,6 +152,45 @@ def with_banner(p, text: str) -> str:
 
 
 # ------------------------------------------------------------------ gates
+
+def _member_of(user_id: int) -> access.MemberOf:
+    """Whether `user_id` is a member of any of the servers asked about, by the client's
+    member cache, which the members intent keeps full. Nobody is, before the client is."""
+    def member_of(guild_ids: frozenset[int]) -> bool:
+        client = bot
+        if client is None:
+            return False
+        for guild_id in guild_ids:
+            guild = client.get_guild(guild_id)
+            if guild is not None and guild.get_member(user_id) is not None:
+                return True
+        return False
+    return member_of
+
+
+def has_access(user_id: int, guild_id: int | None = None) -> bool:
+    """Whether `user_id` may use this bot inside the server `guild_id` (None: a DM), with
+    the grants users.db holds now (`access.allowed`). Raises sqlite3.Error."""
+    return access.allowed(access.grants(db), user_id, guild_id, _member_of(user_id))
+
+
+def may_use(user_id: int, guild_id: int | None = None) -> bool:
+    """`has_access`, failing closed: when the grants cannot be read, only the owner may.
+    Never raises; a failure is logged by type."""
+    try:
+        return has_access(user_id, guild_id)
+    except sqlite3.Error as error:
+        log_failure("reading who may use this bot", error)
+        return access.is_owner(user_id)
+
+
+async def need_access(interaction) -> bool:
+    """False, after refusing privately, for anyone this bot is not open to, here."""
+    if may_use(interaction.user.id, getattr(interaction, "guild_id", None)):
+        return True
+    await refuse(interaction, intern_text.no_access())
+    return False
+
 
 async def need_finder(interaction) -> bool:
     """False, after refusing, when the finder's tables could not be made at start-up."""

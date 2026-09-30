@@ -123,12 +123,13 @@ class Stores:
 
 
 def _open_users(path: str) -> tuple[sqlite3.Connection | None, str | None]:
-    """(users.db, None), or (None, why) after saying so. The finder's tables are made here;
-    a failure turns off only the finder (W1)."""
+    """(users.db, None), or (None, why) after saying so. The finder's tables and the
+    access grants are made here; a failure turns off only the finder (W1)."""
     db = None
     try:
         db = sqlite3.connect(path)
         intern_store.init_db(db)
+        access.init_db(db)
         return db, None
     except sqlite3.Error as e:
         postings_source.close_quietly(db)

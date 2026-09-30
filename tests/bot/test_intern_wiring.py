@@ -196,11 +196,13 @@ def _run_function(name: str, **names) -> dict:
     return namespace
 
 
-def _open_users(init_db) -> tuple:
-    """Runs `_open_users` with `init_db` standing in for the real one. Returns what it
-    returned and what it printed to stderr."""
+def _open_users(init_db, grants_init=None) -> tuple:
+    """Runs `_open_users` with `init_db` standing in for the finder's and `grants_init`
+    (default: a healthy one) for the access grants'. Returns what it returned and what
+    it printed to stderr."""
     stderr = io.StringIO()
     namespace = _run_function("_open_users", intern_store=types.SimpleNamespace(init_db=init_db),
+                              access=types.SimpleNamespace(init_db=grants_init or _healthy),
                               sqlite3=sqlite3, sys=types.SimpleNamespace(stderr=stderr),
                               postings_source=postings_source)
     result = namespace["_open_users"](":memory:")
@@ -258,7 +260,7 @@ class ImportingTheClientDoesNothing(unittest.TestCase):
 
     def test_nothing_is_called_at_import_that_opens_builds_or_patches(self):
         banned = ("sqlite3.connect", "postings_source.open_from_env", "intern_store.init_db",
-                  "open_stores", "build", "DiaynBot", "install_send_defaults", "setattr",
+                  "access.init_db", "open_stores", "build", "DiaynBot", "install_send_defaults", "setattr",
                   "print", "wire")
         called = [_dotted(n.func) for n in _module_scope() if isinstance(n, ast.Call)]
         for name in banned:
@@ -286,6 +288,19 @@ class TheFinderFailsAlone(unittest.TestCase):
         (call,) = _calls("intern_store.init_db")
         self.assertIs(_function_of(call), _named("_open_users"))
         self.assertTrue(any(call is n for s in self.block().body for n in ast.walk(s)))
+
+    def test_the_access_grants_are_made_in_the_same_try_after_the_finders_tables(self):
+        # Without them nobody but the owner could be let in, so they fail with the finder.
+        (call,) = _calls("access.init_db")
+        (finder,) = _calls("intern_store.init_db")
+        self.assertTrue(any(call is n for s in self.block().body for n in ast.walk(s)))
+        self.assertGreater(_position(call), _position(finder))
+
+    def test_grants_that_cannot_be_made_turn_the_finder_off(self):
+        (db, error), printed = _open_users(_healthy, _locked)
+        self.assertIsNone(db)
+        self.assertEqual(error, BROKEN)
+        self.assertTrue(printed.startswith("internship finder disabled: "), printed)
 
     def test_the_try_catches_sqlite_errors_and_nothing_broader(self):
         # A broader catch would hide a typo in intern_store as "finder disabled".

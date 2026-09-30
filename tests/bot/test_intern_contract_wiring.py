@@ -29,6 +29,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
+import access
 import intern_delivery
 import intern_profile
 import intern_store
@@ -86,6 +87,7 @@ class _ContractCase(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         self.addCleanup(self.db.close)
         intern_store.init_db(self.db)
+        access.init_db(self.db)
         self.sent = []
 
         async def send_dm(uid, msg):
@@ -401,8 +403,12 @@ class CommandsReadOnlyTheContract(_ContractCase):
                 self.assertFalse(hasattr(module, "poller"))
 
     def test_the_info_autocomplete_still_suggests_and_still_blocks(self):
-        labels = [c.name for c in intern_commands._role_choices(7, "intern")]
+        access.grant(self.db, "user", 7, granted_by=None, now=NOW)
+        labels = [c.name for c in intern_commands._role_choices(7, None, "intern")]
         self.assertEqual(labels, ["Newco — Software Engineer Intern"])
+
+    def test_the_info_autocomplete_suggests_nothing_to_someone_without_access(self):
+        self.assertEqual(intern_commands._role_choices(7, None, "intern"), [])
 
     def test_info_finds_a_posting_and_skips_a_blocked_one(self):
         self.assertEqual(intern_commands._find_posting("newco")[3], "Newco")

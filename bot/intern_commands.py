@@ -7,9 +7,12 @@ delivery loop, the membership hooks and the persistent views. The loop and
 hooks are written in `intern_alert_views`, beside the alerts they keep correct,
 and exported from here so the wiring has one module to import.
 
-Each command sends its refusals first (finder off, tracker off, not whoever
-runs this bot, a field nobody could have picked), then defers if it will read
-the window, and answers privately. `/internships debug` carries the Gemini,
+Each command sends its refusals first (no access to this bot, finder off,
+tracker off, not whoever runs this bot, a field nobody could have picked),
+then defers if it will read the window, and answers privately. The bot is
+private: every subcommand but `help` and `delete` checks `intern_ui.need_access`
+before anything else, and so do the role suggestions, which would otherwise
+list postings and the user's own matches to anyone. `/internships debug` carries the Gemini,
 database and sweep diagnostics, read-only.
 
 Nothing here reads the scraper: the blocklist, the quota, the file's path and
@@ -86,7 +89,7 @@ internships = app_commands.Group(
 @app_commands.describe(resume="PDF, Word (.docx) or .txt, up to 2 MB. Read once, never saved.")
 async def internships_profile(interaction: discord.Interaction,
                               resume: discord.Attachment | None = None) -> None:
-    if not await intern_ui.need_finder(interaction):
+    if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
         return
     intern_ui.touch(interaction.user.id)
     if resume is not None:
@@ -105,7 +108,8 @@ async def internships_profile(interaction: discord.Interaction,
 async def internships_matches(interaction: discord.Interaction,
                               sort: app_commands.Choice[str] | None = None,
                               days: app_commands.Range[int, 1, 30] = 14) -> None:
-    if not await intern_ui.need_finder(interaction) or not await intern_ui.need_tracker(interaction):
+    if (not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction)
+            or not await intern_ui.need_tracker(interaction)):
         return
     p = intern_store.load(intern_ui.db, interaction.user.id)
     if p is None:
@@ -166,7 +170,7 @@ def _resolve_where(typed: str | None) -> str | None:
 async def internships_recent(interaction: discord.Interaction, field: str | None = None,
                              level: app_commands.Choice[str] | None = None, where: str | None = None,
                              days: app_commands.Range[int, 1, 30] = 7) -> None:
-    if not await intern_ui.need_tracker(interaction):
+    if not await intern_ui.need_access(interaction) or not await intern_ui.need_tracker(interaction):
         return
     field_id, where_id = _resolve_field(field) if field else None, _resolve_where(where) if where else "us"
     if field and field_id is None:
@@ -254,7 +258,7 @@ def _ping_plan(p: Profile, cadence: str | None, hour: int | None, now: float) ->
 async def internships_ping(interaction: discord.Interaction,
                            cadence: app_commands.Choice[str] | None = None,
                            hour: app_commands.Range[int, 0, 23] | None = None) -> None:
-    if not await intern_ui.need_finder(interaction):
+    if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
         return
     db, uid, now = intern_ui.db, interaction.user.id, time.time()
     p = intern_store.load(db, uid)
@@ -322,7 +326,7 @@ def _info_blocks(c: intern_match.Candidate, details: dict, p: Profile | None, no
 @internships.command(name="info", description="Salary, description and fit for one posting.")
 @app_commands.describe(role="Start typing a company or title and pick a suggestion")
 async def internships_info(interaction: discord.Interaction, role: str) -> None:
-    if not await intern_ui.need_tracker(interaction):
+    if not await intern_ui.need_access(interaction) or not await intern_ui.need_tracker(interaction):
         return
     row = _find_posting(role)
     if row is None:
@@ -356,7 +360,10 @@ def _role_picks(user_id: int, tokens: list[str]) -> list[tuple[int, str, str]]:
     return [(c.rowid, c.company, c.title) for c in (*(m.cand for m in top), *newest)]
 
 
-def _role_choices(user_id: int, current: str) -> list[app_commands.Choice[str]]:
+def _role_choices(user_id: int, guild_id: int | None, current: str) -> list[app_commands.Choice[str]]:
+    """Suggestions for `info`'s role: none for anyone this bot is not open to, here."""
+    if not intern_ui.may_use(user_id, guild_id):
+        return []
     if intern_ui.pconn is None or intern_ui.source is None:
         return []
     tokens, choices = current.lower().split(), {}
@@ -371,7 +378,8 @@ def _role_choices(user_id: int, current: str) -> list[app_commands.Choice[str]]:
 
 @internships_info.autocomplete("role")
 async def _role_autocomplete(interaction: discord.Interaction, current: str):
-    return _suggestions("role autocomplete", lambda: _role_choices(interaction.user.id, current))
+    return _suggestions("role autocomplete",
+                        lambda: _role_choices(interaction.user.id, interaction.guild_id, current))
 
 
 # ------------------------------------------------------------------ debug (whoever runs this bot)

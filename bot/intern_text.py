@@ -802,6 +802,11 @@ def owner_only() -> str:
     return "That one is only for whoever runs this bot."
 
 
+def no_access() -> str:
+    """The refusal for anyone this bot is not open to. It never names the owner."""
+    return "This bot is private. Ask whoever runs it for access."
+
+
 def not_yours() -> str:
     return "That isn't yours."
 
