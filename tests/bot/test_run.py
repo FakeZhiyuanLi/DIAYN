@@ -12,8 +12,8 @@ cmd_watch. What is pinned here:
 - the settings are bound before the bot starts, so DIAYN_TZ reaches the finder;
 - the lock is held while the bot runs, and let go when it stops;
 - a second `run` exits 3 before anything logs in;
-- a missing postings.db is refused, pointing at `python diayn.py setup`, and
-  nothing is made, not even the lock file;
+- a missing postings.db is refused, pointing at `diayn.py setup` run with the
+  Python that is running, and nothing is made, not even the lock file;
 - a sweep that raises is logged, and the bot goes on;
 - a sweep loop that ends, however it ends, stops the bot and exits non-zero,
   so pm2 or systemd restarts the process and its sweeps with it;
@@ -40,6 +40,7 @@ import unittest
 from unittest import mock
 
 import diayn
+import hints
 import intern_clock
 import internship_poller as poller
 import postings_source
@@ -186,6 +187,23 @@ class BootingFirst(_RunCase):
         self.assertIn("DIAYN_TZ", err)
         self.assertEqual(bot.started, [])
 
+    def test_without_discord_py_it_is_refused_before_anything_is_locked_or_started(self):
+        v2_fixture(self.db)
+        watched = []
+
+        def watch(conn):
+            watched.append(conn)
+            return forever()
+
+        missing = ModuleNotFoundError("No module named 'discord'", name="discord")
+        with mock.patch.object(diayn, "discord_bot", side_effect=missing):
+            code, _, err = self.run_diayn(watch=watch)
+        self.assertEqual(code, FAILED)
+        self.assertIn("the bot needs discord", err)
+        self.assertIn(hints.install_hint(), err)
+        self.assertEqual(watched, [])
+        self.assertEqual(os.listdir(self.data), ["postings.db"])     # no lock file
+
     def test_an_interval_below_the_floor_is_a_usage_error(self):
         v2_fixture(self.db)
         with self.assertRaises(SystemExit) as caught:
@@ -234,7 +252,7 @@ class TheDatabase(_RunCase):
         bot = FakeBot()
         code, out, err = self.run_diayn(bot=bot, watch=idle)
         self.assertEqual(code, FAILED)
-        self.assertIn("python diayn.py setup", err)
+        self.assertIn(hints.command("setup"), err)
         self.assertIn(self.db, err)
         self.assertEqual(bot.started, [])
         self.assertEqual(os.listdir(self.data), [])     # no postings.db, no lock file
@@ -245,7 +263,7 @@ class TheDatabase(_RunCase):
         code, _, err = self.run_diayn(bot=bot, watch=idle)
         self.assertEqual(code, FAILED)
         self.assertIn("seen ledger is empty", err)
-        self.assertIn("python diayn.py setup", err)
+        self.assertIn(hints.command("setup"), err)
         self.assertEqual(bot.started, [])
 
     def test_the_sweep_loop_gets_the_writer_and_the_options(self):

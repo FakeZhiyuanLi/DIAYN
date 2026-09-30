@@ -112,9 +112,9 @@ Three rules decide what a run actually uses:
   1, a misspelt time zone, a relative `DIAYN_DATA`) stops the start with a
   message naming the variable.
 
-`python diayn.py config` prints the `.env` it used and every setting a run
-would use. It shows `GEMINI_API_KEY` and `DISCORD_TOKEN` only as set or not
-set, and `DIAYN_OWNER_IDS` only as a count, so its output can be pasted
+`.venv/bin/python diayn.py config` prints the `.env` it used and every setting
+a run would use. It shows `GEMINI_API_KEY` and `DISCORD_TOKEN` only as set or
+not set, and `DIAYN_OWNER_IDS` only as a count, so its output can be pasted
 anywhere.
 
 ## Who may use it
@@ -143,8 +143,8 @@ owner has had no access for 30 days is deleted, as is one whose owner has left
 every server the bot shares with them for 30 days.
 
 Grant and revoke in Discord with `/diayn grant` and `/diayn revoke`, or from
-the host with [`python diayn.py grant`](#grant), which works before the bot
-has ever started.
+the host with [`.venv/bin/python diayn.py grant`](#grant), which works before
+the bot has ever started.
 
 ## Commands
 
@@ -166,13 +166,18 @@ has ever started.
 
 ### On the host
 
-    python diayn.py <command> [options]
+    .venv/bin/python diayn.py <command> [options]
+
+Every command here is typed in the checkout, with the venv's Python, as the
+quick start installed it: nothing needs the venv activated, and a bare
+`python` is often not there at all. What DIAYN prints when it points at a
+command is spelled the same way, with whichever Python is running it.
 
 DIAYN's own commands are `setup`, `doctor`, `run`, `grant`, `revoke` and
 `import-legacy`. The rest are the scraper's, which also run as
-`python internship_poller.py <command>`, with the same arguments and exit
-codes: 0 done, 1 failed, 2 a usage error, 3 another sweeper holds the lock.
-`python diayn.py <command> --help` lists a command's options.
+`.venv/bin/python internship_poller.py <command>`, with the same arguments and
+exit codes: 0 done, 1 failed, 2 a usage error, 3 another sweeper holds the
+lock. `.venv/bin/python diayn.py <command> --help` lists a command's options.
 
 ### `setup`
 
@@ -201,7 +206,7 @@ it exits 1 when anything is to fix.
 
 ### `run`
 
-    python diayn.py run                      # --interval N and --llm as for watch
+    .venv/bin/python diayn.py run            # --interval N and --llm as for watch
 
 Runs the Discord bot and the sweep loop together, in one process, until it is
 stopped. This is what pm2 or systemd runs.
@@ -220,7 +225,7 @@ stopped. This is what pm2 or systemd runs.
 
 ### `grant`
 
-    python diayn.py grant --user <id>        # or --server <id>
+    .venv/bin/python diayn.py grant --user <id>     # or --server <id>
 
 Lets one person, or everyone in one server, use the bot. The grant is written
 into `users.db`, so it works before the bot has ever started, and the running
@@ -229,14 +234,14 @@ id is its **Copy Server ID** in Discord, with Developer Mode on.
 
 ### `revoke`
 
-    python diayn.py revoke --user <id>       # or --server <id>
+    .venv/bin/python diayn.py revoke --user <id>    # or --server <id>
 
 Takes a grant away. Someone keeps access only through another grant, or by
 being an owner.
 
 ### `import-legacy`
 
-    python diayn.py import-legacy --from /path/to/old/stats.db
+    .venv/bin/python diayn.py import-legacy --from /path/to/old/stats.db
 
 For a host that ran the older `/internships ping` tracker DIAYN grew out of:
 copies its subscribers out of that bot's `stats.db` into `users.db`, as
@@ -544,8 +549,8 @@ Every board is `[platform, slug, company, sector]`. A Workday slug is
    only boards that return real jobs:
 
    ```sh
-   python resolve_boards.py https://careers.example.com
-   python resolve_boards.py --file careers_urls.txt --emit    # rows for SEED_BOARDS
+   .venv/bin/python resolve_boards.py https://careers.example.com
+   .venv/bin/python resolve_boards.py --file careers_urls.txt --emit   # rows for SEED_BOARDS
    ```
 
    It never guesses slugs: guessed ones rarely exist, and an LLM's are
@@ -554,7 +559,7 @@ Every board is `[platform, slug, company, sector]`. A Workday slug is
    directory (a JSON list of rows). A malformed row is skipped with a warning
    and never stops a start. To add a board for everyone, add it to
    `SEED_BOARDS` in a pull request.
-3. **Check it.** `python diayn.py verify --sector <its sector>`.
+3. **Check it.** `.venv/bin/python diayn.py verify --sector <its sector>`.
 
 A board added this way behaves like one `discover` found: its open postings are
 all new to the ledger, and arrive at the bot together at the next sweep.

@@ -44,6 +44,7 @@ stub_aiohttp()
 
 import diayn  # noqa: E402
 import discord_portal as portal  # noqa: E402
+import hints  # noqa: E402
 import host_checks  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import v2_fixture  # noqa: E402
@@ -142,7 +143,7 @@ class ANewHost(_SetupCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.data).st_mode), 0o700)
         self.assertEqual(self.seen(), 2)
         self.assertIn(portal.invite_url(APP_ID), out)
-        self.assertIn("python diayn.py run", out)
+        self.assertIn(f"Then start it: {hints.command('run')}", out)
         self.assertEqual(err, "")
 
     def test_says_the_first_sweep_announces_nothing(self):
@@ -243,7 +244,7 @@ class TheLedger(_SetupCase):
         code, out, err = self.setup(fetch_nothing_allowed())
         self.assertEqual(code, FAILED)
         self.assertEqual(self.seen(), 0)
-        self.assertIn("python diayn.py sweep --init", err)
+        self.assertIn(hints.command("sweep", "--init"), err)
         self.assertNotIn("oauth2/authorize", out)
 
     def test_an_existing_file_that_is_not_a_postings_db_is_refused(self):
@@ -258,14 +259,14 @@ class TheLedger(_SetupCase):
     def test_a_first_sweep_that_records_nothing_is_a_failure(self):
         code, out, err = self.setup(canned_fetch([]))
         self.assertEqual(code, FAILED)
-        self.assertIn("python diayn.py sweep --init", err)
+        self.assertIn(hints.command("sweep", "--init"), err)
         self.assertNotIn("oauth2/authorize", out)
 
     def test_a_first_sweep_that_raises_is_a_failure_and_commits_nothing(self):
         code, _, err = self.setup(fetch_raising(RuntimeError("boards unreachable")))
         self.assertEqual(code, FAILED)
         self.assertIn("RuntimeError", err)
-        self.assertIn("python diayn.py sweep --init", err)
+        self.assertIn(hints.command("sweep", "--init"), err)
         self.assertEqual(self.seen(), 0)
 
     def test_a_held_lock_exits_3_and_sweeps_nothing(self):

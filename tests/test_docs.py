@@ -100,6 +100,9 @@ SLASH_COMMANDS = {
                                                "revoke": "/diayn revoke"},
 }
 DECLARED = re.compile(r'^@(\w+)\.command\(name="([a-z-]+)"', re.M)
+# One of DIAYN's scripts run with bare `python`: stock macOS and Ubuntu have no such
+# command, and where there is one it is not the venv the quick start installs into.
+BARE_PYTHON = re.compile(r"(?<![\w./-])python (diayn|internship_poller|resolve_boards)\.py\b")
 
 
 def read(name) -> str:
@@ -263,6 +266,12 @@ def documents() -> list:
 
 
 class Documents(unittest.TestCase):
+    def test_every_command_names_the_venvs_python(self):
+        for name in documents():
+            for number, line in enumerate(read(name).splitlines(), 1):
+                with self.subTest(document=name, line=number):
+                    self.assertIsNone(BARE_PYTHON.search(line), line)
+
     def test_only_the_readme_names_the_project_it_grew_out_of(self):
         # DIAYN stands on its own: the README's provenance line is the one mention.
         for name in documents():

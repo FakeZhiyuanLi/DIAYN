@@ -143,8 +143,8 @@ contract changes both in the same commit, with both halves' tests.
 
 ## Upgrading a file from before the contract
 
-`python diayn.py upgrade-db` brings a v2 `postings.db` written by an older
-scraper up to this contract, in place. It refuses, having changed nothing, a
+`.venv/bin/python diayn.py upgrade-db` brings a v2 `postings.db` written by an
+older scraper up to this contract, in place. It refuses, having changed nothing, a
 file that fails `PRAGMA integrity_check` or is not `user_version` 2. Otherwise
 it switches the file to WAL, creates the contract tables and writes
 `scraper_meta`, then prints each table's row count and `MAX(rowid)` before and

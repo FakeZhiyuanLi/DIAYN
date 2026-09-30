@@ -49,24 +49,19 @@ import sys
 import time
 
 import discord_portal as portal
+import hints
 
 OK, WARN, NOTE, FAIL = "ok", "warn", "note", "fail"
 FAILED_EXIT = 1
 #: The data directory's mode: users.db in it holds Discord ids and profiles.
 PRIVATE_MODE = 0o700
-#: The commands a finding may point at, spelled as the README spells them.
-SETUP_COMMAND = "python diayn.py setup"
-RUN_COMMAND = "python diayn.py run"
-INIT_COMMAND = "python diayn.py sweep --init"
-CONFIG_COMMAND = "python diayn.py config"
 MIN_PYTHON = (3, 10)
 #: What DIAYN needs that only a POSIX system has, and what for.
 POSIX_MODULES = (("fcntl", "the sweeper lock"), ("resource", "the resume reader's limits"))
 PLATFORM_NAMES = {"linux": "Linux", "darwin": "macOS"}
 #: B6: a sweep this many intervals late is reported, as /diayn debug reports it.
 STALE_SWEEPS = 3
-INTENT_HOW = ("In the developer portal, open your application, then Bot, and under "
-              "Privileged Gateway Intents turn on Server Members Intent.")
+INTENT_HOW = hints.INTENT_HOW
 
 
 @dataclasses.dataclass(frozen=True)
@@ -150,7 +145,7 @@ def data_directory(path: str, make: bool = False) -> Finding:
         if make:
             return _make_private(path)
         return Finding(FAIL, "data directory", f"{path} does not exist. "
-                       f"`{SETUP_COMMAND}` makes it.")
+                       f"`{hints.command('setup')}` makes it.")
     if not os.access(path, os.W_OK | os.X_OK):
         return Finding(FAIL, "data directory", f"{path} is not writable by this user.")
     mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -212,11 +207,11 @@ def read_ledger(poller, path: str):
 
 def _empty(path: str) -> Finding:
     return _refused(
-        f"{path} exists, but its seen ledger is empty, so `{RUN_COMMAND}` would refuse "
-        "it, and setup never bootstraps a file that is already there. If setup made it "
-        f"and its first sweep failed, `{INIT_COMMAND}` finishes the bootstrap. If this "
-        f"box should have a ledger, this is the wrong file: `{CONFIG_COMMAND}` shows the "
-        "path in use.")
+        f"{path} exists, but its seen ledger is empty, so `{hints.command('run')}` would "
+        "refuse it, and setup never bootstraps a file that is already there. If setup made "
+        f"it and its first sweep failed, `{hints.command('sweep', '--init')}` finishes the "
+        "bootstrap. If this box should have a ledger, this is the wrong file: "
+        f"`{hints.command('config')}` shows the path in use.")
 
 
 def existing_ledger(poller, path: str) -> Finding:
@@ -238,15 +233,15 @@ def _first_sweep(poller, path: str) -> Finding:
             result = asyncio.run(poller.cmd_sweep(conn, quiet=True, interval=interval))
         except Exception as error:      # rolled back when the connection closes uncommitted
             return _refused(f"the first sweep failed ({type(error).__name__}: {error}). "
-                            f"{path} was made, with no ledger yet: `{INIT_COMMAND}` tries "
-                            "the first sweep again.")
+                            f"{path} was made, with no ledger yet: "
+                            f"`{hints.command('sweep', '--init')}` tries the first sweep again.")
         seen = _seen(conn)
     finally:
         conn.close()
     if not seen:
         return _refused(f"the first sweep recorded no posting ({result.summary}). Check "
-                        f"that this box can reach the job boards, then `{INIT_COMMAND}` "
-                        "tries again.")
+                        f"that this box can reach the job boards, then "
+                        f"`{hints.command('sweep', '--init')}` tries again.")
     return Finding(OK, "postings.db", f"bootstrapped: {seen} postings recorded as seen. "
                    f"{result.summary}")
 
@@ -278,7 +273,7 @@ def bootstrap(poller, settings) -> tuple[int, Finding]:
 def _invite(app) -> None:
     print("\nInvite the bot to your server with this link:\n\n"
           f"    {portal.invite_url(app.id)}\n\n"
-          f"Then start it: {RUN_COMMAND}   (DEPLOY.md has pm2 and systemd examples)\n"
+          f"Then start it: {hints.command('run')}   (DEPLOY.md has pm2 and systemd examples)\n"
           "In Discord, /internships profile starts a profile, and as the owner, "
           "/diayn grant lets others in.")
 
@@ -366,7 +361,7 @@ def last_sweep(ledger: Ledger, now: float) -> Finding:
     """How long ago the last sweep began: late beyond STALE_SWEEPS intervals."""
     every = _ago(ledger.interval)
     if ledger.last_sweep is None:
-        return Finding(WARN, "last sweep", f"none recorded yet. `{RUN_COMMAND}` sweeps "
+        return Finding(WARN, "last sweep", f"none recorded yet. `{hints.command('run')}` sweeps "
                        f"every {every}.")
     age = max(0.0, now - ledger.last_sweep)
     if age > STALE_SWEEPS * ledger.interval:
@@ -380,7 +375,7 @@ def sweeper(poller, path: str) -> Finding:
     """Whether a `run` or a `watch` holds the sweeper lock. Taken for an instant, and
     only when nothing holds it; a lock file that is not there is not made."""
     lock = poller.lock_path(path)
-    idle = f"so nothing is sweeping. `{RUN_COMMAND}` runs the bot and its sweeps."
+    idle = f"so nothing is sweeping. `{hints.command('run')}` runs the bot and its sweeps."
     if not os.path.exists(lock):
         return Finding(WARN, "sweeper", f"there is no {lock} yet, {idle}")
     try:
@@ -398,7 +393,7 @@ def database_findings(poller, path: str, now: float) -> list:
     """postings.db, its last sweep and its sweeper. Nothing is made: a missing file is
     only reported."""
     if not os.path.exists(path):
-        return [_refused(f"{path} does not exist. `{SETUP_COMMAND}` makes one, with a first "
+        return [_refused(f"{path} does not exist. `{hints.command('setup')}` makes one, with a first "
                          "sweep that records every open posting as seen.")]
     ledger = read_ledger(poller, path)
     if isinstance(ledger, Finding):

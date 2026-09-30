@@ -40,6 +40,7 @@ stub_aiohttp()
 
 import diayn  # noqa: E402
 import discord_portal as portal  # noqa: E402
+import hints  # noqa: E402
 import host_checks  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import v2_fixture  # noqa: E402
@@ -199,7 +200,7 @@ class WhatIsToFix(_DoctorCase):
         self.assertEqual(code, FAILED)
         self.assertEqual(lines(err)["data directory"], "fail")
         self.assertEqual(lines(err)["postings.db"], "fail")
-        self.assertIn("python diayn.py setup", err)
+        self.assertIn(hints.command("setup"), err)
         self.assertFalse(os.path.exists(self.data))
 
     def test_a_loose_data_directory_is_a_warning(self):
@@ -214,7 +215,7 @@ class WhatIsToFix(_DoctorCase):
         code, out, err = self.doctor()
         self.assertEqual(code, FAILED)
         self.assertEqual(lines(err)["postings.db"], "fail")
-        self.assertIn("python diayn.py setup", err)
+        self.assertIn(hints.command("setup"), err)
         self.assertNotIn("sweeper", lines(out))
         self.assertEqual(os.listdir(self.data), [])
 
@@ -241,7 +242,7 @@ class WhatIsWorthAWarning(_DoctorCase):
         code, out, _ = self.doctor()
         self.assertEqual(code, 0)
         self.assertEqual(lines(out)["sweeper"], "warn")
-        self.assertIn("python diayn.py run", out)
+        self.assertIn(hints.command("run"), out)
         self.assertFalse(os.path.exists(poller.lock_path(self.db)))
 
     def test_a_lock_nobody_holds_is_a_warning_and_is_free_again_after(self):

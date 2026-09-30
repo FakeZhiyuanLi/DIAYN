@@ -36,6 +36,7 @@ from aiohttp_stub import stub_aiohttp  # noqa: E402
 stub_aiohttp()
 
 import diayn  # noqa: E402
+import hints  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import CHILD as SCRAPER_CHILD  # noqa: E402
 from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, copy_scraper, v2_fixture  # noqa: E402
@@ -43,7 +44,7 @@ from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, copy_scraper, v2_fixtu
 PLANNED = ()
 BUILT = ("import-legacy", "grant", "revoke", "run", "setup", "doctor")
 # The modules diayn.py imports from its checkout, besides the scraper's.
-DIAYN_FILES = ("diayn.py", "host_checks.py", "discord_portal.py")
+DIAYN_FILES = ("diayn.py", "hints.py", "host_checks.py", "discord_portal.py")
 USAGE_ERROR, FAILED, LOCK_HELD = 2, 1, 3
 
 # The child: the temporary checkout first on the path, so `import diayn` and
@@ -253,7 +254,8 @@ class Script(unittest.TestCase):
         result = self._diayn("doctor")
         self.assertEqual(result.returncode, FAILED, result.stdout + result.stderr)
         self.assertIn("DISCORD_TOKEN", result.stderr)
-        self.assertIn("python diayn.py setup", result.stderr)
+        # The child's checkout is a temporary one, with this Python outside it.
+        self.assertIn(hints.command("setup", checkout=self.checkout), result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertFalse(os.path.exists(self.data))
         self.assertEqual(sorted(os.listdir(self.checkout)), self.copied())
@@ -271,7 +273,7 @@ class Script(unittest.TestCase):
         result = self._diayn("config", BLOCK_AIOHTTP="1")
         self.assertEqual(result.returncode, FAILED)
         self.assertIn("aiohttp", result.stderr)
-        self.assertIn("requirements.txt", result.stderr)
+        self.assertIn(hints.install_hint(checkout=self.checkout), result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
 

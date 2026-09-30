@@ -2,8 +2,8 @@
 
 DIAYN is a self-hosted Discord bot that finds internships: a scraper that
 sweeps public job boards into `postings.db`, and a bot that matches what it
-finds to each person's profile and DMs them. `python diayn.py run` runs both,
-in one process. This file holds the rules. What the commands do is in
+finds to each person's profile and DMs them. `.venv/bin/python diayn.py run`
+runs both, in one process. This file holds the rules. What the commands do is in
 [`README.md`](README.md), running it on a host is in [`DEPLOY.md`](DEPLOY.md),
 and what the bot may assume about `postings.db` is in
 [`CONTRACT.md`](CONTRACT.md). Follow DEPLOY.md in the order it gives: the order
@@ -17,6 +17,9 @@ your report.**
 - `diayn.py` is the entry point: `setup`, `doctor`, `run`, `grant`, `revoke`,
   `import-legacy`, and every command of the scraper, `internship_poller.py`.
   `host_checks.py` and `discord_portal.py` are what `setup` and `doctor` do.
+  `hints.py` spells every command a message tells someone to type with the
+  Python that is running (`.venv/bin/python diayn.py setup`), never bare
+  `python`, which stock macOS and Ubuntu do not have.
 - `bot/` is the Discord bot: `app.py`, the client; `access.py`, who may use it;
   `intern_fit.py`, the Gemini fit check; and the finder's other modules. They
   use bare imports with `bot/` on `sys.path`, and `bot/` has no `__init__.py`

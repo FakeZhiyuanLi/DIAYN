@@ -68,6 +68,8 @@ import sys
 import time
 import traceback
 
+import hints
+
 CHECKOUT = os.path.dirname(os.path.abspath(__file__))
 # The finder's modules, which use bare imports with this directory on sys.path.
 BOT_DIR = os.path.join(CHECKOUT, "bot")
@@ -81,8 +83,6 @@ BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE, RUN, SETUP, DOCTOR)
 PLANNED_COMMANDS = ()
 # What the scraper needs that only a POSIX system has: DIAYN runs on Linux and macOS.
 POSIX_ONLY_MODULES = ("fcntl",)
-# What makes a new postings.db, which `run` never does.
-SETUP_COMMAND = "python diayn.py setup"
 HELP_FLAGS = ("-h", "--help")
 # argparse's code for a usage error, which the scraper exits with too.
 USAGE_EXIT = 2
@@ -379,12 +379,12 @@ def _run_arguments(poller, argv) -> argparse.Namespace:
 def _database_refusal(error, path) -> str:
     """What `run` says when postings.db is refused: a missing one points at setup."""
     if not os.path.exists(path):
-        return (f"{path}: no such database. `{SETUP_COMMAND}` makes one, with a first "
-                "sweep that records every posting open now as seen, so that none is "
+        return (f"{path}: no such database. `{hints.command(SETUP)}` makes one, with a "
+                "first sweep that records every posting open now as seen, so that none is "
                 "announced. If this box has one, check DIAYN_DATA and POSTINGS_DB: "
-                "`python diayn.py config` shows the path in use.")
+                f"`{hints.command('config')}` shows the path in use.")
     return (f"{error}\n`diayn.py {RUN}` never makes or bootstraps postings.db; "
-            f"for a new one, `{SETUP_COMMAND}` does.")
+            f"for a new one, `{hints.command(SETUP)}` does.")
 
 
 def _serve_and_sweep(poller, settings, interval, bot, watch) -> int:
@@ -421,7 +421,7 @@ def cmd_run(poller, argv, bot=None, watch=None) -> int:
             bot = discord_bot()
         except ModuleNotFoundError as e:
             return _refused(f"the bot needs {e.name}, which is not installed. "
-                            "Install the requirements: pip install -r requirements.txt", RUN)
+                            f"{hints.install_hint()}", RUN)
     if watch is None:
         def watch(conn):
             return poller.cmd_watch(conn, args.interval, use_llm=args.llm)
@@ -461,8 +461,7 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             return FAILED_EXIT
         print(f"diayn.py: the scraper needs {e.name}, which is not installed. "
-              "Install the requirements: pip install -r requirements.txt",
-              file=sys.stderr)
+              f"{hints.install_hint()}", file=sys.stderr)
         return FAILED_EXIT
     if command == IMPORT_LEGACY:
         return cmd_import_legacy(poller, argv[1:])
