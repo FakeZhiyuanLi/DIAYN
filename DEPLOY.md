@@ -128,7 +128,7 @@ module.exports = {
   get the bot's token reset. The log line says which toggle to turn on; then
   `pm2 restart diayn`.
 - **`kill_timeout`.** pm2 stops a process with SIGINT, which `run` treats as
-  Ctrl-C: it logs out of Discord and exits 0. This gives it ten seconds before
+  Ctrl-C, on every supported Python: it logs out of Discord and exits 0. This gives it ten seconds before
   SIGKILL.
 
 ```sh
@@ -173,8 +173,9 @@ WantedBy=multi-user.target
 - **`RestartPreventExitStatus=3 78`**: another `run` or `watch` holds the lock
   (3), or Discord refused the Server Members Intent (78), as for pm2 above.
   Turn the intent on, then `sudo systemctl restart diayn`.
-- **`KillSignal=SIGINT`**, because `run` stops cleanly on SIGINT, logging out of
-  Discord. systemd's default, SIGTERM, would end it outright.
+- **`KillSignal=SIGINT`**, the signal pm2 sends too, so both units stop `run` the
+  same way: it logs out of Discord and exits 0. `run` treats SIGTERM, systemd's
+  default, the same, so a unit without this line also stops cleanly.
 - **`UMask=0077`**, so every file it creates is readable by its own user alone.
 
 ```sh

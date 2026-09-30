@@ -42,7 +42,10 @@ import asyncio
 import contextlib
 import io
 import os
+import signal
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -517,6 +520,125 @@ class Stopping(unittest.TestCase):
         self.assertEqual(stages, ["logging out", "logged out"])
         self.assertNotIn("sweep loop ended", err)
         self.assertEqual(err, "")
+
+
+# A child process that runs run_together through diayn's own runner, with a bot whose
+# logout takes several turns of the loop (as discord.py's close() does), prints "ready",
+# and at the end prints what happened. The parent sends it a real signal.
+SIGNAL_CHILD = r"""
+import asyncio, sys
+sys.path.insert(0, sys.argv[1])
+import diayn
+stages = []
+
+async def bot():
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        stages.append("logging out")
+        closing = asyncio.create_task(asyncio.sleep(0.05))
+        try:
+            await closing
+            stages.append("logged out")
+        except asyncio.CancelledError:
+            stages.append("logout cut off")
+        raise
+
+async def sweep():
+    await asyncio.Event().wait()
+
+async def announce_then(coro):
+    print("ready", flush=True)
+    return await coro
+
+try:
+    diayn.run_until_stopped(announce_then(diayn.run_together(bot(), sweep())))
+    print("returned")
+except KeyboardInterrupt:
+    print("stopped")
+print(",".join(stages), flush=True)
+"""
+
+
+class Signals(unittest.TestCase):
+    """The stop signals pm2 (SIGINT) and systemd (SIGTERM) send, on every Python.
+
+    Before 3.11 asyncio.run has no SIGINT handler: a KeyboardInterrupt tears every task
+    down at once and cuts the bot's logout off. And no version handles SIGTERM. diayn's
+    own runner makes both cancel the main task, so run_together stops in order.
+    """
+
+    def stop_with(self, signum):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        child = subprocess.Popen([sys.executable, "-c", SIGNAL_CHILD, root],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        self.assertEqual(child.stdout.readline().strip(), "ready")
+        child.send_signal(signum)
+        out, err = child.communicate(timeout=STOPS_WITHIN_S)
+        return child.returncode, out.splitlines(), err
+
+    def test_sigint_stops_in_order(self):
+        code, out, err = self.stop_with(signal.SIGINT)
+        self.assertEqual((code, out), (0, ["stopped", "logging out,logged out"]), err)
+        self.assertNotIn("sweep loop ended", err)
+
+    def test_sigterm_stops_in_order_too(self):
+        code, out, err = self.stop_with(signal.SIGTERM)
+        self.assertEqual((code, out), (0, ["stopped", "logging out,logged out"]), err)
+        self.assertNotIn("sweep loop ended", err)
+
+
+class TheRunnerIsUsed(unittest.TestCase):
+    def test_run_goes_through_run_until_stopped_and_nothing_calls_asyncio_run(self):
+        # asyncio.run would bring 3.10's teardown, and no SIGTERM handling, back.
+        import ast
+        tree = ast.parse(open(diayn.__file__, encoding="utf-8").read())
+        calls = {(n.func.value.id if isinstance(n.func, ast.Attribute)
+                  and isinstance(n.func.value, ast.Name) else None,
+                  n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", None))
+                 for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        self.assertNotIn(("asyncio", "run"), calls)
+        serve = next(n for n in tree.body
+                     if isinstance(n, ast.FunctionDef) and n.name == "_serve_and_sweep")
+        self.assertIn("run_until_stopped", {n.func.id for n in ast.walk(serve)
+                                            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)})
+
+
+class ASweepCancelledFromOutside(unittest.TestCase):
+    """A sweep task cancelled by something other than run_together, as an event loop
+    tearing every task down does, is not a sweep that ended: nothing is logged, and the
+    bot is cancelled once, so its logout finishes."""
+
+    def test_the_bot_is_cancelled_once_and_nothing_is_logged(self):
+        stages = []
+
+        async def bot():
+            try:
+                await forever()
+            except asyncio.CancelledError:
+                stages.append("logging out")
+                closing = asyncio.create_task(asyncio.sleep(0.05))
+                try:
+                    await closing
+                    stages.append("logged out")
+                except asyncio.CancelledError:
+                    stages.append("logout cut off")
+                raise
+
+        async def go():
+            task = asyncio.create_task(diayn.run_together(bot(), forever()))
+            await asyncio.sleep(0.01)
+            sweep = next(t for t in asyncio.all_tasks() if t.get_name() == "sweep loop")
+            sweep.cancel()
+            return await asyncio.wait_for(task, STOPS_WITHIN_S)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = asyncio.run(go())
+        self.assertEqual(code, diayn.FAILED_EXIT)
+        self.assertEqual(stages, ["logging out", "logged out"])
+        self.assertNotIn("sweep loop ended", err.getvalue())
 
 
 class TheIntent(_RunCase):

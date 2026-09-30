@@ -71,6 +71,7 @@ import argparse
 import asyncio
 import os
 import pathlib
+import signal
 import sqlite3
 import sys
 import time
@@ -371,15 +372,19 @@ async def run_together(bot, sweep) -> int:
     still stopping then is left behind. When the bot stops first, the sweep loop is
     cancelled and waited for, so it is finished before its connection closes. An
     exception from the bot is raised from here. A stop from outside (Ctrl-C, or the
-    SIGINT pm2 and systemd send) cancels each task once, and waits for both: the bot
-    logs out of Discord, and nothing is logged.
+    SIGINT or SIGTERM pm2 and systemd send, through run_until_stopped) cancels each task
+    once, and waits for both: the bot logs out of Discord, and nothing is logged. A sweep
+    loop cancelled by anything else, as an event loop tearing every task down does, is
+    not one that ended: the bot is cancelled once, left to log out, and nothing is logged.
     """
     bot_task = asyncio.create_task(bot, name="bot")
     sweep_task = asyncio.create_task(sweep, name="sweep loop")
     ended = []
 
     def on_sweep_done(task):
-        if bot_task.done():             # the bot stopped first, and cancelled it
+        # The bot stopped first and cancelled it; or something else cancelled it.
+        # Neither is a sweep loop that ended by itself.
+        if bot_task.done() or task.cancelled():
             return
         bot_task.cancel()
         ended.append(_how_it_ended(task))
@@ -403,6 +408,10 @@ async def run_together(bot, sweep) -> int:
     if ended:
         await _let_the_bot_stop(bot_task)
         return FAILED_EXIT
+    if not bot_task.done():             # the sweep loop was cancelled from outside
+        bot_task.cancel()
+        await _let_the_bot_stop(bot_task)
+        return FAILED_EXIT
     sweep_task.cancel()
     await asyncio.wait([sweep_task])
     bot_task.result()                   # raises what the bot raised
@@ -419,6 +428,61 @@ async def _let_the_bot_stop(bot_task) -> None:
                       "exiting anyway", file=sys.stderr)
     elif not bot_task.cancelled() and bot_task.exception() is not None:
         scraper().log(f"the bot stopped with {_how_it_ended(bot_task)}", file=sys.stderr)
+
+
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+def run_until_stopped(main):
+    """
+    Runs coroutine `main` to completion and returns its result, as asyncio.run does,
+    except that SIGINT and SIGTERM cancel `main` rather than tear the loop down. A stop
+    then raises KeyboardInterrupt, once `main` has finished stopping.
+
+    Python 3.11's asyncio.run cancels the main task on SIGINT, so run_together stops in
+    order: the bot logs out of Discord, then the loop closes. 3.10's lets the
+    KeyboardInterrupt out of the loop and cancels every task at once, which cuts the
+    bot's logout off. No version handles SIGTERM, which systemd sends by default. This
+    gives every version 3.11's behaviour, for both signals.
+    """
+    loop = asyncio.new_event_loop()
+    stopped = []
+    try:
+        asyncio.set_event_loop(loop)
+        task = loop.create_task(main)
+
+        def stop(signum):
+            stopped.append(signum)
+            task.cancel()
+
+        for signum in STOP_SIGNALS:
+            loop.add_signal_handler(signum, stop, signum)
+        try:
+            return loop.run_until_complete(task)
+        except asyncio.CancelledError:
+            if stopped:
+                raise KeyboardInterrupt from None
+            raise
+    finally:
+        for signum in STOP_SIGNALS:
+            loop.remove_signal_handler(signum)
+        _close_loop(loop)
+
+
+def _close_loop(loop) -> None:
+    """What asyncio.run does last: cancel what is left, finish async generators and the
+    default executor, then close the loop."""
+    try:
+        left = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for t in left:
+            t.cancel()
+        if left:
+            loop.run_until_complete(asyncio.gather(*left, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.run_until_complete(loop.shutdown_default_executor())
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
 
 
 def _run_arguments(poller, argv) -> argparse.Namespace:
@@ -462,7 +526,7 @@ def _serve_and_sweep(poller, settings, interval, bot, watch) -> int:
     with poller.sweeper_lock(settings.postings_db):
         conn = poller.open_for_sweeping(init=False, interval=interval)
         try:
-            return asyncio.run(run_together(bot(settings), watch(conn)))
+            return run_until_stopped(run_together(bot(settings), watch(conn)))
         finally:
             conn.close()
 
