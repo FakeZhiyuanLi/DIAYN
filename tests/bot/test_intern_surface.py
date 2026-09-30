@@ -564,6 +564,15 @@ class TheCommandGroupBuilds(unittest.TestCase):
         self.assertTrue(contexts.dm_channel)
         self.assertFalse(contexts.private_channel)
 
+    def test_no_description_names_a_time_zone_the_host_may_not_use(self):
+        # Alert hours are kept in DIAYN_TZ, which the host sets; a description is
+        # synced once and cannot follow it, so it names no zone at all.
+        payload = intern_commands.internships.to_dict(self.tree)
+        for sub in payload["options"]:
+            for option in sub.get("options", []):
+                with self.subTest(command=sub["name"], option=option["name"]):
+                    self.assertNotIn("Pacific", option["description"])
+
     def test_no_description_assumes_a_club(self):
         payload = intern_commands.internships.to_dict(self.tree)
         texts = [payload["description"]] + [
@@ -843,6 +852,37 @@ class TheCardsAlertHoursNameTheZone(unittest.TestCase):
         view = asyncio.run(build())
         (alerts,) = [item for item in view.children if getattr(item, "custom_id", "") == "intern:card:alerts"]
         self.assertTrue(all("Pacific" not in option.label for option in alerts.options))
+
+
+@needs_discord
+class TodayIsTheHostsDay(unittest.TestCase):
+    """The resume worker reads "Expected June 2028" against today, and the filters offer
+    the terms that are still to come: both from today's date in DIAYN_TZ."""
+
+    #: 03:00 UTC on 22 September 2026: still the 21st in Los Angeles.
+    AT = 1_790_046_000.0
+
+    def today_in(self, zone):
+        with mock.patch.object(poller, "SETTINGS", poller.configure({"DIAYN_TZ": zone})):
+            return intern_ui.today(self.AT)
+
+    def test_it_is_the_date_in_diayn_tz(self):
+        self.assertEqual(self.today_in("UTC").isoformat(), "2026-09-22")
+        self.assertEqual(self.today_in("America/Los_Angeles").isoformat(), "2026-09-21")
+
+    def test_without_a_moment_it_is_now(self):
+        import datetime as dt
+        with mock.patch.object(poller, "SETTINGS", poller.configure({"DIAYN_TZ": "UTC"})):
+            before = dt.datetime.now(dt.timezone.utc).date()
+            today = intern_ui.today()
+            after = dt.datetime.now(dt.timezone.utc).date()
+        self.assertIn(today, (before, after))
+
+    def test_nothing_calls_it_pacific_any_more(self):
+        self.assertFalse(hasattr(intern_ui, "today_pacific"))
+        for name in SURFACE:
+            with self.subTest(file=name):
+                self.assertNotIn("today_pacific", source(name))
 
 
 if __name__ == "__main__":

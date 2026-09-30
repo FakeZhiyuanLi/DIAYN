@@ -166,7 +166,7 @@ async def _parsed(data: bytes, kind: str) -> dict:
     """The worker's validated draft. The bytes go no further than its stdin."""
     if len(data) > resume_parse.MAX_BYTES:
         raise resume_parse.ResumeRefusal("too_big")
-    return await resume_worker.run_worker(data, kind, intern_ui.today_pacific())
+    return await resume_worker.run_worker(data, kind, intern_ui.today())
 
 
 async def read_and_parse(interaction, attachment: discord.Attachment, kind: str, *, source: str) -> None:
@@ -204,7 +204,7 @@ async def begin_paste(interaction, text: str) -> None:
     try:
         with _one_read(uid):
             draft = await resume_worker.run_worker(pasted.encode("utf-8"), "txt",
-                                                   intern_ui.today_pacific())
+                                                   intern_ui.today())
     except resume_parse.ResumeRefusal as refusal:
         await _parse_failed(interaction, refusal.reason, "txt")
         return
@@ -216,7 +216,7 @@ async def _show_parsed(interaction, draft: dict, *, source: str) -> None:
     uid, now = interaction.user.id, time.time()
     existing = intern_store.load(intern_ui.db, uid)
     profile = from_draft(uid, draft, now, source=source, cursor=intern_delivery.horizon(now),
-                         today=intern_ui.today_pacific(), existing=existing)
+                         today=intern_ui.today(), existing=existing)
     header = intern_text.draft_header(profile, found_field=bool(draft.get("fields")),
                                       replacing=existing)
     await intern_views.show_draft(interaction, profile, evidence=intern_text.evidence_line(draft),
@@ -419,7 +419,7 @@ class DetailsModal(intern_ui.FinderModal):
         changes, problems = parse_details_form(
             self.majors.value or "", next(iter(self.degree.values), None), self.grad.value or "",
             self.skills.value or "", self.keywords.value or "",
-            today=intern_ui.today_pacific(), current=self.p)
+            today=intern_ui.today(), current=self.p)
         await self.on_done(interaction, with_changes(self.p, time.time(), **changes), problems)
 
 
@@ -430,7 +430,7 @@ class FiltersModal(intern_ui.FinderModal):
         super().__init__(title="More filters")
         self.p, self.on_done = p, on_done
         names = intern_ui.known_companies()
-        terms = tuple(dict.fromkeys((*upcoming_terms(intern_ui.today_pacific()), *p.terms)))
+        terms = tuple(dict.fromkeys((*upcoming_terms(intern_ui.today()), *p.terms)))
         states = [t[len(_STATE):] for t in p.locations if t.startswith(_STATE)]
         self.states = _text(200, default=_joined(states, ", ", 200), placeholder="e.g. WA, Oregon, NY")
         self.terms = discord.ui.Select(options=intern_ui.select_options(((t, t) for t in terms), p.terms),
@@ -451,6 +451,6 @@ class FiltersModal(intern_ui.FinderModal):
         changes, problems = parse_filters_form(
             self.states.value or "", list(self.terms.values), self.hide.value or "",
             self.only.value or "", next(iter(self.min_score.values), str(self.p.min_score)),
-            today=intern_ui.today_pacific(), current=self.p,
+            today=intern_ui.today(), current=self.p,
             known_companies=intern_ui.known_companies())
         await self.on_done(interaction, with_changes(self.p, time.time(), **changes), problems)

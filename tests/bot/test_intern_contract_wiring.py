@@ -418,6 +418,16 @@ class CommandsReadOnlyTheContract(_ContractCase):
         self.assertIn("model `gemini-3.5-flash-lite`", text)
         self.assertNotIn("disabled", text)
 
+    def test_debug_says_the_quota_resets_at_midnight_in_the_quotas_own_zone(self):
+        # The scraper's LLM_DAY_TZ, which the contract publishes; not DIAYN_TZ.
+        berlin = types.SimpleNamespace(quota=lambda now=None: sources.Quota(
+            "gemini-3.5-flash-lite", 250, 5, 250000, "2026-09-22", "Europe/Berlin"))
+        published = "\n".join(intern_commands._gemini_lines(intern_ui.pconn, intern_ui.source))
+        other = "\n".join(intern_commands._gemini_lines(intern_ui.pconn, berlin))
+        self.assertIn("resets at midnight Los Angeles time", published)
+        self.assertIn("resets at midnight Berlin time", other)
+        self.assertNotIn("Pacific", published + other)
+
     def test_details_are_fetched_with_the_boards_icims_hosts(self):
         seen = {}
 

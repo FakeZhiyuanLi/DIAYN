@@ -27,6 +27,7 @@ from discord import app_commands
 
 import access
 import intern_alert_views
+import intern_clock
 import intern_delivery
 import intern_match
 import intern_store
@@ -247,7 +248,7 @@ def _ping_plan(p: Profile, cadence: str | None, hour: int | None, now: float) ->
 
 @internships.command(name="ping", description="Turn internship DMs on or off, or set how often they come.")
 @app_commands.describe(cadence="How often alerts come",
-                       hour="Hour of day, Pacific time, for daily and weekly alerts")
+                       hour="Hour of day, in this bot's time zone, for daily and weekly alerts")
 @app_commands.choices(cadence=[app_commands.Choice(name=n, value=v) for n, v in (
     ("Hourly", "hourly"), ("Daily", "daily"), ("Weekly (Mondays)", "weekly"), ("Off", "off"))])
 async def internships_ping(interaction: discord.Interaction,
@@ -423,7 +424,7 @@ def _gemini_lines(pconn: sqlite3.Connection, source: postings_source.Source) -> 
              f"tokens: {ptok:,} in · {otok:,} out · {ptok + otok:,} total" if ptok or otok
              else "tokens: not recorded yet (counted from the next Gemini call)",
              f"limits: {quota.rpm} req/min · {quota.tpm:,} tok/min · "
-             f"{cap} req/day · resets at midnight Pacific"]
+             f"{cap} req/day · resets at midnight {intern_clock.zone_label(quota.zone)}"]
     hist = pconn.execute("SELECT day, n FROM llm_usage ORDER BY day DESC LIMIT 7").fetchall()
     if len(hist) > 1:
         lines.append("last 7 days: " + " · ".join(f"{d[5:]} {n}" for d, n in hist))

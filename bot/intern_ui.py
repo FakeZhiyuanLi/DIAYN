@@ -46,6 +46,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
+import intern_clock
 import intern_delivery
 import intern_match
 import intern_store
@@ -388,8 +389,11 @@ def companies_watched() -> int:
         return 0
 
 
-def today_pacific() -> date:
-    return datetime.now(intern_delivery.TZ).date()
+def today(now: float | None = None) -> date:
+    """Today's date in DIAYN_TZ, the zone the finder keeps its hours and dates in, at
+    `now` (default: now). Resume dates and upcoming terms are read against it."""
+    zone = intern_clock.zone()
+    return (datetime.now(zone) if now is None else datetime.fromtimestamp(now, zone)).date()
 
 
 # ------------------------------------------------------------------ errors
