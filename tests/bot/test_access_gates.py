@@ -48,10 +48,13 @@ except ModuleNotFoundError as missing:  # pragma: no cover - depends on the envi
 #: See test_intern_surface.REAL_DISCORD: a stub module has no __file__.
 REAL_DISCORD = discord is not None and getattr(discord, "__file__", None) is not None
 if REAL_DISCORD:
+    import intern_alert_views
     import intern_commands
     import intern_ui
+    import intern_upload
+    import intern_views
 else:  # pragma: no cover - depends on the environment
-    intern_commands = intern_ui = None
+    intern_alert_views = intern_commands = intern_ui = intern_upload = intern_views = None
 
 needs_discord = unittest.skipUnless(REAL_DISCORD, "discord.py is not installed")
 
@@ -71,6 +74,39 @@ COMMANDS = {
 #: the role list reads postings and the user's own matches, so `_role_choices` checks.
 AUTOCOMPLETES = {"_role_autocomplete": "_role_choices", "_field_autocomplete": None,
                  "_where_autocomplete": None}
+
+#: Every button, select and modal submit, by file and `Class.method` (or a module
+#: function wired in as one). The persistent ones answer messages sent long ago; the
+#: short-lived ones hold a draft for up to 15 minutes, so someone revoked partway
+#: through must not save it.
+CALLBACKS = {
+    "intern_views.py": {
+        "ProfileCardView.matches": "gated", "ProfileCardView.details": "gated",
+        "ProfileCardView.filters": "gated", "ProfileCardView.upload": "gated",
+        "_edit_saved": "gated",                       # the card's four selects
+        "ProfileCardView.delete": "open",
+        "DeleteConfirmView.delete_all": "open", "DeleteConfirmView.keep": "open",
+        "RelaxView._apply": "gated",
+        "DraftCardView._changed": "gated", "DraftCardView.save": "gated",
+        "DraftCardView.details": "gated", "DraftCardView.filters": "gated",
+        "DraftCardView.cancel": "open",
+    },
+    "intern_upload.py": {
+        "StartView.upload": "gated", "StartView.manual": "gated",
+        "UploadModal.on_submit": "gated",
+        "ConsentView.read_resume": "gated", "ConsentView.proceed": "gated",
+        "ConsentView.pick": "gated", "ConsentView.cancel": "open",
+        "ResumeFailView.paste": "gated", "ResumeFailView.manual": "gated",
+        "DetailsModal.on_submit": "gated", "FiltersModal.on_submit": "gated",
+    },
+    "intern_alert_views.py": {
+        "AlertControlsView._on_hide": "gated",
+        "AlertControlsView.pause": "open", "AlertControlsView.stop_alerts": "open",
+        "DmCheckView.retry": "gated",
+        "ResumeNowView.resume": "gated",
+    },
+}
+UI_DECORATORS = ("discord.ui.button", "discord.ui.select")
 
 OWNER, GRANTED, STRANGER, MEMBER = 101, 202, 303, 404
 SERVER, ELSEWHERE = 9001, 9002
@@ -174,6 +210,84 @@ class EveryAutocompleteIsClassified(unittest.TestCase):
     def test_it_asks_about_the_place_the_suggestions_are_for(self):
         (call,) = calls_to(function(tree("intern_commands.py"), "_role_autocomplete"), "_role_choices")
         self.assertIn("interaction.guild_id", [chain(a) for a in call.args])
+
+
+def _classes(module: ast.Module) -> dict:
+    return {n.name: n for n in module.body if isinstance(n, ast.ClassDef)}
+
+
+def _methods(cls: ast.ClassDef) -> dict:
+    return {n.name: n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _wired(cls: ast.ClassDef, value: ast.AST) -> set:
+    """The callbacks an expression hands Discord: `self.m`, a module function by name, or a
+    factory `self.f(...)` whose inner callback calls `self.m`."""
+    if isinstance(value, ast.Attribute) and chain(value.value) == "self":
+        return {f"{cls.name}.{value.attr}"}
+    if isinstance(value, ast.Name):
+        return {value.id}
+    if isinstance(value, ast.Call) and chain(value.func).startswith("self."):
+        factory = _methods(cls).get(chain(value.func).split(".", 1)[1])
+        return {f"{cls.name}.{chain(c.func).split('.', 1)[1]}" for c in calls_in_order(factory or cls)
+                if chain(c.func).startswith("self.")} if factory else set()
+    return set()
+
+
+def ui_callbacks(name: str) -> set:
+    """Every callback in the file: decorated buttons and selects, modal submits, and what
+    is assigned to an item's `.callback` or wired through `_wire`."""
+    found = set()
+    for cls in _classes(tree(name)).values():
+        for method in _methods(cls).values():
+            if method.name == "on_submit" or any(
+                    isinstance(d, ast.Call) and chain(d.func) in UI_DECORATORS
+                    for d in method.decorator_list):
+                found.add(f"{cls.name}.{method.name}")
+        for node in ast.walk(cls):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Attribute) and t.attr == "callback" for t in node.targets):
+                found |= _wired(cls, node.value)
+            if isinstance(node, ast.Call) and chain(node.func) == "_wire" and len(node.args) == 3:
+                found |= _wired(cls, node.args[2])
+    return found
+
+
+def qualified(name: str, qualname: str):
+    if "." not in qualname:
+        return function(tree(name), qualname)
+    cls, method = qualname.split(".")
+    return _methods(_classes(tree(name))[cls])[method]
+
+
+class EveryButtonIsClassified(unittest.TestCase):
+    def test_the_table_is_every_button_select_and_submit(self):
+        for name, table in CALLBACKS.items():
+            with self.subTest(file=name):
+                self.assertEqual(ui_callbacks(name), set(table))
+
+    def test_a_gated_one_checks_access_before_anything_else(self):
+        for name, table in CALLBACKS.items():
+            for qualname, kind in table.items():
+                if kind == "gated":
+                    with self.subTest(callback=qualname):
+                        self.assertEqual(first_call(qualified(name, qualname)), GATE)
+
+    def test_the_way_out_never_asks(self):
+        # Deleting your data, and stopping or pausing alerts, work for anyone, always.
+        for name, table in CALLBACKS.items():
+            for qualname, kind in table.items():
+                if kind == "open":
+                    with self.subTest(callback=qualname):
+                        fn = qualified(name, qualname)
+                        self.assertEqual(calls_to(fn, GATE) + calls_to(fn, MAY_USE), [])
+
+    def test_no_base_view_or_modal_checks_access(self):
+        # In a base class the check would reach the exemptions too.
+        for cls in _classes(tree("intern_ui.py")).values():
+            for method in _methods(cls).values():
+                with self.subTest(method=f"{cls.name}.{method.name}"):
+                    self.assertEqual(calls_to(method, "need_access") + calls_to(method, "may_use"), [])
 
 
 # ------------------------------------------------------------------ behaviour (needs discord.py)
@@ -374,6 +488,163 @@ class TheRoleSuggestionsAreGated(_GateCase):
         self.grant("guild", SERVER)
         self.assertTrue(intern_ui.may_use(STRANGER, SERVER))
         self.assertFalse(intern_ui.may_use(STRANGER, ELSEWHERE))
+
+
+class Attachment:
+    def __init__(self) -> None:
+        self.filename, self.content_type, self.size, self.reads = "cv.pdf", "application/pdf", 10, 0
+
+    async def read(self) -> bytes:
+        self.reads += 1
+        return b"%PDF-"
+
+
+def on(build, act):
+    """A press: builds its view inside the running loop, as discord.py needs, then acts."""
+    async def press(i):
+        await act(build(), i)
+    return press
+
+
+async def never(*args):
+    raise AssertionError("a refused submit reached the step after it")
+
+
+def gated_presses(p, attachment):
+    """Each gated callback, pressed by the person `p` belongs to."""
+    V, U, A = intern_views, intern_upload, intern_alert_views
+    uid = p.user_id
+
+    def draft():
+        return V.DraftCardView(p, evidence=None, replacing=None, header="Draft")
+
+    def consent(then_modal=False):
+        return lambda: U.ConsentView(uid, None if then_modal else attachment, "pdf",
+                                     then_modal=then_modal)
+    return {
+        "ProfileCardView.matches": on(V.ProfileCardView, lambda v, i: v.matches.callback(i)),
+        "ProfileCardView.details": on(V.ProfileCardView, lambda v, i: v.details.callback(i)),
+        "ProfileCardView.filters": on(V.ProfileCardView, lambda v, i: v.filters.callback(i)),
+        "ProfileCardView.upload": on(V.ProfileCardView, lambda v, i: v.upload.callback(i)),
+        "_edit_saved": lambda i: V._edit_saved(i, 3, ["off:9"]),
+        "RelaxView._apply": on(lambda: V.RelaxView(uid, ()),
+                               lambda v, i: v._apply(i, types.SimpleNamespace(changes={"fields": ()}))),
+        "DraftCardView._changed": on(draft, lambda v, i: v._changed(i, 0, ["finance"])),
+        "DraftCardView.save": on(draft, lambda v, i: v.save.callback(i)),
+        "DraftCardView.details": on(draft, lambda v, i: v.details.callback(i)),
+        "DraftCardView.filters": on(draft, lambda v, i: v.filters.callback(i)),
+        "StartView.upload": on(lambda: U.StartView(uid), lambda v, i: v.upload.callback(i)),
+        "StartView.manual": on(lambda: U.StartView(uid), lambda v, i: v.manual.callback(i)),
+        "UploadModal.on_submit": on(U.UploadModal, lambda v, i: v.on_submit(i)),
+        "ConsentView.read_resume": on(consent(), lambda v, i: v.read_resume.callback(i)),
+        "ConsentView.proceed": on(consent(True), lambda v, i: v.proceed.callback(i)),
+        "ConsentView.pick": on(consent(), lambda v, i: v.pick.callback(i)),
+        "ResumeFailView.paste": on(lambda: U.ResumeFailView(uid), lambda v, i: v.paste.callback(i)),
+        "ResumeFailView.manual": on(lambda: U.ResumeFailView(uid), lambda v, i: v.manual.callback(i)),
+        "DetailsModal.on_submit": on(lambda: U.DetailsModal(p, on_done=never),
+                                     lambda v, i: v.on_submit(i)),
+        "FiltersModal.on_submit": on(lambda: U.FiltersModal(p, on_done=never),
+                                     lambda v, i: v.on_submit(i)),
+        "AlertControlsView._on_hide": on(A.AlertControlsView, lambda v, i: v._on_hide(i)),
+        "DmCheckView.retry": on(A.DmCheckView, lambda v, i: v.retry.callback(i)),
+        "ResumeNowView.resume": on(lambda: A.ResumeNowView(uid), lambda v, i: v.resume.callback(i)),
+    }
+
+
+@needs_discord
+class TheButtonsAreGated(_GateCase):
+    def setUp(self):
+        super().setUp()
+        self.dms = []
+
+        async def send_dm(uid, msg):
+            self.dms.append(uid)
+        patch = mock.patch.object(intern_ui, "send_dm", send_dm)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_the_presses_cover_the_table(self):
+        gated = {q for table in CALLBACKS.values() for q, kind in table.items() if kind == "gated"}
+        self.assertEqual(set(gated_presses(self.enrol(STRANGER), Attachment())), gated)
+
+    def test_each_refuses_someone_without_access_and_changes_nothing(self):
+        before = self.enrol(STRANGER, alerts="daily", paused_until=NOW + 3600, dm_failures=3)
+        attachment = Attachment()
+        for name, press in gated_presses(before, attachment).items():
+            with self.subTest(callback=name):
+                i = interaction(STRANGER, ELSEWHERE, component=True)
+                self.drive(press(i))
+                self.assertTrue(refused(i), (i.response.sent, i.response.modals, i.edited))
+        self.assertEqual(intern_store.load(self.db, STRANGER), before)
+        self.assertEqual(intern_store.seen_hashes(self.db, STRANGER), frozenset())
+        self.assertEqual((self.dms, attachment.reads), ([], 0))
+
+    def test_a_refused_consent_drops_the_file_it_was_holding(self):
+        attachment = Attachment()
+
+        async def press():
+            view = intern_upload.ConsentView(STRANGER, attachment, "pdf")
+            await view.read_resume.callback(interaction(STRANGER, component=True))
+            return view
+        view = asyncio.run(press())
+        self.assertIsNone(view.attachment)
+        self.assertEqual(attachment.reads, 0)
+
+    def test_someone_granted_gets_past_it(self):
+        self.grant("user", GRANTED)
+        i = interaction(GRANTED, component=True)
+        self.drive(on(lambda: intern_upload.StartView(GRANTED),
+                      lambda v, i: v.upload.callback(i))(i))
+        self.assertEqual(type(i.response.modals[0]).__name__, "UploadModal")
+
+
+@needs_discord
+class TheWayOutIsAlwaysOpen(_GateCase):
+    """Without access, anyone may still see and erase what is held, and stop or pause alerts."""
+
+    def press(self, build, act, uid=STRANGER):
+        i = interaction(uid, ELSEWHERE, component=True)
+        self.drive(on(build, act)(i))
+        self.assertFalse(any(content == REFUSAL for content, _ in i.response.sent))
+        return i
+
+    def test_the_cards_delete_button_shows_everything_and_offers_to_erase_it(self):
+        self.enrol(STRANGER)
+        i = self.press(intern_views.ProfileCardView, lambda v, i: v.delete.callback(i))
+        views = [kw.get("view") for _, kw in i.response.sent + i.followup.sent]
+        self.assertEqual(type(views[-1]).__name__, "DeleteConfirmView")
+
+    def test_its_confirmation_erases_everything(self):
+        self.enrol(STRANGER)
+        intern_store.record_sent(self.db, STRANGER, ["abcd"], NOW)
+        i = self.press(lambda: intern_views.DeleteConfirmView(STRANGER),
+                       lambda v, i: v.delete_all.callback(i))
+        self.assertIsNone(intern_store.load(self.db, STRANGER))
+        self.assertEqual(intern_store.seen_hashes(self.db, STRANGER), frozenset())
+        self.assertEqual(i.response.edits[0]["content"], intern_text.deleted_text())
+
+    def test_keep_it_and_both_cancels_answer(self):
+        self.enrol(STRANGER)
+        p = intern_store.load(self.db, STRANGER)
+        for build, act in (
+                (lambda: intern_views.DeleteConfirmView(STRANGER), lambda v, i: v.keep.callback(i)),
+                (lambda: intern_views.DraftCardView(p, evidence=None, replacing=None),
+                 lambda v, i: v.cancel.callback(i)),
+                (lambda: intern_upload.ConsentView(STRANGER, Attachment(), "pdf"),
+                 lambda v, i: v.cancel.callback(i))):
+            with self.subTest(view=build.__name__):
+                self.assertEqual(len(self.press(build, act).response.edits), 1)
+        self.assertEqual(intern_store.load(self.db, STRANGER), p)
+
+    def test_stop_turns_alerts_off(self):
+        self.enrol(STRANGER, alerts="hourly")
+        self.press(intern_alert_views.AlertControlsView, lambda v, i: v.stop_alerts.callback(i))
+        self.assertEqual(intern_store.load(self.db, STRANGER).alerts, "off")
+
+    def test_pause_pauses_them_for_a_week(self):
+        self.enrol(STRANGER, alerts="hourly")
+        self.press(intern_alert_views.AlertControlsView, lambda v, i: v.pause.callback(i))
+        self.assertIsNotNone(intern_store.load(self.db, STRANGER).paused_until)
 
 
 if __name__ == "__main__":

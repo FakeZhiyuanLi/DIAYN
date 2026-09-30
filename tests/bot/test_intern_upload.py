@@ -30,6 +30,7 @@ except ModuleNotFoundError as missing:  # pragma: no cover - depends on the envi
 #: See test_intern_surface.REAL_DISCORD: a stub module has no __file__.
 REAL_DISCORD = discord is not None and getattr(discord, "__file__", None) is not None
 if REAL_DISCORD:
+    import access
     import intern_store
     import intern_text
     import intern_ui
@@ -100,6 +101,9 @@ class UploadTestCase(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
         intern_store.init_db(self.db)
+        # The member pressing these buttons may use the bot; who may is test_access_gates'.
+        access.init_db(self.db)
+        access.grant(self.db, "user", UID, granted_by=None, now=1.0)
         patches = [mock.patch.object(intern_ui, "db", self.db, create=True),
                    mock.patch.object(intern_ui, "intern_error", None, create=True),
                    mock.patch.object(intern_ui, "upload_limiter", rate_limit.RateLimiter(limit=5, window=3600)),

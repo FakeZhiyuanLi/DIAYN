@@ -12,6 +12,10 @@ fixed custom ids and is registered once in `on_ready`; the registered instance
 answers every user, so its callbacks load the stored profile of
 `interaction.user.id` and never trust the profile a card was drawn with.
 
+**The bot is private.** Every button, select and submit here checks
+`intern_ui.need_access` first, except the ways out: the card's Delete button,
+the delete screen's two buttons and a draft's Cancel answer anyone.
+
 **Coverage needs the window**, which can take seconds cold, so every path here
 that draws a card or a list defers first and edits the deferred message.
 Refusals (no profile, tracker down) are sent before the defer.
@@ -188,6 +192,8 @@ class RelaxView(intern_ui.OwnedView):
         return callback
 
     async def _apply(self, interaction, r: intern_match.Relaxation) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         now = time.time()
         if self.draft is not None:
             p = self.draft.draft = with_changes(self.draft.draft, now, **r.changes)
@@ -322,6 +328,8 @@ class ProfileCardView(intern_ui.FinderView):
     @discord.ui.button(label="Show my matches", style=discord.ButtonStyle.primary,
                        custom_id="intern:card:matches", row=4)
     async def matches(self, interaction, button) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         p = await intern_ui.profile_for(interaction, tracker=True)
         if p is not None:
             await intern_ui.defer_reply(interaction)
@@ -329,18 +337,24 @@ class ProfileCardView(intern_ui.FinderView):
 
     @discord.ui.button(label="Edit details", custom_id="intern:card:details", row=4)
     async def details(self, interaction, button) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         p = await intern_ui.profile_for(interaction)
         if p is not None:
             await interaction.response.send_modal(_modals().DetailsModal(p, on_done=_saved_modal_done))
 
     @discord.ui.button(label="More filters", custom_id="intern:card:filters", row=4)
     async def filters(self, interaction, button) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         p = await intern_ui.profile_for(interaction)
         if p is not None:
             await interaction.response.send_modal(_modals().FiltersModal(p, on_done=_saved_modal_done))
 
     @discord.ui.button(label="Replace resume", custom_id="intern:card:upload", row=4)
     async def upload(self, interaction, button) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         p = await intern_ui.profile_for(interaction)
         if p is None:
             return
@@ -361,6 +375,8 @@ def _modals():
 
 
 async def _edit_saved(interaction, kind: int, values: list[str]) -> None:
+    if not await intern_ui.need_access(interaction):
+        return
     p = await intern_ui.profile_for(interaction)
     if p is None:
         return
@@ -398,6 +414,8 @@ class DraftCardView(intern_ui.OwnedView):
         self.save.disabled = not can_save(draft)
 
     async def _changed(self, interaction, kind: int, values: list[str]) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         changes = _select_changes(self.draft, kind, values)
         if changes is None:
             await intern_ui.refuse(interaction, intern_text.generic_failure())
@@ -416,7 +434,7 @@ class DraftCardView(intern_ui.OwnedView):
 
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=4)
     async def save(self, interaction, button) -> None:
-        if not await intern_ui.need_finder(interaction):
+        if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
             return
         if not can_save(self.draft):         # the button is disabled; a stale client is not
             await intern_ui.refuse(interaction, intern_text.generic_failure())
@@ -427,10 +445,14 @@ class DraftCardView(intern_ui.OwnedView):
 
     @discord.ui.button(label="Edit details", row=4)
     async def details(self, interaction, button) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         await interaction.response.send_modal(_modals().DetailsModal(self.draft, on_done=self._modal_done))
 
     @discord.ui.button(label="More filters", row=4)
     async def filters(self, interaction, button) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         await interaction.response.send_modal(_modals().FiltersModal(self.draft, on_done=self._modal_done))
 
     @discord.ui.button(label="Cancel", row=4)

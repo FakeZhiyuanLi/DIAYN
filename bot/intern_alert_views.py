@@ -16,6 +16,10 @@ values of this one interaction. Instances built for one message
 and time out after VIEW_TIMEOUT_S so a year of DMs does not stay in memory;
 after that the registered instance answers, identically.
 
+**The bot is private.** Hide, Try again and Resume now check
+`intern_ui.need_access` first; Stop and Pause answer anyone, so nobody is ever
+stuck with alerts they no longer want.
+
 **The loop never dies** (spec 5.1): it wraps each part of its body and logs an
 exception's type only. `app.py` reaches the loop and hooks through
 `intern_commands`, which re-exports them under the names it wires in.
@@ -108,7 +112,7 @@ class AlertControlsView(intern_ui.FinderView):
         return view
 
     async def _on_hide(self, interaction) -> None:
-        if not await intern_ui.need_finder(interaction):
+        if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
             return
         uid, now = interaction.user.id, time.time()
         if _profile_or_none(uid) is None:
@@ -162,7 +166,7 @@ class DmCheckView(intern_ui.FinderView):
     @discord.ui.button(label="Try again", style=discord.ButtonStyle.primary,
                        custom_id="intern:dm:retry")
     async def retry(self, interaction, button) -> None:
-        if not await intern_ui.need_finder(interaction):
+        if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
             return
         uid = interaction.user.id
         p = _profile_or_none(uid)
@@ -188,7 +192,7 @@ class ResumeNowView(intern_ui.OwnedView):
 
     @discord.ui.button(label="Resume now", style=discord.ButtonStyle.primary)
     async def resume(self, interaction, button) -> None:
-        if not await intern_ui.need_finder(interaction):
+        if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
             return
         intern_store.set_paused_until(intern_ui.db, interaction.user.id, None, time.time())
         self.stop()

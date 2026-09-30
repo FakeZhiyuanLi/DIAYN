@@ -14,6 +14,10 @@ failures are logged by reason only. `read_and_parse` is the only caller of
 `attachment.read()` and takes the kind `sniff` returned, so there is no path
 that reads first and checks later.
 
+The bot is private: every button and submit here checks
+`intern_ui.need_access` first, except Cancel. A refused consent screen drops
+the file it was holding, as any answer does.
+
 The card's two edit modals (J4) live here too, so every modal the finder opens
 is in one module; `intern_views` opens them.
 """
@@ -249,12 +253,12 @@ class StartView(intern_ui.OwnedView):
 
     @discord.ui.button(label="Upload or paste my resume", style=discord.ButtonStyle.primary)
     async def upload(self, interaction, button) -> None:
-        if await intern_ui.need_finder(interaction):
+        if await intern_ui.need_access(interaction) and await intern_ui.need_finder(interaction):
             await open_upload(interaction)
 
     @discord.ui.button(label="Pick by hand", style=discord.ButtonStyle.secondary)
     async def manual(self, interaction, button) -> None:
-        if await intern_ui.need_finder(interaction):
+        if await intern_ui.need_access(interaction) and await intern_ui.need_finder(interaction):
             await start_manual(interaction)
 
 
@@ -277,7 +281,7 @@ class UploadModal(intern_ui.FinderModal):
             component=self.text))
 
     async def on_submit(self, interaction) -> None:
-        if not await intern_ui.need_finder(interaction):
+        if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
             return
         files, text = list(self.file.values), self.text.value or ""
         if files:
@@ -320,6 +324,9 @@ class ConsentView(intern_ui.OwnedView):
 
     @discord.ui.button(label="Read my resume", style=discord.ButtonStyle.primary)
     async def read_resume(self, interaction, button) -> None:
+        if not await intern_ui.need_access(interaction):
+            self._take()                 # dropped, as any answer drops it
+            return
         attachment = self._take()
         if attachment is None or not await intern_ui.need_finder(interaction):
             return
@@ -328,13 +335,14 @@ class ConsentView(intern_ui.OwnedView):
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.primary)
     async def proceed(self, interaction, button) -> None:
         # Not _take(): a modal closed without submitting must leave Continue working.
-        if await intern_ui.need_finder(interaction):
+        if await intern_ui.need_access(interaction) and await intern_ui.need_finder(interaction):
             await open_upload(interaction)
 
     @discord.ui.button(label="Pick by hand instead", style=discord.ButtonStyle.secondary)
     async def pick(self, interaction, button) -> None:
+        allowed = await intern_ui.need_access(interaction)
         self._take()
-        if await intern_ui.need_finder(interaction):
+        if allowed and await intern_ui.need_finder(interaction):
             await start_manual(interaction)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -355,7 +363,7 @@ class ResumeFailView(intern_ui.OwnedView):
 
     @discord.ui.button(label="Paste the text instead", style=discord.ButtonStyle.primary)
     async def paste(self, interaction, button) -> None:
-        if not await intern_ui.need_finder(interaction):
+        if not await intern_ui.need_access(interaction) or not await intern_ui.need_finder(interaction):
             return
         if self.consented:
             await open_upload(interaction)
@@ -364,7 +372,7 @@ class ResumeFailView(intern_ui.OwnedView):
 
     @discord.ui.button(label="Pick by hand", style=discord.ButtonStyle.secondary)
     async def manual(self, interaction, button) -> None:
-        if await intern_ui.need_finder(interaction):
+        if await intern_ui.need_access(interaction) and await intern_ui.need_finder(interaction):
             await start_manual(interaction)
 
 
@@ -416,6 +424,8 @@ class DetailsModal(intern_ui.FinderModal):
                          ("Extra keywords (optional)", self.keywords)))
 
     async def on_submit(self, interaction) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         changes, problems = parse_details_form(
             self.majors.value or "", next(iter(self.degree.values), None), self.grad.value or "",
             self.skills.value or "", self.keywords.value or "",
@@ -448,6 +458,8 @@ class FiltersModal(intern_ui.FinderModal):
                          ("Alert me about", self.min_score)))
 
     async def on_submit(self, interaction) -> None:
+        if not await intern_ui.need_access(interaction):
+            return
         changes, problems = parse_filters_form(
             self.states.value or "", list(self.terms.values), self.hide.value or "",
             self.only.value or "", next(iter(self.min_score.values), str(self.p.min_score)),
