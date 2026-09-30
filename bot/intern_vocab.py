@@ -11,10 +11,10 @@ checked against them, and `valid_ids` is how anything read back from a JSON
 column, a select or a subprocess gets in. An id that is not in here is dropped,
 not stored and fixed later.
 
-Split out for the reason `report_text.py` is: it is data and string handling
-with nothing else in it, so every other finder module can import it under bare
-`python3`, and so can the resume worker, which starts Python with `-I` and needs
-nothing beyond the standard library and these pure modules.
+Kept pure, data and string handling with nothing else in it, so that every
+other finder module can import it under bare `python3`, and so can the resume
+worker, which starts Python with `-I` and needs nothing beyond the standard
+library and these pure modules.
 
 The tables marked verbatim were measured against a month of real postings
 (spec section 4). Their order is select order and their weights are measured;

@@ -3,12 +3,9 @@ message_pack.py
 ~~~~~~~~~~~~~~~
 Long replies cut into messages Discord will accept.
 
-Moved out of `discord_bot.py`, where it was `_pack`, so the internship finder's
-pure modules can pack their own text without importing the bot (which nothing
-may do: `sync_guilds.py` execs it, and importing it connects to a database).
-The body is unchanged; the bot imports it back under its old name.
-
-No imports at all, so it loads anywhere the suite runs.
+A module of its own, so that the finder's pure modules can pack their own
+replies without importing the Discord client, which needs discord.py and a
+token. No imports at all, so it loads anywhere the suite runs.
 """
 
 #: Under Discord's hard 2,000-character ceiling, with room for a header or a

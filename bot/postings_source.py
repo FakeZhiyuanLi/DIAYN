@@ -97,7 +97,7 @@ def open_from_env(settings=None) -> tuple[sqlite3.Connection | None, "Source | N
 
 
 def open_contract(path: str | None) -> tuple[sqlite3.Connection | None, "Source | None", str | None]:
-    """The read-only open, also run again by intern_ui.ensure_postings. Never raises."""
+    """The read-only open, also run again whenever the bot reopens the file. Never raises."""
     if not path:
         return None, None, "no path to postings.db was given"
     conn = None

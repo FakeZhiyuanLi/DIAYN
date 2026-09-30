@@ -8,7 +8,7 @@ runs a real tick — `asyncio.run(run_tick(...))` — against an in-memory datab
 prepared by `intern_store.init_db` alone, with a fake `send_dm` that records
 what it was given and can refuse, fail, or delete the user mid-send.
 Candidates are built the way the bot builds them, synthetic `postings` rows
-through `intern_match.tag_rows`. Nothing opens the real stats.db or postings.db.
+through `intern_match.tag_rows`. Nothing opens the real users.db or postings.db.
 
 The rules that matter most, because breaking them breaks nothing visible:
 

@@ -3,10 +3,10 @@ Packing text into Discord-sized messages.
 
     python3 -m unittest discover -s tests      # no install needed
 
-`message_pack.pack` is the greedy packer `discord_bot.py` has always used for
-long replies, moved out so the internship finder can use it without importing
-the bot. These are the cases the old `_pack` was trusted with, plus the one
-promise every caller leans on: no chunk is ever longer than the limit, because
+`message_pack.pack` is the greedy packer the finder uses for long replies,
+kept apart so that the finder's pure modules can use it without importing the
+Discord client. These are the cases it is trusted with, plus the one promise
+every caller leans on: no chunk is ever longer than the limit, because
 Discord refuses a message over 2,000 characters outright and a refused message
 is a reply the user never sees.
 """
@@ -90,8 +90,8 @@ class Packing(unittest.TestCase):
                 self.assertEqual(sum(c.count("q") for c in chunks), sum(map(len, items)))
 
     def test_the_module_imports_nothing_but_the_standard_library(self):
-        # discord_bot.py and every finder module import this, and the pure ones
-        # must load under bare python3: no third-party import may creep in.
+        # Every finder module may import this, and the pure ones must load
+        # under bare python3: no third-party import may creep in.
         tree = ast.parse(Path(message_pack.__file__).read_text(encoding="utf-8"))
         imported = {alias.name.split(".")[0] for node in ast.walk(tree)
                     if isinstance(node, ast.Import) for alias in node.names}
