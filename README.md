@@ -88,7 +88,18 @@ absolute path.
     python diayn.py <command> [options]          # the same, through DIAYN's entry point
 
 `diayn.py` runs every command below with the same arguments and exit codes.
-Of its own commands for the Discord bot, one is built:
+Of its own commands for the Discord bot, three are built:
+
+    python diayn.py grant --user <id>        # or --server <id>
+    python diayn.py revoke --user <id>       # or --server <id>
+
+let one person, or everyone in one server, use the bot, or stop them. The bot
+is private: only its owner (`DIAYN_OWNER_IDS`, or else the Discord
+application's owner) may use it until someone is granted access. A server
+grant covers anyone using the bot inside that server, and that server's
+members anywhere, DMs included. These write the grant into `users.db`, so they
+work before the bot has ever started, and the running bot sees the change on
+its next check. They print what they did, never an id.
 
     python diayn.py import-legacy --from /path/to/old/stats.db
 
@@ -97,8 +108,8 @@ copies the subscribers of the old `/internships ping` tracker out of its bot's
 old file read-only and leaves it as it was. It runs once: a second run is
 refused, so nobody who has since deleted their data comes back. It prints
 counts only, and exits 1 unless every subscriber was either imported or
-already had a profile. The others (`setup`, `doctor`, `run` and `grant`) are
-not built yet: each says so and exits 2.
+already had a profile. The others (`setup`, `doctor` and `run`) are not built
+yet: each says so and exits 2.
 
 **The sweeper lock.** Exactly one process may write `postings.db`. The commands
 that write hold `<POSTINGS_DB>.lock` while they run, and `watch` holds it for

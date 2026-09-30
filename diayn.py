@@ -16,6 +16,14 @@ copies the old `/internships ping` tracker's subscribers out of its bot's
 stats.db, which it opens read-only, into DIAYN's users.db as profiles. It runs
 once, and prints counts only.
 
+    python diayn.py grant --user <id>      python diayn.py revoke --user <id>
+    python diayn.py grant --server <id>    python diayn.py revoke --server <id>
+
+let one person, or everyone in one server, use the bot, or take that away,
+without Discord: a host can grant before the bot's first start. They write
+users.db's access_grants, which the running bot reads on every check, and
+print what they did, never an id.
+
 The rest are in PLANNED_COMMANDS until they are built. Each says so and exits
 2, without importing the scraper or touching a file.
 
@@ -35,10 +43,11 @@ CHECKOUT = os.path.dirname(os.path.abspath(__file__))
 # The finder's modules, which use bare imports with this directory on sys.path.
 BOT_DIR = os.path.join(CHECKOUT, "bot")
 IMPORT_LEGACY = "import-legacy"
+GRANT, REVOKE = "grant", "revoke"
 # DIAYN's own commands that are built.
-BOT_COMMANDS = (IMPORT_LEGACY,)
+BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE)
 # DIAYN's own commands, each built in a later change.
-PLANNED_COMMANDS = ("setup", "doctor", "run", "grant")
+PLANNED_COMMANDS = ("setup", "doctor", "run")
 HELP_FLAGS = ("-h", "--help")
 # argparse's code for a usage error, which the scraper exits with too.
 USAGE_EXIT = 2
@@ -52,13 +61,24 @@ def scraper():
     return internship_poller
 
 
-def finder():
-    """The finder's store and delivery modules, with bot/ on sys.path, imported on first use."""
+def _bot_path() -> None:
     if BOT_DIR not in sys.path:
         sys.path.insert(0, BOT_DIR)
+
+
+def finder():
+    """The finder's store and delivery modules, with bot/ on sys.path, imported on first use."""
+    _bot_path()
     import intern_delivery
     import intern_store
     return intern_store, intern_delivery
+
+
+def access_module():
+    """The bot's access module, with bot/ on sys.path, imported on first use."""
+    _bot_path()
+    import access
+    return access
 
 
 def usage(scraper_commands) -> str:
@@ -81,8 +101,8 @@ def open_legacy(path) -> sqlite3.Connection:
     return sqlite3.connect(real.as_uri() + "?mode=ro", uri=True)
 
 
-def _refused(reason) -> int:
-    print(f"diayn.py {IMPORT_LEGACY}: {reason}", file=sys.stderr)
+def _refused(reason, command=IMPORT_LEGACY) -> int:
+    print(f"diayn.py {command}: {reason}", file=sys.stderr)
     return FAILED_EXIT
 
 
@@ -137,12 +157,95 @@ def cmd_import_legacy(poller, argv) -> int:
     parser.add_argument("--from", dest="source", required=True, metavar="STATS_DB",
                         help="the old bot's stats.db, which is opened read-only")
     args = parser.parse_args(argv)
+    settings, reason = _settings(poller)
+    if reason is not None:
+        return _refused(reason)
+    return import_legacy(args.source, settings.users_db, time.time())
+
+
+def _settings(poller):
+    """(the scraper's settings, None), or (None, why they are refused): the .env is loaded
+    as the scraper loads it, so users.db is the one the bot opens."""
     try:
         poller.load_env_file()
-        settings = poller.configure(os.environ)
+        return poller.configure(os.environ), None
     except poller.ConfigError as e:
-        return _refused(e)
-    return import_legacy(args.source, settings.users_db, time.time())
+        return None, e
+
+
+# ------------------------------------------------------------------ grant and revoke
+
+#: What each command prints, by (command, kind, whether it changed anything).
+_ACCESS_SAID = {
+    (GRANT, "user", True): "that user may use this bot now.",
+    (GRANT, "user", False): "that user already had a grant; nothing changed.",
+    (GRANT, "guild", True): "everyone in that server, and its members anywhere, may use this bot now.",
+    (GRANT, "guild", False): "that server already had a grant; nothing changed.",
+    (REVOKE, "user", True): "that user's grant is gone. They keep access only if they run this "
+                            "bot or are in a server that has a grant.",
+    (REVOKE, "user", False): "that user had no grant of their own; nothing changed.",
+    (REVOKE, "guild", True): "that server's grant is gone. Its members keep access only through "
+                             "a grant of their own or another server's.",
+    (REVOKE, "guild", False): "that server had no grant; nothing changed.",
+}
+
+
+def discord_id(text: str) -> int:
+    """A Discord id as typed on the command line: digits, as Discord's Copy ID gives them."""
+    if not text.isdigit() or not 0 < int(text) < 2 ** 63:
+        raise argparse.ArgumentTypeError("expected a Discord id: the number Discord's "
+                                         "Copy ID gives")
+    return int(text)
+
+
+def _write_access(access, command, kind, target, users_path, now) -> bool:
+    """Makes users.db and its grants table if need be, then grants or revokes."""
+    os.makedirs(os.path.dirname(users_path), exist_ok=True)
+    users = sqlite3.connect(users_path)
+    try:
+        access.init_db(users)
+        if command == GRANT:
+            return access.grant(users, kind, target, granted_by=None, now=now)
+        return access.revoke(users, kind, target)
+    finally:
+        users.close()
+
+
+def change_access(command, kind, target, users_path, now) -> int:
+    """
+    Grants or revokes access for one user or one server (`kind` "user" or "guild") in
+    the users.db at `users_path`; returns the exit code. A grant from here has no
+    granter. A revoke never creates users.db: without one there is nothing to take
+    back. Prints what it did, never the id.
+    """
+    access = access_module()
+    if command == REVOKE and not os.path.exists(users_path):
+        changed = False
+    else:
+        try:
+            changed = _write_access(access, command, kind, target, users_path, now)
+        except (sqlite3.Error, OSError) as e:
+            return _refused(f"users.db: {type(e).__name__}: {e}", command)
+    print(f"{command}: {_ACCESS_SAID[command, kind, changed]}")
+    return 0
+
+
+def cmd_access(poller, command, argv) -> int:
+    """`grant` or `revoke`, `--user <id>` or `--server <id>`, into the users.db the settings name."""
+    verb = "Let" if command == GRANT else "Stop"
+    parser = argparse.ArgumentParser(
+        prog=f"diayn.py {command}",
+        description=f"{verb} one person, or everyone in one server, "
+                    f"{'use' if command == GRANT else 'using'} the bot.")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--user", type=discord_id, metavar="ID", help="a Discord user's id")
+    target.add_argument("--server", type=discord_id, metavar="ID", help="a Discord server's id")
+    args = parser.parse_args(argv)
+    settings, reason = _settings(poller)
+    if reason is not None:
+        return _refused(reason, command)
+    kind, target_id = ("user", args.user) if args.user is not None else ("guild", args.server)
+    return change_access(command, kind, target_id, settings.users_db, time.time())
 
 
 # ------------------------------------------------------------------ dispatch
@@ -167,6 +270,8 @@ def main(argv=None) -> int:
         return FAILED_EXIT
     if command == IMPORT_LEGACY:
         return cmd_import_legacy(poller, argv[1:])
+    if command in (GRANT, REVOKE):
+        return cmd_access(poller, command, argv[1:])
     if command in HELP_FLAGS:
         print(usage(poller.COMMANDS))
         return 0
