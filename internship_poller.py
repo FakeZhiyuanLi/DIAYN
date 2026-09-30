@@ -92,6 +92,7 @@ if __name__ == "__main__":
 import aiohttp  # noqa: E402
 
 import llm  # noqa: E402
+import private_files  # noqa: E402
 
 # --------------------------------------------------------------------------
 # Configuration. Read once, by main(), after the scraper's own .env has loaded
@@ -392,11 +393,13 @@ def _parent_made(path) -> str:
     """`path`, once the directory it goes in exists.
 
     The data files default to <checkout>/data/, which a fresh checkout does
-    not have (it is gitignored), and neither open() nor sqlite creates it.
+    not have (it is gitignored), and neither open() nor sqlite creates it. A
+    directory made here is made at mode 700, as setup makes it: `sweep --init`
+    can be the first to make the data directory, and users.db goes in it too.
     """
     parent = os.path.dirname(path)
     if parent:
-        os.makedirs(parent, exist_ok=True)
+        private_files.make_directory(parent)
     return path
 
 
@@ -2059,13 +2062,14 @@ def _open(path, mode="rw"):
     there. An empty file at the wrong path — a typo in POSTINGS_DB, a volume
     not mounted yet — is an empty ledger, and its first sweep records every
     open posting as new (CONTRACT.md, P6). Only rwc makes the file, and its
-    directory with it.
+    directory with it: the file at mode 600, and its -wal and -shm with it.
     """
     if mode == "rwc":
         _parent_made(path)
     try:
-        return sqlite3.connect(f"file:{quote(os.path.abspath(path))}?mode={mode}",
-                               uri=True)
+        with private_files.private_umask():
+            return sqlite3.connect(f"file:{quote(os.path.abspath(path))}?mode={mode}",
+                                   uri=True)
     except sqlite3.OperationalError:
         if os.path.exists(path):
             raise

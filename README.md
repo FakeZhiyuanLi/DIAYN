@@ -451,8 +451,9 @@ expressions unless it is given `--llm`.
 
 ## Privacy
 
-**What is stored**, all of it in the data directory, which `setup` makes at
-mode 700:
+**What is stored**, all of it in the data directory. Whichever command makes
+it first (`setup`, `grant`, `import-legacy` or `sweep --init`) makes it at mode
+700, and each database in it is made at 600:
 
 - `postings.db`, the scraper's ledger of public job postings. The bot only
   ever reads it.
@@ -604,6 +605,7 @@ diayn.py               the entry point: setup · doctor · run · grant · revok
 host_checks.py         what setup does and doctor checks
 discord_portal.py      what setup and doctor ask Discord about the bot
 hints.py               the commands and install steps messages tell someone to type, spelled with the running Python
+private_files.py       how every command makes the data directory (mode 700) and a database (600)
 internship_poller.py   the scraper: sweep, watch, stats, prune, discover, upgrade-db, …
 llm.py                 one request to Gemini, for the fit check and --llm
 resolve_boards.py      finds the job board behind a careers page

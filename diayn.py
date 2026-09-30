@@ -216,10 +216,14 @@ def import_legacy(source, users_path, now) -> int:
 
 
 def open_users_db(users_path) -> sqlite3.Connection:
-    """users.db at `users_path`, made, with its directory, if it is not there. Raises
-    OSError or sqlite3.Error, which each command turns into its refusal."""
-    os.makedirs(os.path.dirname(users_path), exist_ok=True)
-    return sqlite3.connect(users_path)
+    """users.db at `users_path`, made, with its directory, if it is not there: the
+    directory at mode 700 and the file at 600, since grant and import-legacy can run
+    before setup has ever made either. Raises OSError or sqlite3.Error, which each
+    command turns into its refusal."""
+    import private_files
+    private_files.make_directory(os.path.dirname(users_path))
+    with private_files.private_umask():
+        return sqlite3.connect(users_path)
 
 
 def cmd_import_legacy(poller, argv) -> int:

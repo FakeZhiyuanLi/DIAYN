@@ -31,6 +31,11 @@ your report.**
 - The data directory (`DIAYN_DATA`, default `data/`) holds `postings.db`, the
   scraper's ledger, and `users.db`, the bot's own: profiles, the sent and
   hidden ledgers, access grants, and the fit check's cache and budget.
+- `private_files.py` is how the data directory is made at mode 700 and a
+  database at 600, by whichever command makes it first: `setup`, `grant`,
+  `import-legacy`, `run` (users.db), `sweep --init` or `watch --init`. Anything
+  new that can make either goes through it; a plain `os.makedirs` or
+  `sqlite3.connect` makes them readable by everyone on the box.
 
 ## When a check goes red, stop and report
 

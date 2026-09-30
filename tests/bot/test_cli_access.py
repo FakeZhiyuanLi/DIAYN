@@ -11,7 +11,8 @@ A host grants before the bot's first start this way (plan 7), and takes a grant
 back without it. What is pinned: the grant lands in users.db's access_grants
 with no granter (the command line is nobody's Discord account), `access.allowed`
 then honours it, nothing but the grants changes, a revoke never creates
-users.db, a usage error exits 2 having touched nothing, and no id is printed.
+users.db, a usage error exits 2 having touched nothing, no id is printed, and a
+first grant makes the data directory at mode 700 and users.db at 600.
 
 Every database is made in a temporary directory. The scraper's .env is never
 read: load_env_file is replaced, and the scraper's variables are cleared from
@@ -32,6 +33,8 @@ import diayn
 import intern_store
 import internship_poller as poller
 from test_intern_store import make
+from test_private_files import (POSIX_MODES, PRIVATE_DIRECTORY, PRIVATE_FILE, loose_umask,
+                                mode_of)
 
 FAILED, USAGE_ERROR = 1, 2
 SCRAPER_VARIABLES = {var for _, var, _ in poller.SETTINGS_FROM_ENV} | {"POLLER_ENV_FILE"}
@@ -86,6 +89,18 @@ class AccessFromTheCommandLine(unittest.TestCase):
         self.assertEqual(self.rows(), [("user", PERSON, None)])
         self.assertIn("may use this bot", out)
         self.assertTrue(access.allowed(self.grants(), PERSON, None, nobody))
+
+    @POSIX_MODES
+    def test_a_first_grant_makes_the_data_directory_and_users_db_private(self):
+        # README says grant works before the bot has ever started, so it may be the
+        # first thing to make either. Under the usual umask they were 755 and 644.
+        loose_umask(self)
+
+        code, _, err = self.run_cli("grant", "--user", str(PERSON))
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(mode_of(self.data), PRIVATE_DIRECTORY)
+        self.assertEqual(mode_of(self.users), PRIVATE_FILE)
 
     def test_a_server_grant_lets_its_members_in(self):
         code, out, err = self.run_cli("grant", "--server", str(SERVER))

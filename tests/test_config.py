@@ -43,7 +43,7 @@ stub_aiohttp()
 
 import hints  # noqa: E402
 import internship_poller as poller  # noqa: E402
-from test_cli import copy_scraper  # noqa: E402
+from test_cli import SCRAPER_FILES, copy_scraper  # noqa: E402
 
 HAS_DOTENV = importlib.util.find_spec("dotenv") is not None
 NEEDS_DOTENV = unittest.skipUnless(HAS_DOTENV, "python-dotenv is not installed")
@@ -553,7 +553,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(seen["contact"], "")
         self.assertEqual(seen["boards"], 0)
         self.assertEqual(sorted(os.listdir(self.checkout)),
-                         [".env", "hints.py", "internship_poller.py", "llm.py"])
+                         sorted([".env"] + [os.path.basename(p) for p in SCRAPER_FILES]))
         self.assertEqual(os.listdir(self.work), [".env"])
 
     @NEEDS_DOTENV

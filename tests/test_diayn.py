@@ -40,7 +40,8 @@ import diayn  # noqa: E402
 import hints  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import CHILD as SCRAPER_CHILD  # noqa: E402
-from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, copy_scraper, v2_fixture  # noqa: E402
+from test_cli import (SCRAPER_FILES, SCRAPER_PREFIXES, SCRAPER_VARIABLES,  # noqa: E402
+                      copy_scraper, v2_fixture)
 
 BUILT = ("import-legacy", "grant", "revoke", "run", "setup", "doctor")
 # The modules diayn.py imports from its checkout, besides the scraper's.
@@ -339,7 +340,7 @@ class Script(unittest.TestCase):
         self.assertIn(self.db + ".lock", result.stderr)
 
     def copied(self):
-        return sorted(set(DIAYN_FILES) | {"internship_poller.py", "llm.py", "hints.py"})
+        return sorted(set(DIAYN_FILES) | {os.path.basename(p) for p in SCRAPER_FILES})
 
     def test_doctor_on_a_box_with_nothing_set_up_makes_nothing(self):
         # No token, so Discord is never asked; no data directory and no database.

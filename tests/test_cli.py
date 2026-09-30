@@ -40,11 +40,15 @@ stub_aiohttp()
 
 import internship_poller as poller  # noqa: E402
 from test_contract import contract_schema, plant, schema, untouched  # noqa: E402
+from test_private_files import (POSIX_MODES, PRIVATE_DIRECTORY, PRIVATE_FILE,  # noqa: E402
+                                loose_umask, mode_of)
 
 #: The scraper's files, as a checkout holds them: the script, the Gemini request
-#: code it shares with the bot (llm.py), and the hints its messages give (hints.py).
+#: code it shares with the bot (llm.py), the hints its messages give (hints.py), and
+#: how it makes the data directory and postings.db private (private_files.py).
 SCRAPER_FILES = tuple(os.path.join(ROOT, name)
-                      for name in ("internship_poller.py", "llm.py", "hints.py"))
+                      for name in ("internship_poller.py", "llm.py", "hints.py",
+                                   "private_files.py"))
 
 
 def copy_scraper(checkout: str) -> str:
@@ -257,6 +261,15 @@ class MissingDatabase(Cli):
             conn.close()
         self.assertEqual(seen, 1)
         self.assertEqual(version, ("1",))
+
+    @POSIX_MODES
+    def test_sweep_init_makes_the_data_directory_700_and_the_database_600(self):
+        # The child inherits the usual umask, under which they were 755 and 644.
+        loose_umask(self)
+        result = self._run("sweep", "--init", canned=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(mode_of(self.data), PRIVATE_DIRECTORY)
+        self.assertEqual(mode_of(self.db), PRIVATE_FILE)
 
     def test_once_bootstrapped_sweep_needs_no_init(self):
         self.assertEqual(self._run("sweep", "--init", canned=True).returncode, 0)

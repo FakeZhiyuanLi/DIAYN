@@ -49,6 +49,8 @@ from aiohttp_stub import stub_aiohttp  # noqa: E402
 stub_aiohttp()
 
 import internship_poller as poller  # noqa: E402
+from test_private_files import (POSIX_MODES, PRIVATE_DIRECTORY, PRIVATE_FILE,  # noqa: E402
+                                loose_umask, mode_of)
 
 # Exactly the keys CONTRACT.md lists, written out here rather than taken from
 # the module, so a key dropped from the code fails this test.
@@ -217,6 +219,24 @@ class NoSilentDatabase(TempDirTest):
         with scraper(data) as path:
             poller.db_init(create=True).close()
         self.assertTrue(os.path.isfile(path))
+
+    @POSIX_MODES
+    def test_create_makes_the_directory_700_and_the_file_and_its_sidecars_600(self):
+        # `sweep --init` or `watch --init` may be the first to make the data directory.
+        loose_umask(self)
+        data = os.path.join(self.dir, "data")
+        with scraper(data) as path:
+            conn = poller.db_init(create=True)
+            try:
+                conn.execute("INSERT INTO seen(platform, external_id, first_seen) "
+                             "VALUES ('greenhouse', 'x', 1)")
+                conn.commit()
+                sidecars = {s: mode_of(path + s) for s in ("-wal", "-shm")}
+            finally:
+                conn.close()
+        self.assertEqual(mode_of(data), PRIVATE_DIRECTORY)
+        self.assertEqual(mode_of(path), PRIVATE_FILE)
+        self.assertEqual(sidecars, {"-wal": PRIVATE_FILE, "-shm": PRIVATE_FILE})
 
     def test_an_existing_file_opens_without_create(self):
         with scraper(self.dir):

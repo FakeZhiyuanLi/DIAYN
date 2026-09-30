@@ -55,11 +55,10 @@ import time
 
 import discord_portal as portal
 import hints
+import private_files
 
 OK, WARN, NOTE, FAIL = "ok", "warn", "note", "fail"
 FAILED_EXIT = 1
-#: The data directory's mode: users.db in it holds Discord ids and profiles.
-PRIVATE_MODE = 0o700
 MIN_PYTHON = hints.MIN_PYTHON
 #: What DIAYN needs that only a POSIX system has, and what for.
 POSIX_MODULES = (("fcntl", "the sweeper lock"), ("resource", "the resume reader's limits"))
@@ -157,15 +156,10 @@ def _loose(path: str, mode: int) -> Finding:
 
 def _make_private(path: str) -> Finding:
     try:
-        os.makedirs(path, mode=PRIVATE_MODE)
+        private_files.make_directory(path)
     except OSError as error:
-        return Finding(FAIL, "data directory", f"{path} could not be made: "
+        return Finding(FAIL, "data directory", f"{path} could not be made at mode 700: "
                        f"{type(error).__name__}: {error}")
-    try:
-        os.chmod(path, PRIVATE_MODE)
-    except OSError:
-        return Finding(WARN, "data directory", f"{path} made, but this filesystem would not "
-                       "set its mode to 700.")
     return Finding(OK, "data directory", f"{path} made, mode 700.")
 
 

@@ -54,6 +54,8 @@ import host_checks  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import v2_fixture  # noqa: E402
 from test_contract import canned_fetch, posting  # noqa: E402
+from test_private_files import (POSIX_MODES, PRIVATE_DIRECTORY, PRIVATE_FILE,  # noqa: E402
+                                loose_umask, mode_of)
 
 FAILED, LOCK_HELD = 1, 3
 TOKEN = "not-a-real-token.for-the-setup-tests"
@@ -154,6 +156,14 @@ class ANewHost(_SetupCase):
         self.assertIn(portal.invite_url(APP_ID), out)
         self.assertIn(f"Then start it: {hints.command('run')}", out)
         self.assertEqual(err, "")
+
+    @POSIX_MODES
+    def test_the_directory_and_the_ledger_it_makes_are_private_whatever_the_umask(self):
+        loose_umask(self)
+        code, _, err = self.setup()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(mode_of(self.data), PRIVATE_DIRECTORY)
+        self.assertEqual(mode_of(self.db), PRIVATE_FILE)
 
     def test_says_the_first_sweep_announces_nothing(self):
         code, out, err = self.setup()

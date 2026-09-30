@@ -26,6 +26,7 @@ import unittest
 
 from test_cli import Cli, v2_fixture
 from test_contract import TempDirTest
+from test_private_files import POSIX_MODES, PRIVATE_DIRECTORY, loose_umask, mode_of
 
 import internship_poller as poller
 
@@ -89,6 +90,15 @@ class SweeperLock(TempDirTest):
             self.assertEqual(path, db + ".lock")
             self.assertTrue(os.path.isfile(path))
         self.assertFalse(os.path.exists(db))
+
+    @POSIX_MODES
+    def test_the_directory_create_makes_is_private(self):
+        # --init takes the lock first, so this is what makes a new data directory.
+        loose_umask(self)
+        db = os.path.join(self.dir, "new", "postings.db")
+        with poller.sweeper_lock(db, create=True):
+            pass
+        self.assertEqual(mode_of(os.path.dirname(db)), PRIVATE_DIRECTORY)
 
 
 class HeldByAnotherProcess(Cli):

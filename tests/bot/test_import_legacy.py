@@ -8,7 +8,8 @@ What is pinned: the old file is opened read-only and left exactly as it was;
 every subscriber becomes a profile or is counted as already having one, and
 anything else refuses success; the import runs once, so a second run cannot
 bring back someone who has since deleted their data; only counts are
-printed, never a Discord id; and an old file or a users.db that cannot be
+printed, never a Discord id; the data directory and users.db it makes are
+made at modes 700 and 600; and an old file or a users.db that cannot be
 opened or made is refused in one line, "diayn.py import-legacy: <reason>",
 exit 1, never with a traceback.
 
@@ -30,6 +31,8 @@ import diayn
 import intern_store as store
 import internship_poller as poller
 from test_intern_store import add_legacy, create_pings, make
+from test_private_files import (POSIX_MODES, PRIVATE_DIRECTORY, PRIVATE_FILE, loose_umask,
+                                mode_of)
 
 LEGACY = ((111_111_111_111_111_111, "swe", 1), (222_222_222_222_222_222, None, None),
           (333_333_333_333_333_333, "hardware", 0), (444_444_444_444_444_444, "pm,quant", 1))
@@ -98,6 +101,17 @@ class ImportLegacy(unittest.TestCase):
                 p = store.load(db, uid)
                 self.assertEqual((p.source, p.alerts, p.intro_pending), ("migrated", "hourly", True))
                 self.assertEqual(p.cursor, p.last_run_at - SETTLE_S)
+
+    @POSIX_MODES
+    def test_the_data_directory_and_users_db_it_makes_are_private(self):
+        old_bot_db(self.old)
+        loose_umask(self)
+
+        code, _, err = self.run_import("--from", self.old)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(mode_of(self.data), PRIVATE_DIRECTORY)
+        self.assertEqual(mode_of(self.users), PRIVATE_FILE)
 
     def test_only_counts_are_printed(self):
         old_bot_db(self.old)

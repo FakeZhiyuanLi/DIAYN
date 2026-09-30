@@ -45,7 +45,9 @@ import intern_store
 import internship_poller as poller
 import postings_contract
 import postings_source
+import private_files
 import test_postings_contract
+from test_private_files import POSIX_MODES, PRIVATE_FILE, loose_umask, mode_of
 
 try:
     import discord
@@ -198,17 +200,17 @@ def _run_function(name: str, **names) -> dict:
     return namespace
 
 
-def _open_users(init_db, grants_init=None, fit_init=None) -> tuple:
-    """Runs `_open_users` with `init_db` standing in for the finder's, `grants_init` for the
-    access grants' and `fit_init` for the fit check's (both default to a healthy one).
-    Returns what it returned and what it printed to stderr."""
+def _open_users(init_db, grants_init=None, fit_init=None, path=":memory:") -> tuple:
+    """Runs `_open_users` on `path` with `init_db` standing in for the finder's, `grants_init`
+    for the access grants' and `fit_init` for the fit check's (both default to a healthy
+    one). Returns what it returned and what it printed to stderr."""
     stderr = io.StringIO()
     namespace = _run_function("_open_users", intern_store=types.SimpleNamespace(init_db=init_db),
                               access=types.SimpleNamespace(init_db=grants_init or _healthy),
                               intern_fit=types.SimpleNamespace(init_db=fit_init or _healthy),
                               sqlite3=sqlite3, sys=types.SimpleNamespace(stderr=stderr),
-                              postings_source=postings_source)
-    result = namespace["_open_users"](":memory:")
+                              postings_source=postings_source, private_files=private_files)
+    result = namespace["_open_users"](path)
     if result[0] is not None:
         result[0].close()
     return result, stderr.getvalue()
@@ -350,6 +352,23 @@ class TheFinderFailsAlone(unittest.TestCase):
         (postings,) = [c for c in _calls("postings_source.open_from_env") if _function_of(c) is opens]
         (users,) = [c for c in _calls("_open_users") if _function_of(c) is opens]
         self.assertGreater(_position(users), _position(postings))
+
+
+class UsersDbIsMadePrivate(unittest.TestCase):
+    """On a host that goes from setup straight to run, run is what makes users.db, which
+    holds Discord ids and everyone's profile: at mode 600, whatever the umask."""
+
+    @POSIX_MODES
+    def test_a_new_users_db_is_made_at_600(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        loose_umask(self)
+        path = os.path.join(tmp.name, "users.db")
+
+        (db, error), printed = _open_users(_healthy, path=path)
+
+        self.assertIsNone(error, printed)
+        self.assertEqual(mode_of(path), PRIVATE_FILE)
 
 
 class TheSharedStateIsHandedToTheFinder(unittest.TestCase):

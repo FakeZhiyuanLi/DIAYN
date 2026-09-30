@@ -57,6 +57,7 @@ import intern_fit
 import intern_store
 import intern_ui
 import postings_source
+import private_files
 
 #: Discord's own command for an application with Activities: the entry the app
 #: launcher shows. discord.py has no notion of it (see sync_global_commands).
@@ -131,10 +132,12 @@ class Stores:
 def _open_users(path: str) -> tuple[sqlite3.Connection | None, str | None]:
     """(users.db, None), or (None, why) after saying so. The finder's tables, the
     access grants and the fit check's cache and budget are made here; a failure turns
-    off only the finder (W1)."""
+    off only the finder (W1). A users.db that is not there yet is made at mode 600: on
+    a host that went from setup straight to run, this is what makes it."""
     db = None
     try:
-        db = sqlite3.connect(path)
+        with private_files.private_umask():
+            db = sqlite3.connect(path)
         intern_store.init_db(db)
         access.init_db(db)
         intern_fit.init_db(db)
