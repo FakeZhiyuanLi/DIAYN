@@ -226,6 +226,45 @@ class Readme(unittest.TestCase):
         self.assertNotIn("](", lines[0])
 
 
+def documents() -> list:
+    """Every document a reader of the repository meets: the Markdown files at the root and
+    in bot/, and example.env."""
+    names = sorted(n for n in os.listdir(ROOT) if n.endswith(".md"))
+    names += sorted(os.path.join("bot", n) for n in os.listdir(os.path.join(ROOT, "bot"))
+                    if n.endswith(".md"))
+    return names + ["example.env"]
+
+
+class Documents(unittest.TestCase):
+    def test_only_the_readme_names_the_project_it_grew_out_of(self):
+        # DIAYN stands on its own: the README's provenance line is the one mention.
+        for name in documents():
+            if name == "README.md":
+                continue
+            with self.subTest(document=name):
+                self.assertNotIn(PROVENANCE_NAME.lower(), read(name).lower())
+
+
+class ClaudeMd(unittest.TestCase):
+    """CLAUDE.md: the rules for working here, for this repository's layout."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.claude = read("CLAUDE.md")
+
+    def test_keeps_its_sections_of_rules(self):
+        for heading in ("When a check goes red, stop and report", "Never",
+                        "Couplings that are easy to miss", "Tests",
+                        "Decisions that are not yours to make"):
+            with self.subTest(heading=heading):
+                self.assertIn(f"\n## {heading}\n", self.claude)
+
+    def test_covers_the_bot_and_its_data(self):
+        for named in ("bot/", "diayn.py", "users.db", "access", "fit check", "role_key"):
+            with self.subTest(named=named):
+                self.assertIn(named, self.claude)
+
+
 def shell_commands(text) -> list:
     """Every line of `text`, with a line ending in a backslash joined to the next, as the
     shell joins them."""
