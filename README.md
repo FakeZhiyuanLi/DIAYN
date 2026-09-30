@@ -30,7 +30,9 @@ You need Python 3.10 or newer, on Linux or macOS, and a Discord account.
 1. **In the [Discord developer portal](https://discord.com/developers/applications):**
    create an application, then open **Bot**, press **Reset Token** and copy the
    token. On the same page, turn on **Server Members Intent**, and turn
-   **Public Bot** off unless others should be able to add it.
+   **Public Bot** off unless others should be able to add it. Discord refuses
+   that toggle while the application has an install link, so first open
+   **Installation** and set **Install Link** to **None**.
 2. **Install:**
 
    ```sh
@@ -48,9 +50,11 @@ You need Python 3.10 or newer, on Linux or macOS, and a Discord account.
 
 3. **Configure:** `cp example.env .env && chmod 600 .env`, then set
    `DISCORD_TOKEN` and `POLL_CONTACT` in it.
-4. **Set up:** run `.venv/bin/python diayn.py setup`. It does four things:
+4. **Set up:** run `.venv/bin/python diayn.py setup`. It:
+   - checks that discord.py and pypdf are installed;
    - checks the token with Discord, and the intent;
-   - creates `data/`, at mode 700;
+   - creates `data/` at mode 700, or, when other users on the box can read it,
+     the databases in it or `.env`, makes them private and says so;
    - bootstraps `postings.db`: the first sweep records everything open now as
      seen, so nothing old is announced;
    - prints the invite link.
@@ -173,7 +177,7 @@ the bot has ever started.
 | `/internships recent` | Browses recent roles by field, level and place. No profile needed. |
 | `/internships info` | Salary, description and fit for one role. |
 | `/internships ping` | Turns alert DMs on or off, or sets how often they come: hourly, daily or weekly. |
-| `/internships delete` | Shows everything stored about you, and erases it. |
+| `/internships delete` | Shows everything stored about you, and erases it. An access grant made by your id stays until whoever runs the bot revokes it. |
 | `/internships help` | How the finder works and what it keeps. |
 | `/diayn grant user` · `/diayn grant server` | Owner only. Lets one person, or everyone in this server, use the bot. |
 | `/diayn revoke user` · `/diayn revoke server` | Owner only. Takes that away. |

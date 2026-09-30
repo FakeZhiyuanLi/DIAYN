@@ -177,7 +177,8 @@ _DISCLOSURE = (
     "GPA or employers.\n"
     "- Whoever runs this bot can read its database, users.db, on that computer.\n"
     "- Discord keeps its own copy of files uploaded to it; I can't delete that one.\n"
-    "- `/internships delete` shows everything I hold and erases it, any time.")
+    "- `/internships delete` shows everything I hold and erases it, any time. An access "
+    "grant by your id stays until whoever runs this bot revokes it.")
 _FORMATS = {
     True: "PDF, Word (.docx) or .txt, up to 2 MB. You can also attach it to the command: "
           "`/internships profile resume:`",
@@ -838,7 +839,8 @@ def help_text(*, pdf_ok: bool, companies: int, gemini: bool = False) -> list[str
         "- `/internships recent` — browse by field, level and place. No profile needed.\n"
         "- `/internships ping` — alerts on or off, hourly, daily or weekly.\n"
         "- `/internships info <role>` — salary, description and fit for one posting.\n"
-        "- `/internships delete` — see everything stored about you and erase it.\n\n"
+        "- `/internships delete` — see everything stored about you and erase it (an access "
+        "grant made by your id stays until whoever runs this bot revokes it).\n\n"
         f"**Heads up:** the {companies} companies I watch are mostly tech, aerospace, retail and "
         "finance, so some majors see only a few roles a month. Direct Messages from this server must "
         "be on for alerts to reach you.")
