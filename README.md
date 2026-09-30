@@ -98,7 +98,7 @@ Every setting is an environment variable, usually set in `.env`, and
 |---|---|---|
 | `DISCORD_TOKEN` | yes | Your bot's token, from the developer portal. |
 | `POLL_CONTACT` | strongly recommended | Goes in the User-Agent every job board sees, so a board's owner can reach you rather than block you. Use a project URL or a role mailbox, never a personal address. |
-| `DIAYN_OWNER_IDS` | no | Comma-separated Discord user ids of the bot's owners. Default: the Discord application's owner, or its team's members. |
+| `DIAYN_OWNER_IDS` | no | Comma-separated Discord user ids of the bot's owners. Default: the Discord application's owner, or the admins and developers of the team that owns it. |
 | `DIAYN_TZ` | no | The zone for alert hours and the daily housekeeping, named wherever an hour is shown. Default `UTC`. |
 | `DIAYN_DATA` | no | The data directory, as an absolute path. Default: `data/` in the checkout, never the working directory. |
 | `POSTINGS_DB`, `BOARDS_FILE`, `YC_CACHE` | no | One data file somewhere other than `DIAYN_DATA`, as an absolute path. |
@@ -130,13 +130,17 @@ anywhere.
 ## Who may use it
 
 The bot is private. Until you grant access, it answers only its owner:
-`DIAYN_OWNER_IDS`, or else the Discord application's owner, or its team's
-members. Someone may use it when they are:
+`DIAYN_OWNER_IDS`, or else the Discord application's owner, or the admins and
+developers of the team that owns it. Someone may use it when they are:
 
 - an owner;
 - a user granted by id;
 - running a command inside a server that has a grant;
 - in a DM, a member of a server that has a grant.
+
+A member of a server that has a grant, running a command inside another server
+that has none, is refused there; in a DM, and so for their alerts, they are
+let in.
 
 Anyone else gets an ephemeral "This bot is private. Ask whoever runs it for
 access.", which never names you. Access is checked in every command, every

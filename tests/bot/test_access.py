@@ -11,9 +11,10 @@ owner's commands to anyone.
 
 Everyone else needs a grant, which only the owner gives: one user by id, or a
 whole server. A server grant lets in anyone using the bot inside that server
-and, anywhere else (a DM included), anyone who is a member of it. Grants live
-in users.db's `access_grants`; the policy itself is pure and reads a snapshot
-of them.
+and, in a DM, anyone who is a member of it; a member using the bot inside
+another server that has no grant is refused (plan 3.3). Grants live in
+users.db's `access_grants`; the policy itself is pure and reads a snapshot of
+them.
 
 The ids here are made up.
 """
@@ -176,12 +177,15 @@ class ThePolicy(_GrantsCase):
         access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
         self.assertFalse(self.may(STRANGER, None, members_of(CLUB_SERVER)))
 
-    def test_a_member_of_a_granted_server_may_in_another_server_too(self):
-        # Access belongs to the person: the DMs they would get anyway are no more
-        # private than an ephemeral reply in a server nobody granted.
+    def test_a_member_of_a_granted_server_is_refused_inside_another_server(self):
+        # Plan 3.3: the membership fallback is for DMs. Inside a server, that server's
+        # grant decides, and nobody's membership elsewhere is looked up.
         access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
-        self.assertTrue(self.may(MEMBER, OTHER_SERVER, members_of(CLUB_SERVER)))
+        lookup = members_of(CLUB_SERVER)
+        self.assertFalse(self.may(MEMBER, OTHER_SERVER, lookup))
         self.assertFalse(self.may(STRANGER, OTHER_SERVER, members_of(CLUB_SERVER)))
+        self.assertEqual(lookup.asked, [])
+        self.assertTrue(self.may(MEMBER, None, members_of(CLUB_SERVER)))     # in a DM, yes
 
     def test_with_no_server_granted_membership_is_never_looked_up(self):
         access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)

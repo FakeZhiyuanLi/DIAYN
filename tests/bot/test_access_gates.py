@@ -437,6 +437,13 @@ class TheCommandsAreGated(_GateCase):
         self.assertFalse(refused(member))
         self.assertTrue(refused(stranger))
 
+    def test_a_member_of_a_granted_server_is_refused_inside_another_server(self):
+        self.grant("guild", SERVER)
+        with mock.patch.object(intern_ui, "bot", client_with({SERVER: {MEMBER}})):
+            elsewhere = interaction(MEMBER, ELSEWHERE)
+            self.drive(intern_commands.internships_ping.callback(elsewhere, None, None))
+        self.assertTrue(refused(elsewhere))
+
     def test_a_revoked_user_is_refused_again(self):
         self.grant("user", GRANTED)
         access.revoke(self.db, "user", GRANTED)

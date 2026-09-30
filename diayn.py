@@ -256,7 +256,7 @@ def _settings(poller):
 _ACCESS_SAID = {
     (GRANT, "user", True): "that user may use this bot now.",
     (GRANT, "user", False): "that user already had a grant; nothing changed.",
-    (GRANT, "guild", True): "everyone in that server, and its members anywhere, may use this bot now.",
+    (GRANT, "guild", True): "everyone in that server, and its members in DMs, may use this bot now.",
     (GRANT, "guild", False): "that server already had a grant; nothing changed.",
     (REVOKE, "user", True): "that user's grant is gone. They keep access only if they run this "
                             "bot or are in a server that has a grant.",

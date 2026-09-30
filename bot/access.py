@@ -13,11 +13,11 @@ with neither known, nobody is the owner: this check fails closed. The owner's
 own commands are `/diayn`'s, and only the owner grants.
 
 **A grant** is one row of users.db's `access_grants`: one user, by id, or one
-whole server. `allowed` is the whole policy. A person may use the bot when
-they are the owner, when they were granted by id, when they are using it
-inside a granted server, or, anywhere else (a DM included), when they are a
-member of a granted server. Access belongs to the person, not the place: the
-alerts a server's member gets arrive by DM anyway.
+whole server. `allowed` is the whole policy (plan 3.3). A person may use the
+bot when they are the owner, when they were granted by id, when they are using
+it inside a granted server, or, in a DM, when they are a member of a granted
+server, which is where that member's alerts arrive. Inside a server with no
+grant, membership of another server lets nobody in.
 
 The policy is pure. It reads a snapshot of the grants (`grants`) and is handed
 the membership lookup, which only the caller can do, because it needs the
@@ -156,14 +156,15 @@ def allowed(granted: Grants, user_id: object, guild_id: object,
             member_of_granted_guild: MemberOf) -> bool:
     """
     Whether `user_id` may use this bot, here: inside the server `guild_id`, or in a DM
-    (None). The owner and anyone granted by id may; inside a granted server, anyone
-    may; anywhere else, a member of a granted server may. `member_of_granted_guild`
-    is asked, with the granted servers, only when nothing else has settled it.
+    (None). The owner and anyone granted by id may, anywhere; inside a server, anyone
+    may when that server has a grant; in a DM, a member of a granted server may.
+    `member_of_granted_guild` is asked, with the granted servers, only in a DM and only
+    when nothing else has settled it.
     """
     if not _is_id(user_id):
         return False
     if is_owner(user_id) or user_id in granted.users:
         return True
-    if _is_id(guild_id) and guild_id in granted.guilds:
-        return True
+    if guild_id is not None:
+        return _is_id(guild_id) and guild_id in granted.guilds
     return bool(granted.guilds) and bool(member_of_granted_guild(granted.guilds))

@@ -106,6 +106,8 @@ class AccessFromTheCommandLine(unittest.TestCase):
         code, out, err = self.run_cli("grant", "--server", str(SERVER))
 
         self.assertEqual(code, 0, err)
+        self.assertIn("everyone in that server, and its members in DMs, may use this bot now",
+                      out)
         self.assertEqual(self.rows(), [("guild", SERVER, None)])
         self.assertTrue(access.allowed(self.grants(), STRANGER, SERVER, nobody))
         self.assertFalse(access.allowed(self.grants(), STRANGER, None, nobody))
