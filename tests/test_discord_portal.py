@@ -13,6 +13,7 @@ import asyncio
 import os
 import sys
 import unittest
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -73,6 +74,30 @@ class FakeSession:
         if isinstance(answer, BaseException):
             raise answer
         return FakeResponse(*answer)
+
+
+class LateResponse(FakeResponse):
+    """A FakeResponse that arrives `delay` seconds after it is asked for."""
+
+    def __init__(self, status, body, delay):
+        super().__init__(status, body)
+        self.delay = delay
+
+    async def __aenter__(self):
+        await asyncio.sleep(self.delay)
+        return self
+
+
+class SlowSession(FakeSession):
+    """A FakeSession whose every answer is `delay` seconds late."""
+
+    def __init__(self, answers, delay):
+        super().__init__(answers)
+        self.delay = delay
+
+    def get(self, url, headers=None):
+        answer = super().get(url, headers)
+        return LateResponse(answer.status, answer.body, self.delay)
 
 
 def answers(user=(200, USER), app=None):
@@ -182,6 +207,19 @@ class WhenDiscordSaysNo(unittest.TestCase):
             with self.subTest(body=body):
                 text = self.refusal(FakeSession(answers(app=(200, body))))
                 self.assertIn("did not parse", text)
+
+
+class TheDeadline(unittest.TestCase):
+    def test_both_requests_together_must_finish_within_it(self):
+        # Each answer alone is inside the limit; the two together are not.
+        with mock.patch.object(portal, "TIMEOUT_S", 0.3), \
+                self.assertRaises(portal.PortalError) as caught:
+            fetch(SlowSession(answers(), delay=0.2))
+        self.assertEqual(str(caught.exception), "could not reach Discord: TimeoutError")
+
+    def test_answers_inside_it_are_read(self):
+        with mock.patch.object(portal, "TIMEOUT_S", 1.0):
+            self.assertEqual(fetch(SlowSession(answers(), delay=0.01)).id, APP_ID)
 
 
 class TheInviteLink(unittest.TestCase):

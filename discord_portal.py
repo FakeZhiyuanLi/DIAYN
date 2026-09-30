@@ -41,7 +41,8 @@ INVITE_SCOPES = ("bot", "applications.commands")
 #: No permission in the server at all: every reply the bot makes is an
 #: interaction response, and every alert a DM, and neither needs one.
 INVITE_PERMISSIONS = 0
-#: Seconds both requests together may take.
+#: Seconds both requests together may take: one deadline for the pair, and
+#: aiohttp's own limit on each request besides.
 TIMEOUT_S = 15
 #: What Discord answers for a discriminator a username no longer carries.
 NO_DISCRIMINATOR = ("", "0", None)
@@ -139,9 +140,9 @@ async def fetch_application(token: str | None, *, user_agent: str,
     headers = {"Authorization": f"Bot {token}", "User-Agent": user_agent}
     try:
         if session is not None:
-            return await _ask(session, headers)
+            return await asyncio.wait_for(_ask(session, headers), TIMEOUT_S)
         timeout = aiohttp.ClientTimeout(total=TIMEOUT_S)
         async with aiohttp.ClientSession(timeout=timeout) as own:
-            return await _ask(own, headers)
+            return await asyncio.wait_for(_ask(own, headers), TIMEOUT_S)
     except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as error:
         raise PortalError(f"could not reach Discord: {type(error).__name__}") from None
