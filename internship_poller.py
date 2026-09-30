@@ -195,8 +195,10 @@ class Settings:
 def absolute_path(raw) -> str:
     """`raw`, which must be an absolute path; ValueError otherwise.
 
-    A relative one would resolve against the working directory, which under
-    pm2 is wherever the process was started, and a .env does not expand `~`.
+    For DIAYN_DATA and each data file named on its own. A relative one would
+    resolve against the working directory, which under pm2 is wherever the
+    process was started, and a .env does not expand `~`: a relative
+    POSTINGS_DB is a different ledger for every directory a command starts in.
     """
     if not os.path.isabs(raw):
         raise ValueError(f"{raw!r} is not an absolute path")
@@ -238,9 +240,9 @@ DATA_FILES = (("postings_db", "postings.db"), ("boards_file", "boards.json"),
 # (field, variable, type), in the order `config` prints them.
 SETTINGS_FROM_ENV = (
     ("data_dir", "DIAYN_DATA", absolute_path),
-    ("postings_db", "POSTINGS_DB", str),
-    ("boards_file", "BOARDS_FILE", str),
-    ("yc_cache", "YC_CACHE", str),
+    ("postings_db", "POSTINGS_DB", absolute_path),
+    ("boards_file", "BOARDS_FILE", absolute_path),
+    ("yc_cache", "YC_CACHE", absolute_path),
     ("contact", "POLL_CONTACT", str),
     ("host_concurrency", "POLL_HOST_CONCURRENCY", int),
     ("host_min_interval", "POLL_HOST_MIN_INTERVAL", float),

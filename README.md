@@ -101,7 +101,7 @@ Every setting is an environment variable, usually set in `.env`, and
 | `DIAYN_OWNER_IDS` | no | Comma-separated Discord user ids of the bot's owners. Default: the Discord application's owner, or its team's members. |
 | `DIAYN_TZ` | no | The zone for alert hours and the daily housekeeping, named wherever an hour is shown. Default `UTC`. |
 | `DIAYN_DATA` | no | The data directory, as an absolute path. Default: `data/` in the checkout, never the working directory. |
-| `POSTINGS_DB`, `BOARDS_FILE`, `YC_CACHE` | no | One data file somewhere other than `DIAYN_DATA`. |
+| `POSTINGS_DB`, `BOARDS_FILE`, `YC_CACHE` | no | One data file somewhere other than `DIAYN_DATA`, as an absolute path. |
 | `GEMINI_API_KEY` | no | Turns on the [fit check](#the-fit-check), and lets a scraper command run with `--llm`. |
 | `GEMINI_MODEL`, `FIT_BATCH`, `FIT_RPD`, `FIT_RPM` | no | The model both uses of the key share, and the fit check's batch size and budget. |
 | `GEMINI_RPM`, `GEMINI_RPD`, `GEMINI_TPM` | no | The budget of `--llm`. |
@@ -118,8 +118,9 @@ Three rules decide what a run actually uses:
   already set, so a value in pm2's or systemd's environment, or a shell export,
   is the final word. An empty value keeps the default.
 - **Settings are read once, when a command starts.** A bad value (a count below
-  1, a misspelt time zone, a relative `DIAYN_DATA`) stops the start with a
-  message naming the variable.
+  1, a misspelt time zone, a relative or `~` path in `DIAYN_DATA`,
+  `POSTINGS_DB`, `BOARDS_FILE` or `YC_CACHE`) stops the start with a message
+  naming the variable.
 
 `.venv/bin/python diayn.py config` prints the `.env` it used and every setting
 a run would use. It shows `GEMINI_API_KEY` and `DISCORD_TOKEN` only as set or

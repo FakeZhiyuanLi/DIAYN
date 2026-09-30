@@ -264,6 +264,18 @@ class BotSettings(unittest.TestCase):
                 poller.configure({"DIAYN_DATA": raw})
             self.assertIn("DIAYN_DATA", str(caught.exception))
 
+    def test_a_relative_data_file_is_refused_like_the_data_directory(self):
+        # A relative POSTINGS_DB is a different file for each directory a command
+        # starts in: a setup run from $HOME would bootstrap ~/postings.db, which the
+        # pm2 process, started in the checkout, never finds.
+        for var in ("POSTINGS_DB", "BOARDS_FILE", "YC_CACHE"):
+            for raw in ("postings.db", "./data/boards.json", "~/diayn-data/yc_cache.json"):
+                with self.subTest(var=var, raw=raw), \
+                        self.assertRaises(poller.ConfigError) as caught:
+                    poller.configure({"DIAYN_DATA": "/srv/diayn", var: raw})
+                self.assertIn(var, str(caught.exception))
+                self.assertIn("not an absolute path", str(caught.exception))
+
     def test_owner_ids_are_read_as_integers(self):
         self.assertEqual(poller.configure({"DIAYN_OWNER_IDS": self.OWNER}).owner_ids,
                          (112233445566778899,))
