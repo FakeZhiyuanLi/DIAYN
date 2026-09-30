@@ -317,8 +317,10 @@ python3 -m unittest discover -s tests              # bare: aiohttp is stubbed
 
 Standard library only, no network, and no real `postings.db`: every fixture is
 built in memory or in a temporary directory. A run without python-dotenv skips
-the few tests that need it; that is expected. CI runs Python 3.10 and 3.12,
-each with and without aiohttp.
+the few tests that need it, and a run without discord.py skips the bot's
+tests that need it; both are expected. CI runs Python 3.10 and 3.12, each with
+all of `requirements.txt`, with only the scraper's aiohttp and python-dotenv,
+and with only python-dotenv.
 
 ## Provenance
 

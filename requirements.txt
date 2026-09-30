@@ -2,7 +2,12 @@
 # Pinned, so an install on the server never upgrades anything unasked: bump a
 # pin in a change of its own, and let CI run it first.
 # python-dotenv is needed only to read a .env; exported variables work without
-# it. The suite runs without either: it stubs aiohttp, and skips the few tests
-# that need python-dotenv.
+# it. The suite runs without any of these: it stubs aiohttp, and skips the tests
+# that need python-dotenv or discord.py.
 aiohttp==3.13.5
+# The Discord bot. It depends on aiohttp, so it installs aiohttp as well.
+discord.py==2.7.1
+# Reads a resume uploaded as a PDF. Without it, a .docx, a .txt or pasted text
+# still works.
+pypdf==6.14.2
 python-dotenv==1.2.2

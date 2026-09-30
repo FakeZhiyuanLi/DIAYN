@@ -123,14 +123,16 @@ class ExampleEnv(unittest.TestCase):
 
 
 class Requirements(unittest.TestCase):
-    def test_pins_exactly_the_two_runtime_dependencies(self):
+    def test_pins_exactly_the_runtime_dependencies(self):
+        # The scraper's two, and the Discord bot's two: discord.py, and pypdf
+        # to read a PDF resume.
         lines = [ln.strip() for ln in read("requirements.txt").splitlines()
                  if ln.strip() and not ln.lstrip().startswith("#")]
         names = sorted(ln.split("==")[0].lower() for ln in lines)
-        self.assertEqual(names, ["aiohttp", "python-dotenv"])
+        self.assertEqual(names, ["aiohttp", "discord.py", "pypdf", "python-dotenv"])
         for line in lines:
             with self.subTest(line=line):
-                self.assertRegex(line, r"^[a-z-]+==\d+(\.\d+)+$")
+                self.assertRegex(line, r"^[a-z][a-z.-]*==\d+(\.\d+)+$")
 
 
 class Readme(unittest.TestCase):
