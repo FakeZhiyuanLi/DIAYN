@@ -6,24 +6,24 @@ info` shows under a role. The sweep never stores these (they would bloat the
 database and the list endpoints mostly omit them), so the bot asks the board
 itself when a user asks about a role.
 
-Moved from the root `internship_poller.py`, whose only caller this ever was,
-because the scraper is moving to its own repository and process and this is
-the bot's request, not the scraper's. The regexes, `strip_html`, the salary
-helpers and each platform's branch are unchanged. Four things are new:
+It lives in the bot rather than the scraper because it is the bot's request,
+made when a user asks, not the sweep's. The regexes, `strip_html`, the salary
+helpers and each platform's branch are the scraper's as they were. Three rules
+are the bot's own:
 
-  * **Its own session**, behind CONCURRENT_FETCHES slots, with a User-Agent
-    that says which bot is asking. It no longer borrows the poller's host gate.
-  * **The stored URL no longer picks the host.** Once the scraper is another
-    process, `postings.url` is data another repository writes. `fetchable`
-    allows only https, on the default port, to a host that belongs to the
-    posting's platform: `*.greenhouse.io`, `jobs.lever.co`, `jobs.ashbyhq.com`,
+  * **Its own session**, behind CONCURRENT_FETCHES slots, with the scraper's
+    own User-Agent, `internship_poller.user_agent(SETTINGS.contact)`, so every
+    request DIAYN makes names the project and the host's POLL_CONTACT the same
+    way. It does not borrow the sweep's host gate.
+  * **The stored URL does not pick the host.** `postings.url` is whatever the
+    scraper stored from a board's answer. `fetchable` allows only https, on
+    the default port, to a host that belongs to the posting's platform:
+    `*.greenhouse.io`, `jobs.lever.co`, `jobs.ashbyhq.com`,
     `*.myworkdayjobs.com`, and for iCIMS `*.icims.com` or the board's own host
     as the registry publishes it (the adapter supports a company careers origin
     fronting iCIMS). Anything else is refused before a session is opened.
   * The fixed API hosts (`boards-api.greenhouse.io`, `api.lever.co`,
-    `api.ashbyhq.com`) are still built from slugs parsed out of the URL.
-  * It serves both sweep modes: `INTERN_SWEEP` changes where postings are
-    read from, not how their details are fetched.
+    `api.ashbyhq.com`) are built from slugs parsed out of the URL.
 
 The URL shapes each adapter stores are pinned by the contract fixture
 `contract/sample_urls.json`, and test_posting_details runs these regexes
@@ -39,6 +39,8 @@ from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
+import internship_poller
+
 #: At most this many detail fetches in flight: it runs on a person's command, not a sweep.
 CONCURRENT_FETCHES = 2
 TIMEOUT_S = 20
@@ -46,8 +48,6 @@ TIMEOUT_S = 20
 #: follow none (aiohttp would otherwise follow ten, to any host).
 MAX_REDIRECTS = 3
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
-UA = ("DIAYN/1.0 (Discord bot; fetches one posting when a user asks; "
-      "+https://github.com/FakeZhiyuanLi/DIAYN)")
 
 #: platform -> the hosts its stored URLs may name; "*." means any subdomain.
 PLATFORM_HOSTS = {
@@ -81,6 +81,12 @@ def _fetch_slots() -> asyncio.Semaphore:
     if _slots is None or _slots[0] is not loop:
         _slots = (loop, asyncio.Semaphore(CONCURRENT_FETCHES))
     return _slots[1]
+
+
+def user_agent() -> str:
+    """The scraper's User-Agent with the host's POLL_CONTACT, read from the settings the
+    scraper's main() bound, when the fetch runs."""
+    return internship_poller.user_agent(internship_poller.SETTINGS.contact)
 
 
 # ------------------------------------------------------------------ which URLs may be fetched
@@ -248,7 +254,7 @@ async def fetch_details(platform: str, url: str | None, external_id,
         return out
     async with _fetch_slots():
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TIMEOUT_S),
-                                         headers={"User-Agent": UA}) as sess:
+                                         headers={"User-Agent": user_agent()}) as sess:
             if platform == "icims":
                 await _icims(sess, url, external_id, out, icims_hosts)
             else:

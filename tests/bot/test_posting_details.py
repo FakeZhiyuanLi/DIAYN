@@ -4,49 +4,30 @@ for a single posting, when somebody runs `/internships info`.
 
     python3 -m unittest discover -s tests      # no install needed
 
-The URL it starts from is whatever the scraper stored, and once the scraper
-runs as DIAYN's own process that is another repository's data. So the rules
-pinned here are the ones that keep a stored URL from choosing where the bot
-connects: https only, a host that belongs to the posting's own platform, and
-for iCIMS the board's own host as the registry publishes it. A URL that fails
-them is refused before any session is opened.
+The URL it starts from is whatever the scraper stored from a job board's
+answer. So the rules pinned here are the ones that keep a stored URL from
+choosing where the bot connects: https only, a host that belongs to the
+posting's own platform, and for iCIMS the board's own host as the registry
+publishes it. A URL that fails them is refused before any session is opened.
+Every request says who is asking with the scraper's own User-Agent.
 
 `contract/sample_urls.json` is the fixture the scraper's own tests require
 every adapter to store exactly, so the regexes below are tested against what
 the scraper really writes rather than against examples kept here.
 
 `posting_details` imports aiohttp at module scope and a bare `python3` has
-none, so it is stubbed with the surface the import touches. Nothing here makes
-a request: every session is a fake.
+none; tests/bot/__init__.py stubs it with the surface the import touches.
+Nothing here makes a request: every session is a fake.
 """
 
 import asyncio
 import json
 import pathlib
-import sys
-import types
 import unittest
 from unittest import mock
 
-
-def _stub_aiohttp() -> None:
-    """Fakes `aiohttp`, unless the real one is installed."""
-    try:
-        import aiohttp  # noqa: F401
-        return
-    except ModuleNotFoundError:
-        pass
-    aiohttp = types.ModuleType("aiohttp")
-    aiohttp.ClientError = type("ClientError", (Exception,), {})
-    aiohttp.ClientTimeout = lambda **kwargs: None
-    aiohttp.ClientSession = object
-    aiohttp.TCPConnector = lambda **kwargs: None
-    sys.modules["aiohttp"] = aiohttp
-
-
-_stub_aiohttp()
-
-import posting_details as details  # noqa: E402
+import internship_poller as poller
+import posting_details as details
 
 FIXTURES = pathlib.Path(__file__).resolve().parents[2] / "contract"
 SAMPLES = json.loads((FIXTURES / "sample_urls.json").read_text(encoding="utf-8"))["platforms"]
@@ -172,7 +153,8 @@ class WhatIsFetched(unittest.TestCase):
                                          "currency_type": "USD", "title": "Hourly"}]}
         out, (session,) = fetch("greenhouse", SAMPLES["greenhouse"]["url"], payload=payload)
         self.assertEqual(session.urls, ["https://boards-api.greenhouse.io/v1/boards/acme/jobs/4567890"])
-        self.assertIn("DIAYN", session.kwargs["headers"]["User-Agent"])
+        self.assertEqual(session.kwargs["headers"]["User-Agent"],
+                         poller.user_agent(poller.SETTINGS.contact))
         self.assertEqual(out, {"salary": "$3,000–$4,500 (Hourly)", "description": "Build things.",
                                "salary_certain": True})
 
@@ -189,6 +171,24 @@ class WhatIsFetched(unittest.TestCase):
             "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Acme_Careers"
             "/job/Irvine-CA/Software-Engineering-Intern_R12345"])
         self.assertEqual(out["description"], "Hi")
+
+
+class WhoIsAsking(unittest.TestCase):
+    """Every request DIAYN makes, the scraper's and this one, names the project and the
+    host's POLL_CONTACT the same way (internship_poller.user_agent)."""
+
+    def test_the_agent_is_the_scraper_s_with_the_host_s_contact(self):
+        settings = poller.configure({"POLL_CONTACT": "https://example.org/diayn-host"})
+
+        with mock.patch.object(poller, "SETTINGS", settings):
+            _, (session,) = fetch("greenhouse", SAMPLES["greenhouse"]["url"], payload={})
+
+        agent = session.kwargs["headers"]["User-Agent"]
+        self.assertEqual(agent, poller.user_agent("https://example.org/diayn-host"))
+        self.assertIn("contact: https://example.org/diayn-host", agent)
+
+    def test_there_is_no_agent_of_the_bot_s_own(self):
+        self.assertFalse(hasattr(details, "UA"))
 
 
 class RedirectsAreJudgedLikeTheFirstRequest(unittest.TestCase):
