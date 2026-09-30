@@ -318,14 +318,23 @@ class Deploy(unittest.TestCase):
     def test_pm2_runs_the_one_process(self):
         self.assertRegex(self.deploy, r'script: "[^"]*/diayn\.py"')
         self.assertIn('args: "run"', self.deploy)
-        # 3 is another sweeper holding the lock: restarting into it only loops.
-        self.assertIn("stop_exit_codes: [3]", self.deploy)
+        # 3 is another sweeper holding the lock, and 78 Discord refusing the Server
+        # Members Intent: restarting into either only loops, and a loop of refused
+        # logins can get the bot's token reset.
+        self.assertIn(f"stop_exit_codes: [{poller.LOCK_HELD_EXIT}, {diayn.CONFIG_EXIT}]",
+                      self.deploy)
 
     def test_systemd_runs_the_one_process(self):
         self.assertRegex(self.deploy, r"(?m)^ExecStart=/\S+/python /\S+/diayn\.py run$")
         # run stops cleanly on SIGINT, as on Ctrl-C; SIGTERM would kill it outright.
         self.assertIn("KillSignal=SIGINT", self.deploy)
-        self.assertIn("RestartPreventExitStatus=3", self.deploy)
+        self.assertIn(f"RestartPreventExitStatus={poller.LOCK_HELD_EXIT} {diayn.CONFIG_EXIT}\n",
+                      self.deploy)
+
+    def test_says_why_78_is_never_restarted(self):
+        for said in (f"Exit {diayn.CONFIG_EXIT}", "Server Members Intent", "token"):
+            with self.subTest(said=said):
+                self.assertIn(said, self.deploy)
 
     def test_backs_up_both_databases_with_backup(self):
         for db in ("postings.db", "users.db"):

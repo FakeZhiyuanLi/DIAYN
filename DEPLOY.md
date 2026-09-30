@@ -107,7 +107,7 @@ module.exports = {
     autorestart: true,
     watch: false,
     exp_backoff_restart_delay: 2000,
-    stop_exit_codes: [3],
+    stop_exit_codes: [3, 78],
     kill_timeout: 10000,
   }],
 };
@@ -121,8 +121,12 @@ module.exports = {
   also waits, on every start, until an interval has passed since the last
   sweep began, finished or not, so even a crash loop sweeps the job boards at
   most once an interval.
-- **`stop_exit_codes: [3]`.** Exit 3 means another `run` or `watch` holds the
-  lock. Restarting into it only loops; find the other process instead.
+- **`stop_exit_codes: [3, 78]`.** Exit 3 means another `run` or `watch` holds
+  the lock. Restarting into it only loops; find the other process instead.
+  Exit 78 means Discord refused the Server Members Intent, a toggle in the
+  developer portal that no restart changes, and a loop of refused logins can
+  get the bot's token reset. The log line says which toggle to turn on; then
+  `pm2 restart diayn`.
 - **`kill_timeout`.** pm2 stops a process with SIGINT, which `run` treats as
   Ctrl-C: it logs out of Discord and exits 0. This gives it ten seconds before
   SIGKILL.
@@ -153,7 +157,7 @@ ExecStart=/home/<user>/DIAYN/.venv/bin/python /home/<user>/DIAYN/diayn.py run
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=10
-RestartPreventExitStatus=3
+RestartPreventExitStatus=3 78
 KillSignal=SIGINT
 TimeoutStopSec=30
 UMask=0077
@@ -166,8 +170,9 @@ WantedBy=multi-user.target
 
 - **`Restart=on-failure`** restarts it after a crash, and after it exits 1
   because its sweep loop ended, so the sweeps come back with it.
-- **`RestartPreventExitStatus=3`**: another `run` or `watch` holds the lock, as
-  for pm2 above.
+- **`RestartPreventExitStatus=3 78`**: another `run` or `watch` holds the lock
+  (3), or Discord refused the Server Members Intent (78), as for pm2 above.
+  Turn the intent on, then `sudo systemctl restart diayn`.
 - **`KillSignal=SIGINT`**, because `run` stops cleanly on SIGINT, logging out of
   Discord. systemd's default, SIGTERM, would end it outright.
 - **`UMask=0077`**, so every file it creates is readable by its own user alone.

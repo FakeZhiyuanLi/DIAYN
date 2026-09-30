@@ -32,8 +32,9 @@ or a `watch` beside it, exits 3 before anything logs in to Discord. The bot
 reads postings.db only through the contract, on a read-only connection of its
 own; the sweep loop is the scraper's own `watch`, on the writer connection. If
 the sweep loop ever ends, the process exits 1, so that whatever runs it starts
-it again. `internship_poller.py watch` still runs the sweep loop alone, for a
-host that wants the two apart.
+it again. If Discord refuses the Server Members Intent, it exits 78 (EX_CONFIG),
+which DEPLOY.md's units do not restart on. `internship_poller.py watch` still
+runs the sweep loop alone, for a host that wants the two apart.
 
     python diayn.py setup
 
@@ -88,6 +89,17 @@ HELP_FLAGS = ("-h", "--help")
 USAGE_EXIT = 2
 # A failure: the scraper's code for a refusal or a bad setting.
 FAILED_EXIT = 1
+# sysexits.h's EX_CONFIG: `run` exits with it when Discord refuses the Server Members
+# Intent. That is a toggle in the developer portal, which no restart changes, so
+# DEPLOY.md's pm2 and systemd units never restart on it: a loop of refused logins can
+# go on all day, and Discord resets the token of a bot that logs in too often.
+CONFIG_EXIT = 78
+# The gateway's close code for an intent the portal has not turned on.
+DISALLOWED_INTENTS = 4014
+
+
+class IntentRefused(Exception):
+    """Discord refused the Server Members Intent as the bot logged in."""
 
 
 def scraper():
@@ -303,10 +315,31 @@ def discord_bot():
     """
     _bot_path()
     import app
+    import discord
 
     async def serve(settings):
-        await app.serve(app.build(), settings.discord_token)
+        try:
+            await app.serve(app.build(), settings.discord_token)
+        except Exception as error:
+            if refuses_intent(error, discord):
+                raise IntentRefused() from error
+            raise
     return serve
+
+
+def refuses_intent(error, discord) -> bool:
+    """Whether `error`, or anything it was raised from or while handling, is discord.py
+    refusing a privileged intent: PrivilegedIntentsRequired, or the gateway closing
+    with 4014, the code discord.py turns into it."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, discord.PrivilegedIntentsRequired):
+            return True
+        if isinstance(error, discord.ConnectionClosed) and error.code == DISALLOWED_INTENTS:
+            return True
+        error = error.__cause__ or error.__context__
+    return False
 
 
 def _how_it_ended(task) -> str:
@@ -434,6 +467,12 @@ def cmd_run(poller, argv, bot=None, watch=None) -> int:
         return _refused(_database_refusal(e, settings.postings_db), RUN)
     except poller.SchemaMismatch as e:
         return _refused(e, RUN)
+    except IntentRefused:
+        _refused(f"Discord refused the Server Members Intent, and the bot cannot log in "
+                 f"without it. {hints.INTENT_HOW} Then start DIAYN again. Exiting "
+                 f"{CONFIG_EXIT}, which DEPLOY.md's pm2 and systemd units do not restart "
+                 "on: a restart would be refused the same way.", RUN)
+        return CONFIG_EXIT
     except KeyboardInterrupt:
         print("\nstopped.")
         return 0

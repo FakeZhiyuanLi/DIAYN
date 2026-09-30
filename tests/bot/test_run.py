@@ -17,6 +17,9 @@ cmd_watch. What is pinned here:
 - a sweep that raises is logged, and the bot goes on;
 - a sweep loop that ends, however it ends, stops the bot and exits non-zero,
   so pm2 or systemd restarts the process and its sweeps with it;
+- Discord refusing the Server Members Intent exits 78, once, with one line
+  naming the portal toggle: DEPLOY.md's units never restart on 78, since a
+  loop of refused logins can get the token reset;
 - the bot reads postings.db through ContractSource on a mode=ro connection of
   its own, never the writer's.
 
@@ -64,6 +67,8 @@ else:  # pragma: no cover - depends on the environment
 needs_discord = unittest.skipUnless(REAL_DISCORD, "discord.py is not installed")
 
 FAILED, USAGE_ERROR, LOCK_HELD = 1, 2, 3
+#: sysexits.h's EX_CONFIG, which DEPLOY.md's pm2 and systemd units do not restart on.
+CONFIG = 78
 INTERVAL = poller.DEFAULT_INTERVAL_S
 #: The injected clock: the fixture's last sweep began long before it, so one is due.
 NOW = 1_790_000_000.0
@@ -385,6 +390,49 @@ class TheSweepLoop(_RunCase):
         self.assertNotIn("sweep loop ended", err)
 
 
+class TheIntent(_RunCase):
+    """Discord refusing the Server Members Intent, as the bot logs in."""
+
+    def test_a_refused_intent_exits_78_once_with_one_line_naming_the_toggle(self):
+        v2_fixture(self.db)
+        logins, cancelled = [], []
+
+        async def bot(settings):
+            logins.append(settings)
+            raise diayn.IntentRefused()
+
+        async def watching():
+            try:
+                await forever()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        code, out, err = self.run_diayn(bot=bot, watch=lambda conn: watching())
+        self.assertEqual(code, CONFIG)
+        self.assertEqual(diayn.CONFIG_EXIT, CONFIG)
+        self.assertEqual(len(logins), 1)                # no second login
+        self.assertEqual(cancelled, [True])
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertIn(hints.INTENT_HOW, err)
+        self.assertNotIn("Traceback", err)
+        with poller.sweeper_lock(self.db):              # raises if run still held it
+            pass
+
+    def test_through_main_the_exit_code_is_78(self):
+        v2_fixture(self.db)
+
+        async def bot(settings):
+            raise diayn.IntentRefused()
+
+        err = io.StringIO()
+        with self.environment(), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err), \
+                mock.patch.object(diayn, "discord_bot", return_value=bot):
+            code = diayn.main(["run", "--interval", str(INTERVAL)])
+        self.assertEqual(code, CONFIG, err.getvalue())
+
+
 @needs_discord
 class TheRealClient(_RunCase):
     """The default bot, bot/app.py's client, with app.serve replaced so nothing logs in."""
@@ -427,6 +475,68 @@ class TheRealClient(_RunCase):
         self.assertEqual(seen["source"].db_path, self.db)
         self.assertTrue(seen["handed"])
         self.assertIn("readonly", seen["write"])
+
+    def serving(self, raised, served):
+        """An app.serve that records the token it was given and raises `raised`."""
+        async def serve(client, token):
+            for conn in (client.stores.db, client.stores.pconn):
+                if conn is not None:
+                    self.addCleanup(conn.close)
+            served.append(token)
+            raise raised()
+        return serve
+
+    def test_discord_refusing_the_intent_exits_78_after_one_login(self):
+        v2_fixture(self.db)
+        served = []
+        refused = self.serving(lambda: discord.PrivilegedIntentsRequired(None), served)
+        with mock.patch.object(app, "serve", refused):
+            code, _, err = self.run_diayn(watch=idle)
+        self.assertEqual(code, CONFIG, err)
+        self.assertEqual(served, [TOKEN])
+        self.assertIn(hints.INTENT_HOW, err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn(TOKEN, err)
+
+    def test_a_failure_caused_by_the_refusal_is_the_refusal_too(self):
+        def raised_from(how):
+            def raise_it():
+                try:
+                    raise discord.PrivilegedIntentsRequired(None)
+                except discord.PrivilegedIntentsRequired as refusal:
+                    try:
+                        if how == "cause":
+                            raise RuntimeError("logging out failed") from refusal
+                        raise RuntimeError("logging out failed")
+                    except RuntimeError as wrapped:
+                        return wrapped
+            return raise_it
+
+        def closed_4014():
+            return discord.ConnectionClosed(mock.Mock(), shard_id=None, code=4014)
+
+        for name, raised in (("cause", raised_from("cause")),
+                             ("context", raised_from("context")),
+                             ("gateway close 4014", closed_4014)):
+            with self.subTest(raised=name):
+                for leftover in (self.db, self.db + "-wal", self.db + "-shm"):
+                    if os.path.exists(leftover):
+                        os.remove(leftover)
+                v2_fixture(self.db)
+                served = []
+                with mock.patch.object(app, "serve", self.serving(raised, served)):
+                    code, _, err = self.run_diayn(watch=idle)
+                self.assertEqual(code, CONFIG, err)
+                self.assertEqual(served, [TOKEN])
+
+    def test_any_other_failure_of_the_bot_is_raised_as_before(self):
+        v2_fixture(self.db)
+        served = []
+        failing = self.serving(lambda: discord.ConnectionClosed(mock.Mock(), shard_id=None,
+                                                                code=4000), served)
+        with mock.patch.object(app, "serve", failing), \
+                self.assertRaises(discord.ConnectionClosed):
+            self.run_diayn(watch=idle)
 
     def test_a_second_run_exits_3_without_building_or_serving_the_client(self):
         v2_fixture(self.db)
