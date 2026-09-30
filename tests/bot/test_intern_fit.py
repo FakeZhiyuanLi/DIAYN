@@ -118,7 +118,8 @@ class FitTest(unittest.TestCase):
         self.pace = fit.Pace()
         self.slept, self.waited = [], 0.0
         self.addCleanup(setattr, fit, "last_error", None)
-        fit.last_error = None
+        self.addCleanup(setattr, fit, "quiet_until", 0.0)
+        fit.last_error, fit.quiet_until = None, 0.0
 
     async def _sleep(self, seconds):
         """asyncio.sleep, faked: the clock `check` is given moves on by `seconds`."""
@@ -457,6 +458,41 @@ class Unchecked(FitTest):
 
         self.assertEqual(gemini.requests, 1)
 
+    def test_after_a_failed_request_it_stops_asking_for_a_while(self):
+        # A timeout can take GEMINI_MAX_ATTEMPTS x GEMINI_HTTP_TIMEOUT to give up; were
+        # every due user to wait that long in turn, an outage would hold every alert.
+        failing, healthy = FakeGemini(lambda payload: Response(503)), FakeGemini()
+        matches = self.matches()
+        self.check(person(ALICE), matches, failing)
+        tried = failing.requests
+
+        soon = self.check(profile.with_changes(person(), NOW, skills=("python",)), matches,
+                          healthy, now=NOW + fit.COOL_OFF_S - 1)
+        later = self.check(profile.with_changes(person(), NOW, skills=("sql",)), matches,
+                           healthy, now=NOW + fit.COOL_OFF_S)
+
+        self.assertEqual(tried, 3)                       # GEMINI_MAX_ATTEMPTS, then it gave up
+        self.assertEqual(healthy.requests, 1)            # not while cooling off; after, yes
+        self.assertEqual([m.fit for m in soon], [None] * 3)
+        self.assertTrue(all(m.fit for m in later))
+        self.assertEqual(fit.COOL_OFF_S, 600)
+
+    def test_a_spent_budget_or_a_bad_answer_does_not_stop_the_next_request(self):
+        for first in (FakeGemini(lambda payload: "garbage"),):
+            self.check(person(ALICE), self.matches(), first)
+        with with_settings(FIT_RPD="1"):
+            self.db.execute("DELETE FROM fit_usage")
+            gemini = FakeGemini()
+            self.check(profile.with_changes(person(), NOW, skills=("python",)), self.matches(),
+                       gemini, now=NOW + 1)
+            self.check(profile.with_changes(person(), NOW, skills=("sql",)), self.matches(),
+                       gemini, now=NOW + 2)                   # the day's one request is spent
+            self.db.execute("DELETE FROM fit_usage")
+            self.check(profile.with_changes(person(), NOW, skills=("go",)), self.matches(),
+                       gemini, now=NOW + 3)
+
+        self.assertEqual(gemini.requests, 2)
+
     def test_a_failure_keeps_the_verdicts_already_cached(self):
         p, matches = person(), self.matches()
         self.check(p, matches[:1], FakeGemini(lambda payload: [
@@ -519,6 +555,7 @@ class AlertsAreChecked(DeliveryTest):
         patch.start()
         self.addCleanup(patch.stop)
         self.addCleanup(setattr, fit, "last_error", None)
+        self.addCleanup(setattr, fit, "quiet_until", 0.0)
         self.gemini = FakeGemini()
 
     def checked_tick(self, now, gemini=None):

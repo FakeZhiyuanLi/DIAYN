@@ -30,8 +30,11 @@ budgets together must fit the key's quota.
 **It never holds an alert back.** No key, the profile's owner turned it off,
 the day's budget is spent, the request fails or the answer does not parse:
 the matches come back as the matcher ranked them, unchecked and without a
-reason line. Verdicts already cached still apply. The last failure's class is
-kept in `last_error` for `/diayn debug`.
+reason line. Verdicts already cached still apply. A request that fails can
+take GEMINI_MAX_ATTEMPTS times GEMINI_HTTP_TIMEOUT to give up, so after one
+the check asks nothing for COOL_OFF_S: in an outage one alert waits, not every
+alert in turn. The last failure's class is kept in `last_error` for
+`/diayn debug`.
 
 The request goes through `llm.generate_json`, the code the scraper's --llm
 uses. Importing this module reads nothing and imports neither aiohttp nor the
@@ -71,6 +74,10 @@ POSTING_KEYS = ("i", "title", "company", "location", "term")
 #: A role's fields are cut to these lengths before they are sent.
 _TITLE_MAX, _COMPANY_MAX, _LOCATION_MAX = 200, 100, 120
 _MINUTE_S = 60.0
+#: How long the check asks nothing after a request failed: two delivery ticks.
+COOL_OFF_S = 600
+#: Failures that say nothing about the service, so start no cool-off: they cost no wait.
+_NOT_AN_OUTAGE = frozenset({"budget spent", "unparseable response"})
 #: How many times a request waits for the minute's budget before it goes unchecked.
 _MAX_WAITS = 12
 _ORDER = {"fit": 0, "unsure": 1}
@@ -137,6 +144,8 @@ _USAGE_DDL = """
 
 #: The class of the last failure and when it happened, for /diayn debug; None since start.
 last_error: tuple[str, float] | None = None
+#: No request is made before this moment (COOL_OFF_S after a failed one).
+quiet_until: float = 0.0
 
 FitCheck = Callable[[Profile, Sequence[Match], float], Awaitable[list[Match]]]
 
@@ -391,8 +400,10 @@ class Budget:
 # ------------------------------------------------------------------ checking
 
 def _note_failure(kind: str, now: float) -> None:
-    global last_error
+    global last_error, quiet_until
     last_error = (kind, now)
+    if kind not in _NOT_AN_OUTAGE:
+        quiet_until = now + COOL_OFF_S
 
 
 def _noted(m: Match, verdict: Verdict | None) -> Match:
@@ -461,8 +472,9 @@ async def check(db: sqlite3.Connection, p: Profile, matches: Sequence[Match], no
                 clock: Callable[[], float] = time.time) -> list[Match]:
     """
     The matches to send to `p`, as `ordered` puts them. Cached verdicts are used; up to
-    FIT_BATCH of the rest go to Gemini in one request. With the check off for `p`, or
-    anything failing, whatever has no verdict comes back unchecked (module docstring).
+    FIT_BATCH of the rest go to Gemini in one request, unless a failure has it cooling
+    off. With the check off for `p`, or anything failing, whatever has no verdict comes
+    back unchecked (module docstring).
     """
     if not matches or not enabled(p):
         return list(matches)
@@ -471,7 +483,7 @@ async def check(db: sqlite3.Connection, p: Profile, matches: Sequence[Match], no
     todo = list({m.cand.rk_hash: m for m in matches
                  if m.cand.rk_hash not in known}.values())[:_settings().fit_batch]
     fresh = await _ask(db, p, fp, todo, now, session=session, pace=pace or PACE, sleep=sleep,
-                       clock=clock) if todo else {}
+                       clock=clock) if todo and now >= quiet_until else {}
     return ordered(matches, {**known, **fresh})
 
 

@@ -269,8 +269,10 @@ makes a request.
 
 The check never holds an alert back. Without a key, with the day's budget
 spent, on an API error or an answer that does not parse, the alert goes out
-with the rule-based matches unchecked and no reason lines. `/diayn debug` shows
-the day's requests and tokens and the class of the last failure. Each person
+with the rule-based matches unchecked and no reason lines. After a request
+fails, the check asks nothing for ten minutes, so an outage costs one alert a
+wait rather than every alert in turn. `/diayn debug` shows the day's requests
+and tokens and the class of the last failure. Each person
 can turn the check off from their profile card; it is on for everyone else.
 What it sends is listed under [Privacy](#privacy).
 
