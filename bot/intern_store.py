@@ -92,7 +92,7 @@ STORED_COLUMNS: dict[str, str] = {
     "last_quiet_at": "When I last sent you a nothing-new note",
     "dm_failures": "DMs to you that failed in a row",
     "intro_pending": "Whether the note about the new finder is still to come",
-    "left_at": "When you left the club's server",
+    "left_at": "When you left the last server you shared with this bot",
     "expiry_warned_at": "When I warned you an unused profile would be deleted",
     "created_at": "When your profile was created",
     "updated_at": "When you last changed your profile",
@@ -562,7 +562,7 @@ def quiet_candidates(db: sqlite3.Connection, now: float) -> list[Profile]:
     """
     Alerting users who have heard nothing for two weeks, longest silence first.
     "Alerting" is read as delivery would: alerts on, DMs not refused, still in
-    the server, and not paused.
+    a server shared with this bot, and not paused.
     """
     silence = "MAX(COALESCE(last_sent_at, 0), created_at)"
     return _load_many(

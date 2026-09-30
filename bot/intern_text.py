@@ -166,21 +166,22 @@ def _ago(ts: float | None, now: float) -> str:
 
 _DISCLOSURE = (
     "**Your resume stays private**\n"
-    "- It's read once, in a separate process on the club bot's own server, to suggest your major, "
-    "degree, graduation date and skills. It is **not sent to any AI service** or anyone else.\n"
+    "- It's read once, in a separate process on the computer this bot runs on, to suggest your "
+    "major, degree, graduation date and skills. It is **not sent to any AI service** or anyone "
+    "else.\n"
     "- The file and its text are never saved, not to disk and not to logs, and are gone as soon as "
     "the suggestion is made.\n"
     "- I keep only what you confirm on the next screen: your major, degree, graduation month, skills "
     "from a fixed list, and the filters you pick. Never your name, contact details, address, school, "
     "GPA or employers.\n"
-    "- The club officers who run this bot can read its database on the server.\n"
+    "- Whoever runs this bot can read its database, users.db, on that computer.\n"
     "- Discord keeps its own copy of files uploaded to it; I can't delete that one.\n"
     "- `/internships delete` shows everything I hold and erases it, any time.")
 _FORMATS = {
     True: "PDF, Word (.docx) or .txt, up to 2 MB. You can also attach it to the command: "
           "`/internships profile resume:`",
-    False: "Word (.docx) or .txt, up to 2 MB. This bot can't read PDFs yet (an officer can install "
-           "`pypdf`), so upload the .docx or paste the text."}
+    False: "Word (.docx) or .txt, up to 2 MB. This bot can't read PDFs yet (whoever runs this bot "
+           "can install `pypdf`), so upload the .docx or paste the text."}
 
 
 def disclosure_text() -> str:
@@ -200,8 +201,8 @@ def consent_text(filename: str) -> str:
 
 
 def upload_modal_note() -> str:
-    return ("Read once on the club bot's own server, never sent to an AI service, and never saved. "
-            "Only what you confirm on the next screen is kept.")
+    return ("Read once on the computer this bot runs on, never sent to an AI service, and never "
+            "saved. Only what you confirm on the next screen is kept.")
 
 
 _UNSAFE_WORD = "I couldn't read that Word file safely. Save it again as .docx or PDF."
@@ -213,8 +214,8 @@ _UPLOAD_ERRORS = {
                 "PDF first.",
     "type_mismatch": "That file's type doesn't match its name. Export it again and re-upload.",
     "bad_magic": "That doesn't look like a real {kind_label} file. Export it again and re-upload.",
-    "no_pdf_support": "This bot can't read PDFs yet (an officer can install `pypdf`). Upload the "
-                      ".docx, or paste the text.",
+    "no_pdf_support": "This bot can't read PDFs yet (whoever runs this bot can install `pypdf`). "
+                      "Upload the .docx, or paste the text.",
     "encrypted": "That PDF is password-protected. Save a copy without a password, or paste the text.",
     "too_many_pages": "That PDF has more than 10 pages. A one- or two-page resume works best.",
     "no_text": "I couldn't find any text in that file. It's probably a scan or an image. Upload the "
@@ -502,7 +503,7 @@ def saved_followup(matches: Sequence[Match], now: float, p: Profile) -> list[str
 
 def welcome_dm(p: Profile, *, now: float | None = None) -> str:
     """Sent only when it can arrive, so it never mentions refused DMs; a pause it does name."""
-    return ("Hi! I'm the club's internship finder. New roles that fit your profile will arrive here "
+    return ("Hi! I'm DIAYN, an internship finder. New roles that fit your profile will arrive here "
             f"{_schedule(p, now)}. Use the menu under each alert to hide a role, "
             "or `/internships profile` to change anything.")
 
@@ -523,9 +524,14 @@ _DIGEST = {"daily": " · daily digest", "weekly": " · weekly digest"}
 
 
 def migrated_intro() -> str:
-    return ("**The internship finder changed.** It now matches roles to *your* major, for any major. "
-            "You still get the tech internships you signed up for (I copied your filters). "
-            "`/internships profile` tailors it to you; `/internships delete` erases what I hold.")
+    """The first DM to a subscriber `diayn.py import-legacy` brought over: it comes from a bot
+    they have never used, so it says which bot this is and why it is writing."""
+    return ("**Hi, this is DIAYN, an internship finder bot.** You were subscribed to internship "
+            "alerts from another bot in a server you share with this bot. Those alerts have moved "
+            "here, and I copied your filters, so you still get the tech internships you signed up "
+            "for. I also match roles to *your* major now, for any major. `/internships profile` "
+            "tailors it to you; `/internships ping` turns these DMs off; `/internships delete` "
+            "erases what I hold.")
 
 
 def _alert_text(total: int, blocks: list[str], *, cadence: str, intro: bool, catch_up: bool,
@@ -588,10 +594,6 @@ def alert_reply(kind: str, *, until: float | None = None) -> str:
     return _ALERT_REPLIES[kind]
 
 
-def legacy_digest() -> str:
-    return "That button is from the old tracker. Alerts are personal DMs now: run `/internships profile`."
-
-
 # ------------------------------------------------------------------ J8-J10: lists and empty states
 
 _SORT_WORDS = {"best": "best first", "newest": "newest first"}
@@ -637,8 +639,8 @@ def empty_state(p: Profile, relax: Sequence[Relaxation], *, pool: int, companies
         "That's about which companies I watch, not about you. Most of them post tech, aerospace, "
         "retail and finance jobs.",
         *(f"- **{safe_inline(r.label, BUTTON_MAX)}** would find {r.gain}." for r in relax[:3]),
-        f"{_when_one_appears(p, now)} Know a company that hires for your field? Suggest it "
-        "with `/report` -> *Suggestion*."])
+        f"{_when_one_appears(p, now)} Know a company that hires for your field? Ask whoever runs "
+        "this bot to add it."])
 
 
 def relax_button_label(r: Relaxation) -> str:
@@ -788,7 +790,7 @@ def generic_failure() -> str:
 
 def disabled_finder(error: str) -> str:
     return (f"The internship finder is switched off on this bot ({safe_inline(error, 200)}). "
-            "An officer can check the bot's log.")
+            "Whoever runs this bot can check its log.")
 
 
 def disabled_tracker(error: str) -> str:
@@ -796,9 +798,8 @@ def disabled_tracker(error: str) -> str:
             "and restart the bot.")
 
 
-def officer_only() -> str:
-    return ("That one is for officers. If it should be you, an officer can add your Discord id to "
-            "`puzzle-admins.json`.")
+def owner_only() -> str:
+    return "That one is only for whoever runs this bot."
 
 
 def not_yours() -> str:
@@ -828,8 +829,8 @@ def debug_lines(summary: Mapping[str, int], report: Mapping[str, float | None],
     return [
         "**Internship finder**",
         f"profiles: {n('profiles')} · alerts on: {n('alerting')} (hourly {n('hourly')} · daily "
-        f"{n('daily')} · weekly {n('weekly')}) · DMs closed: {n('dm_blocked')} · left the server: "
-        f"{n('left')}",
+        f"{n('daily')} · weekly {n('weekly')}) · DMs closed: {n('dm_blocked')} · left every shared "
+        f"server: {n('left')}",
         f"last delivery tick: {_ago(report.get('delivery_last_at'), at)} · due {tick('due')} · sent "
         f"{tick('sent')} · nothing new {tick('empty')} · DMs refused {tick('forbidden')}",
         "resume parsing: PDF available" if pdf_ok

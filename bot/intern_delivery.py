@@ -122,7 +122,7 @@ def horizon(now: float) -> float:
 
 def _stopped(p: Profile) -> bool:
     """Never due until the user acts: alerts off, DMs refused DM_FAILURE_LIMIT times, or gone
-    from the server."""
+    from every server they shared with this bot."""
     return (p.alerts not in _ALERTING or p.dm_failures >= store.DM_FAILURE_LIMIT
             or p.left_at is not None)
 

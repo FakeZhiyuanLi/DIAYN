@@ -131,7 +131,8 @@ class Disclosure(unittest.TestCase):
     def test_it_says_what_it_must(self):
         disclosure = text.disclosure_text()
         for phrase in ("not sent to any AI service",
-                       "club officers who run this bot can read its database",
+                       "Whoever runs this bot can read its database, users.db",
+                       "on the computer this bot runs on",
                        "Discord keeps its own copy", "/internships delete"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, disclosure)
@@ -352,7 +353,7 @@ class EmptyStates(unittest.TestCase):
                       "research roles at your level in the places you picked.", body)
         self.assertIn("That's about which companies I watch, not about you.", body)
         self.assertIn("- **Anywhere in the US** would find 12.", body)
-        self.assertIn("`/report`", body)
+        self.assertIn("Ask whoever runs this bot to add it.", body)
         self.assertTrue(all(len(text.relax_button_label(r)) <= 80 for r in self.RELAX))
         self.assertEqual(text.relax_button_label(self.RELAX[0]), "Anywhere in the US (+12)")
 
@@ -452,6 +453,57 @@ class TheZoneIsDiaynTz(unittest.TestCase):
         self.assertTrue(reply.startswith("Paused until Sep 29."))
 
 
+class NoClubWording(unittest.TestCase):
+    """DIAYN is run by whoever hosts it, for whoever they let in: nothing it says assumes a
+    club, its officers, its server or its other bots' commands."""
+
+    CLUB = re.compile(r"\bclub\b|\bofficers?\b|puzzle-admins|/report", re.I)
+
+    def every_reply(self) -> list:
+        p = person()
+        return [text.disclosure_text(), text.start_card(pdf_ok=True), text.start_card(pdf_ok=False),
+                text.upload_modal_note(), text.upload_error("no_pdf_support"),
+                text.welcome_dm(p, now=NOW), text.migrated_intro(),
+                text.empty_state(p, (), pool=10, companies=3, days=14, now=NOW),
+                text.disabled_finder("ContractError: x"), text.owner_only(),
+                *text.help_text(pdf_ok=False, companies=412),
+                *text.privacy_text(stored_rows(p)),
+                *text.debug_lines({}, {}, {}, pdf_ok=False, migrated=None, now=NOW)]
+
+    def test_nothing_the_finder_says_names_a_club(self):
+        for body in self.every_reply():
+            with self.subTest(body=body[:60]):
+                self.assertIsNone(self.CLUB.search(body))
+
+    def test_help_that_needs_the_host_asks_whoever_runs_this_bot(self):
+        self.assertIn("whoever runs this bot can install `pypdf`", text.start_card(pdf_ok=False))
+        self.assertIn("whoever runs this bot can install `pypdf`",
+                      text.upload_error("no_pdf_support"))
+        self.assertTrue(text.disabled_finder("ContractError: x").endswith(
+            "Whoever runs this bot can check its log."))
+        self.assertEqual(text.owner_only(), "That one is only for whoever runs this bot.")
+
+    def test_the_welcome_says_which_bot_this_is(self):
+        self.assertTrue(text.welcome_dm(person(), now=NOW).startswith(
+            "Hi! I'm DIAYN, an internship finder."))
+
+    def test_the_migrated_intro_says_which_bot_this_is_and_why_it_writes(self):
+        intro = text.migrated_intro()
+
+        self.assertTrue(intro.startswith("**Hi, this is DIAYN, an internship finder bot.**"))
+        self.assertIn("You were subscribed to internship alerts from another bot", intro)
+        self.assertIn("a server you share with this bot", intro)
+        self.assertIn("I copied your filters", intro)
+        for command in ("/internships profile", "/internships ping", "/internships delete"):
+            self.assertIn(command, intro)
+
+    def test_the_old_tracker_s_button_reply_is_gone(self):
+        # A button answers to the bot that posted it, so DIAYN can never be
+        # sent a click on the old tracker's digest button.
+        self.assertFalse(hasattr(text, "legacy_digest"))
+        self.assertFalse(hasattr(text, "officer_only"))
+
+
 class FixedCopy(unittest.TestCase):
     def test_short_replies_are_the_spec_s(self):
         cases = {
@@ -461,8 +513,6 @@ class FixedCopy(unittest.TestCase):
             text.dm_retry_ok(): "It worked, check your DMs.",
             text.nothing_held(): "I don't hold anything about you.",
             text.matches_no_profile(): "Meanwhile, `/internships recent` lists every field.",
-            text.legacy_digest(): "That button is from the old tracker. Alerts are personal DMs "
-                                  "now: run `/internships profile`.",
             text.not_yours(): "That isn't yours.",
             text.generic_failure(): "Something went wrong on my side. Try again in a minute.",
             text.deleted_text(): "**Done. It's all gone.** Messages I already sent stay in your DMs "
@@ -549,7 +599,7 @@ class Debug(unittest.TestCase):
                                  pdf_ok=False, migrated=1.0, now=NOW)
         body = "\n".join(lines)
         self.assertIn("profiles: <3 · alerts on: <3 (hourly 0 · daily 3 · weekly 0) · DMs closed: 0 "
-                      "· left the server: <3", body)
+                      "· left every shared server: <3", body)
         self.assertIn("last delivery tick: 2m ago · due <3 · sent 5 · nothing new 0 · DMs refused <3", body)
         self.assertIn("Software engineering 48 · 7", body)
         self.assertIn("Biology & lab research 0 · <3", body)
