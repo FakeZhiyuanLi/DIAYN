@@ -10,14 +10,14 @@ fingerprint the ATS, find the JSON endpoint, and CONFIRM it returns real jobs.
 Only validated entries are emitted.
 
     # one URL
-    python resolve_boards.py https://careers.rivian.com
+    .venv/bin/python resolve_boards.py https://careers.rivian.com
 
     # many, from a file (one per line; blank lines and #comments ignored;
     # optional "Company Name = url" to override the detected name)
-    python resolve_boards.py --file careers_urls.txt
+    .venv/bin/python resolve_boards.py --file careers_urls.txt
 
     # emit registry rows ready to paste into SEED_BOARDS
-    python resolve_boards.py --file careers_urls.txt --emit
+    .venv/bin/python resolve_boards.py --file careers_urls.txt --emit
 
 Supported: greenhouse, lever, ashby, workday (already pollable today) and
 icims (needs the adapter in internship_poller.fetch_icims).

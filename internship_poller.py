@@ -2,26 +2,26 @@
 """
 Internship poller. Covers Greenhouse, Lever, Ashby, Workday.
 
-    pip install aiohttp
-    python internship_poller.py verify              # check every board is live
-    python internship_poller.py list --us           # all open US internships
-    python internship_poller.py list --sector finance
-    python internship_poller.py list --category swe
-    python internship_poller.py sweep --init        # first sweep of a new postings.db
-    python internship_poller.py sweep               # store + print what's new
-    python internship_poller.py watch               # every 15 min until Ctrl-C
-    python internship_poller.py stats
-    python internship_poller.py llm-diff            # compare regex vs Gemini on stored rows
-    python internship_poller.py sweep --llm         # classify new postings with Gemini
-    python internship_poller.py config              # the settings a run would use
-    python internship_poller.py upgrade-db          # a v2 postings.db, up to CONTRACT.md
+    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+    .venv/bin/python internship_poller.py verify           # check every board is live
+    .venv/bin/python internship_poller.py list --us        # all open US internships
+    .venv/bin/python internship_poller.py list --sector finance
+    .venv/bin/python internship_poller.py list --category swe
+    .venv/bin/python internship_poller.py sweep --init     # first sweep of a new postings.db
+    .venv/bin/python internship_poller.py sweep            # store + print what's new
+    .venv/bin/python internship_poller.py watch            # every 15 min until Ctrl-C
+    .venv/bin/python internship_poller.py stats
+    .venv/bin/python internship_poller.py llm-diff         # compare regex vs Gemini on stored rows
+    .venv/bin/python internship_poller.py sweep --llm      # classify new postings with Gemini
+    .venv/bin/python internship_poller.py config           # the settings a run would use
+    .venv/bin/python internship_poller.py upgrade-db       # a v2 postings.db, up to CONTRACT.md
 
     export GEMINI_API_KEY=...               # required for --llm
     export GEMINI_MODEL=gemini-3.5-flash-lite   # or gemini-3.6-flash
     export GEMINI_RPM=15 GEMINI_RPD=500     # match your AI Studio dashboard
-    python internship_poller.py discover            # mine + validate ~2k boards -> boards.json
-    python internship_poller.py discover --yc       # + probe YC's 6k company dataset (slow)
-    python internship_poller.py prune --dry-run     # see what the retention rule removes
+    .venv/bin/python internship_poller.py discover         # mine + check ~2k boards -> boards.json
+    .venv/bin/python internship_poller.py discover --yc    # + probe YC's 6k company dataset (slow)
+    .venv/bin/python internship_poller.py prune --dry-run  # see what the retention rule removes
 
 Settings come from the environment, filled in from the scraper's own .env:
 the file POLLER_ENV_FILE names, else the one in this checkout — never the

@@ -1,30 +1,32 @@
 """
 DIAYN's entry point.
 
-    python diayn.py <command> [options]
+    .venv/bin/python diayn.py <command> [options]
 
 Every command of the scraper, `internship_poller.py`, runs through here with
 the same arguments and the same exit codes: 0 done, 1 failed, 2 a usage error,
-3 another sweeper holds the lock. `python diayn.py sweep --init` and
-`python internship_poller.py sweep --init` are the same run.
+3 another sweeper holds the lock. `.venv/bin/python diayn.py sweep --init` and
+`.venv/bin/python internship_poller.py sweep --init` are the same run.
 
 DIAYN's own commands, for the Discord bot, are in BOT_COMMANDS:
 
-    python diayn.py import-legacy --from <stats.db>
+    .venv/bin/python diayn.py import-legacy --from <stats.db>
 
 copies the old `/internships ping` tracker's subscribers out of its bot's
 stats.db, which it opens read-only, into DIAYN's users.db as profiles. It runs
 once, and prints counts only.
 
-    python diayn.py grant --user <id>      python diayn.py revoke --user <id>
-    python diayn.py grant --server <id>    python diayn.py revoke --server <id>
+    .venv/bin/python diayn.py grant --user <id>
+    .venv/bin/python diayn.py grant --server <id>
+    .venv/bin/python diayn.py revoke --user <id>
+    .venv/bin/python diayn.py revoke --server <id>
 
 let one person, or everyone in one server, use the bot, or take that away,
 without Discord: a host can grant before the bot's first start. They write
 users.db's access_grants, which the running bot reads on every check, and
 print what they did, never an id.
 
-    python diayn.py run [--interval N] [--llm]
+    .venv/bin/python diayn.py run [--interval N] [--llm]
 
 runs the Discord bot and the sweep loop together, in one process, until it is
 stopped. It holds the sweeper lock for as long as it runs, so a second `run`,
@@ -36,7 +38,7 @@ it again. If Discord refuses the Server Members Intent, it exits 78 (EX_CONFIG),
 which DEPLOY.md's units do not restart on. `internship_poller.py watch` still
 runs the sweep loop alone, for a host that wants the two apart.
 
-    python diayn.py setup
+    .venv/bin/python diayn.py setup
 
 gets a new host ready: it checks DISCORD_TOKEN with Discord and the Server
 Members Intent, makes the data directory at mode 700, bootstraps postings.db
@@ -44,7 +46,7 @@ with a first sweep that records every open posting as seen, unless a
 postings.db is already there, and prints the invite link. host_checks.py has
 the steps.
 
-    python diayn.py doctor
+    .venv/bin/python diayn.py doctor
 
 checks the host again at any time: the Python version and the platform,
 discord.py and pypdf, the settings, the token and the intent, the data

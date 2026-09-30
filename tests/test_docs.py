@@ -13,6 +13,7 @@ Nothing here reads a .env, a database or the network: only the tracked
 documents, and the module's own tables.
 """
 
+import ast
 import os
 import re
 import sys
@@ -265,12 +266,33 @@ def documents() -> list:
     return names + ["example.env"]
 
 
+def modules() -> list:
+    """Every module of the code, outside tests/: the scripts at the root and bot/'s. Their
+    docstrings are read by whoever opens them, and resolve_boards prints its own as its
+    usage text."""
+    names = sorted(n for n in os.listdir(ROOT) if n.endswith(".py"))
+    return names + sorted(os.path.join("bot", n) for n in os.listdir(os.path.join(ROOT, "bot"))
+                          if n.endswith(".py"))
+
+
 class Documents(unittest.TestCase):
     def test_every_command_names_the_venvs_python(self):
         for name in documents():
             for number, line in enumerate(read(name).splitlines(), 1):
                 with self.subTest(document=name, line=number):
                     self.assertIsNone(BARE_PYTHON.search(line), line)
+
+    def test_every_module_docstring_names_the_venvs_python_too(self):
+        for name in modules():
+            docstring = ast.get_docstring(ast.parse(read(name))) or ""
+            for line in docstring.splitlines():
+                with self.subTest(module=name, line=line.strip()):
+                    self.assertIsNone(BARE_PYTHON.search(line), line)
+
+    def test_the_modules_scanned_include_the_scripts_people_run(self):
+        # A scan over no files would pass on every run and protect nothing.
+        self.assertTrue({"diayn.py", "internship_poller.py", "resolve_boards.py",
+                         "host_checks.py"} <= set(modules()))
 
     def test_only_the_readme_names_the_project_it_grew_out_of(self):
         # DIAYN stands on its own: the README's provenance line is the one mention.

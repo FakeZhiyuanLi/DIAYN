@@ -4,8 +4,8 @@ host_checks.py
 `diayn.py setup`, which gets a new host ready, from a filled-in .env to an
 invite link, and `diayn.py doctor`, which checks it again at any time.
 
-    python diayn.py setup
-    python diayn.py doctor
+    .venv/bin/python diayn.py setup
+    .venv/bin/python diayn.py doctor
 
 **setup** goes in this order, and stops at the first failure:
 
