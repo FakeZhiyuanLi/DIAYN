@@ -35,6 +35,14 @@ the sweep loop ever ends, the process exits 1, so that whatever runs it starts
 it again. `internship_poller.py watch` still runs the sweep loop alone, for a
 host that wants the two apart.
 
+    python diayn.py setup
+
+gets a new host ready: it checks DISCORD_TOKEN with Discord and the Server
+Members Intent, makes the data directory at mode 700, bootstraps postings.db
+with a first sweep that records every open posting as seen, unless a
+postings.db is already there, and prints the invite link. host_checks.py has
+the steps.
+
 The rest are in PLANNED_COMMANDS until they are built. Each says so and exits
 2, without importing the scraper or touching a file.
 
@@ -59,10 +67,11 @@ BOT_DIR = os.path.join(CHECKOUT, "bot")
 IMPORT_LEGACY = "import-legacy"
 GRANT, REVOKE = "grant", "revoke"
 RUN = "run"
+SETUP = "setup"
 # DIAYN's own commands that are built.
-BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE, RUN)
+BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE, RUN, SETUP)
 # DIAYN's own commands, each built in a later change.
-PLANNED_COMMANDS = ("setup", "doctor")
+PLANNED_COMMANDS = ("doctor",)
 # What makes a new postings.db, which `run` never does.
 SETUP_COMMAND = "python diayn.py setup"
 HELP_FLAGS = ("-h", "--help")
@@ -89,6 +98,12 @@ def finder():
     import intern_delivery
     import intern_store
     return intern_store, intern_delivery
+
+
+def host_checks():
+    """setup's steps, imported on first use."""
+    import host_checks
+    return host_checks
 
 
 def access_module():
@@ -439,6 +454,8 @@ def main(argv=None) -> int:
         return cmd_access(poller, command, argv[1:])
     if command == RUN:
         return cmd_run(poller, argv[1:])
+    if command == SETUP:
+        return host_checks().cmd_setup(poller, argv[1:])
     if command in HELP_FLAGS:
         print(usage(poller.COMMANDS))
         return 0
