@@ -32,8 +32,11 @@ postings.db is down (a change to spec 5.1, which gated the loop on both).
 
 **Only those the bot is open to are DMed.** Each tick reads the grants once
 (`intern_ui.dm_access`) and hands delivery the answer, so a revocation stops
-alerts and notes at the next tick. Grants that cannot be read stop the DMs,
-and never the deletions.
+alerts and notes at the next tick. The same answer starts, or stops, the 30
+days a profile outlives its owner's access; it is recorded before housekeeping
+runs, so access given back that morning is seen before anything is deleted.
+Grants that cannot be read stop the DMs, start no clock, and never stop the
+deletions.
 
 **A bootstrap is never news.** The scraper sweeps, not the bot, so the bot
 never sees the first sweep happen. Every delivery tick therefore starts from
@@ -218,6 +221,13 @@ async def _step(context: str, work: Callable[[], Awaitable[None]]) -> None:
         intern_ui.log_failure(context, error)
 
 
+async def _access(db: sqlite3.Connection, now: float) -> None:
+    counts = intern_delivery.track_access(db, intern_ui.dm_access(), now)
+    if any(counts.values()):
+        print("internship finder: access " + ", ".join(f"{k} {v}" for k, v in counts.items()),
+              file=sys.stderr)
+
+
 async def _housekeeping(db: sqlite3.Connection, now: float) -> None:
     if intern_delivery.housekeeping_due(db, now):
         counts = intern_delivery.run_housekeeping(db, now)
@@ -282,8 +292,9 @@ async def _heartbeat(now: float) -> None:
 
 @tasks.loop(minutes=DELIVERY_MINUTES)
 async def intern_delivery_loop() -> None:
-    """Housekeeping, alerts, notices, each in its own `try` (module docstring)."""
+    """Access, housekeeping, alerts, notices, each in its own `try` (module docstring)."""
     db, now = intern_ui.db, time.time()
+    await _step("the access check", lambda: _access(db, now))
     await _step("housekeeping", lambda: _housekeeping(db, now))
     tracker = intern_ui.ensure_postings(throttle=False)      # never raises
     if tracker:

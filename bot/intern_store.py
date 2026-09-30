@@ -52,6 +52,9 @@ HIDDEN_RETAIN_S = 90 * DAY_S
 IDLE_EXPIRE_S = 365 * DAY_S
 EXPIRY_WARN_S = 351 * DAY_S
 LEFT_GRACE_S = 30 * DAY_S
+#: How long a profile outlives its owner's access to this bot (plan 3.3), as it
+#: outlives their leaving every shared server.
+ACCESS_GRACE_S = 30 * DAY_S
 DM_FAILURE_LIMIT = 3
 #: The quiet-period note's silence (spec 5.5); `intern_delivery` should reuse it.
 QUIET_AFTER_S = 14 * DAY_S
@@ -97,6 +100,7 @@ STORED_COLUMNS: dict[str, str] = {
     "created_at": "When your profile was created",
     "updated_at": "When you last changed your profile",
     "active_at": "When you last used the finder",
+    "access_lapsed_at": "When you stopped having access to this bot",
 }
 
 _PROFILES_DDL = """
@@ -152,9 +156,10 @@ _META_DDL = """
         value REAL
     )
 """
-#: Future columns, as (name, declaration): added in place by `init_db`, never
-#: by recreating the table, so a users.db from an older release keeps its rows.
-_ADDED_COLUMNS: tuple[tuple[str, str], ...] = ()
+#: Columns added since the table was first made, as (name, declaration): added in
+#: place by `init_db`, never by recreating the table, so a users.db from an older
+#: release keeps its rows. They come last, in this order, in STORED_COLUMNS too.
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (("access_lapsed_at", "REAL"),)
 
 _COLUMNS = tuple(STORED_COLUMNS)
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM intern_profiles"
@@ -469,6 +474,21 @@ def clear_left(db: sqlite3.Connection, user_id: int) -> None:
     _update(db, user_id, "left_at = NULL")
 
 
+def access_states(db: sqlite3.Connection) -> list[tuple[int, float | None]]:
+    """(user_id, access_lapsed_at) for every profile, by user_id."""
+    return db.execute("SELECT user_id, access_lapsed_at FROM intern_profiles "
+                      "ORDER BY user_id").fetchall()
+
+
+def mark_access_lapsed(db: sqlite3.Connection, user_id: int, now: float) -> None:
+    """Starts the 30 days after losing access to this bot; a repeat does not restart them."""
+    _update(db, user_id, "access_lapsed_at = COALESCE(access_lapsed_at, ?)", (now,))
+
+
+def clear_access_lapsed(db: sqlite3.Connection, user_id: int) -> None:
+    _update(db, user_id, "access_lapsed_at = NULL")
+
+
 def advance_all_cursors(db: sqlite3.Connection, cursor: float) -> int:
     """
     After a bootstrap sweep: the seed it stored is never offered as new. Every
@@ -539,7 +559,8 @@ def _user_ids(db: sqlite3.Connection, where: str, params: tuple) -> list[int]:
 
 
 def housekeeping(db: sqlite3.Connection, now: float) -> dict[str, int]:
-    """Daily: prune the ledger, delete idle profiles and those whose owner left 30 days ago."""
+    """Daily: prune the ledger, delete idle profiles, and those whose owner left every shared
+    server, or lost access to this bot, 30 days ago."""
     with db:
         pruned = db.execute(
             "DELETE FROM intern_seen WHERE (state = 'sent' AND at < ?) OR (state = 'hidden' AND at < ?)",
@@ -550,7 +571,12 @@ def housekeeping(db: sqlite3.Connection, now: float) -> dict[str, int]:
     left = _user_ids(db, "left_at IS NOT NULL AND left_at < ?", (now - LEFT_GRACE_S,))
     for uid in left:
         delete_user(db, uid)
-    return {"seen_pruned": pruned, "expired": len(expired), "left_deleted": len(left)}
+    lapsed = _user_ids(db, "access_lapsed_at IS NOT NULL AND access_lapsed_at < ?",
+                       (now - ACCESS_GRACE_S,))
+    for uid in lapsed:
+        delete_user(db, uid)
+    return {"seen_pruned": pruned, "expired": len(expired), "left_deleted": len(left),
+            "access_deleted": len(lapsed)}
 
 
 def expiring_profiles(db: sqlite3.Connection, now: float) -> list[Profile]:
@@ -589,6 +615,8 @@ def privacy_rows(db: sqlite3.Connection, user_id: int) -> dict[str, object] | No
 def summary(db: sqlite3.Connection) -> dict[str, int]:
     """Counts for `/internships debug`. Aggregates only: no key or value names a user."""
     rows = db.execute("SELECT alerts, dm_failures, left_at, fields FROM intern_profiles").fetchall()
+    no_access = db.execute("SELECT COUNT(*) FROM intern_profiles "
+                           "WHERE access_lapsed_at IS NOT NULL").fetchone()[0]
     chosen = [_json_list(fields, ()) for *_, fields in rows]
     cadences = {cadence: sum(1 for alerts, *_ in rows if alerts == cadence)
                 for cadence in ("hourly", "daily", "weekly")}
@@ -598,6 +626,7 @@ def summary(db: sqlite3.Connection) -> dict[str, int]:
         **cadences,
         "dm_blocked": sum(1 for _, failures, *_ in rows if failures >= DM_FAILURE_LIMIT),
         "left": sum(1 for _, _, left_at, _ in rows if left_at is not None),
+        "no_access": no_access,
         **{f"field:{field}": sum(1 for picked in chosen if field in picked)
            for field in vocab.FIELD_IDS},
     }

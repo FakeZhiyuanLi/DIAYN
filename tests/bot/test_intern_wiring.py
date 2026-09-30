@@ -986,6 +986,29 @@ class DeliveryLoopKeepsTheRetentionPromise(unittest.TestCase):
             self.run_loop()
         self.assertIn(DUE, self.sent)
 
+    def test_losing_access_starts_the_thirty_days(self):
+        access.revoke(self.db, "user", DUE)
+
+        self.run_loop()
+
+        self.assertEqual(intern_store.load(self.db, DUE).access_lapsed_at, NOW)
+        self.assertIsNone(intern_store.load(self.db, WARNED).access_lapsed_at)
+
+    def test_thirty_days_without_access_ends_in_deletion(self):
+        access.revoke(self.db, "user", DUE)
+        intern_store.mark_access_lapsed(self.db, DUE, NOW - 31 * DAY)
+
+        self.run_loop()
+
+        self.assertIsNone(intern_store.load(self.db, DUE))
+
+    def test_access_given_back_that_morning_is_seen_before_the_deletions(self):
+        intern_store.mark_access_lapsed(self.db, DUE, NOW - 31 * DAY)   # DUE is granted again
+
+        self.run_loop()
+
+        self.assertIsNone(intern_store.load(self.db, DUE).access_lapsed_at)
+
     def test_grants_that_cannot_be_read_send_nothing_and_stop_no_deletion(self):
         self.db.execute("DROP TABLE access_grants")
 
@@ -995,6 +1018,7 @@ class DeliveryLoopKeepsTheRetentionPromise(unittest.TestCase):
         self.assertNotIn("access_grants", log)
         self.assertEqual(self.sent, [])
         self.assertIsNone(intern_store.load(self.db, IDLE))
+        self.assertIsNone(intern_store.load(self.db, DUE).access_lapsed_at)   # no clock started
 
     def test_a_tick_whose_window_fails_still_deletes_and_warns(self):
         self.window_error = sqlite3.OperationalError("database is locked")

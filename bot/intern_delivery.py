@@ -4,8 +4,9 @@ intern_delivery.py
 When the internship finder DMs someone, what it sends them, and what it
 writes down afterwards.
 
-The bot's five-minute delivery loop calls `run_tick` (alerts), `run_notices`
-(the quiet-period note and the expiry warning) and, once a day in DIAYN_TZ,
+The bot's five-minute delivery loop calls `track_access` (the 30 days a profile
+outlives its owner's access), `run_tick` (alerts), `run_notices` (the
+quiet-period note and the expiry warning) and, once a day in DIAYN_TZ,
 `run_housekeeping`. Everything that decides who is due and what a send, a
 refusal or a network failure changes lives here; the loop only supplies
 `send_dm`, `load_window` and `allowed`. Split from the Discord modules for the
@@ -381,6 +382,25 @@ def _local_day(now: float) -> float:
     """`now`'s date in DIAYN_TZ as YYYYMMDD, the number `intern_meta` stores."""
     day = datetime.fromtimestamp(now, intern_clock.zone()).date()
     return float(day.year * 10_000 + day.month * 100 + day.day)
+
+
+def track_access(db: sqlite3.Connection, allowed: Allowed, now: float) -> dict[str, int]:
+    """
+    Starts the 30 days (`intern_store.ACCESS_GRACE_S`) for every profile whose owner
+    the bot is no longer open to, and stops them for anyone it is open to again; a
+    repeat never restarts them. Housekeeping deletes a profile once they run out.
+    Returns how many started and stopped.
+    """
+    lapsed = restored = 0
+    for uid, lapsed_at in store.access_states(db):
+        if allowed(uid):
+            if lapsed_at is not None:
+                store.clear_access_lapsed(db, uid)
+                restored += 1
+        elif lapsed_at is None:
+            store.mark_access_lapsed(db, uid, now)
+            lapsed += 1
+    return {"lapsed": lapsed, "restored": restored}
 
 
 def housekeeping_due(db: sqlite3.Connection, now: float) -> bool:

@@ -589,7 +589,8 @@ class FixedCopy(unittest.TestCase):
 
 class Debug(unittest.TestCase):
     SUMMARY = {"profiles": 1, "alerting": 2, "hourly": 0, "daily": 3, "weekly": 0,
-               "dm_blocked": 0, "left": 2, "field:software": 7, "field:biology_lab": 1}
+               "dm_blocked": 0, "left": 2, "no_access": 4, "field:software": 7,
+               "field:biology_lab": 1}
     REPORT = {"delivery_last_at": NOW - 120, "delivery_last_due": 2, "delivery_last_sent": 5,
               "delivery_last_empty": 0, "delivery_last_forbidden": 1}
 
@@ -598,7 +599,7 @@ class Debug(unittest.TestCase):
                                  pdf_ok=False, migrated=1.0, now=NOW)
         body = "\n".join(lines)
         self.assertIn("profiles: <3 · alerts on: <3 (hourly 0 · daily 3 · weekly 0) · DMs closed: 0 "
-                      "· left every shared server: <3", body)
+                      "· left every shared server: <3 · without access: 4", body)
         self.assertIn("last delivery tick: 2m ago · due <3 · sent 5 · nothing new 0 · DMs refused <3", body)
         self.assertIn("Software engineering 48 · 7", body)
         self.assertIn("Biology & lab research 0 · <3", body)

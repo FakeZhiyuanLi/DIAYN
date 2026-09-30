@@ -669,7 +669,8 @@ _DELETE_QUESTION = "Delete all of it? Alerts stop and this can't be undone."
 _SOURCE_WORDS = {"resume": "your resume", "pasted": "pasted text", "manual": "picked by hand",
                  "migrated": "copied from the old tracker"}
 _TIMESTAMPS = frozenset({"paused_until", "cursor", "last_run_at", "last_sent_at", "last_quiet_at",
-                         "left_at", "expiry_warned_at", "created_at", "updated_at", "active_at"})
+                         "left_at", "expiry_warned_at", "created_at", "updated_at", "active_at",
+                         "access_lapsed_at"})
 _ID_LISTS = {"majors": MAJOR_BY_ID, "minors": MAJOR_BY_ID, "skills": SKILL_BY_ID,
              "fields": vocab.FIELD_LABELS, "levels": vocab.LEVEL_LABELS}
 _SCALARS = {
@@ -835,7 +836,7 @@ def debug_lines(summary: Mapping[str, int], report: Mapping[str, float | None],
         "**Internship finder**",
         f"profiles: {n('profiles')} · alerts on: {n('alerting')} (hourly {n('hourly')} · daily "
         f"{n('daily')} · weekly {n('weekly')}) · DMs closed: {n('dm_blocked')} · left every shared "
-        f"server: {n('left')}",
+        f"server: {n('left')} · without access: {n('no_access')}",
         f"last delivery tick: {_ago(report.get('delivery_last_at'), at)} · due {tick('due')} · sent "
         f"{tick('sent')} · nothing new {tick('empty')} · DMs refused {tick('forbidden')}",
         "resume parsing: PDF available" if pdf_ok

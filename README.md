@@ -338,6 +338,8 @@ is not a full sandbox: the process runs as the bot's own user, so it can still
 read files that user can, `.env` included, and open network connections. The
 bot process never parses, stores or logs the resume's text; only the vocabulary
 the person confirms is kept. Whoever runs this bot can read what it stores.
+A profile is deleted after a year unused, and 30 days after its owner leaves
+every server the bot shares with them or loses access to the bot.
 
 ## Tests
 

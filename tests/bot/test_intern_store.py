@@ -161,7 +161,7 @@ class SaveAndLoad(StoreTest):
                     cursor=CURSOR, last_run_at=NOW, last_sent_at=NOW - 7,
                     last_quiet_at=NOW - 8, dm_failures=1, intro_pending=True,
                     left_at=NOW - 9, expiry_warned_at=NOW - 10, created_at=NOW - 11,
-                    updated_at=NOW, active_at=NOW)
+                    updated_at=NOW, active_at=NOW, access_lapsed_at=NOW - 12)
 
     def test_every_field_survives_a_round_trip(self):
         p = self.everything_set()
@@ -749,7 +749,22 @@ class Housekeeping(StoreTest):
 
         self.assertIsNone(store.load(self.db, ALICE))
         self.assertIsNotNone(store.load(self.db, BOB))
-        self.assertEqual(counts, {"seen_pruned": 0, "expired": 0, "left_deleted": 1})
+        self.assertEqual(counts, {"seen_pruned": 0, "expired": 0, "left_deleted": 1,
+                                  "access_deleted": 0})
+
+    def test_a_profile_is_removed_thirty_days_after_its_owner_lost_access(self):
+        for uid, days in ((ALICE, 31), (BOB, 29)):
+            self.save(uid)
+            store.record_sent(self.db, uid, ["abcd"], NOW)
+            self.set_columns(uid, access_lapsed_at=NOW - days * DAY)
+
+        counts = store.housekeeping(self.db, NOW)
+
+        self.assertIsNone(store.load(self.db, ALICE))
+        self.assertEqual(self.seen(ALICE), {})
+        self.assertIsNotNone(store.load(self.db, BOB))
+        self.assertEqual(counts, {"seen_pruned": 0, "expired": 0, "left_deleted": 0,
+                                  "access_deleted": 1})
 
 
 class NoticeQueries(StoreTest):
@@ -785,7 +800,7 @@ class ColumnsAndPrivacy(StoreTest):
         table = [r[1] for r in self.db.execute("PRAGMA table_info(intern_profiles)")]
 
         self.assertEqual(list(store.STORED_COLUMNS), table)
-        self.assertEqual(len(table), 33)
+        self.assertEqual(len(table), 34)
         self.assertEqual([f.name for f in dataclasses.fields(profile.Profile)], table)
 
     def test_no_description_names_a_zone_the_host_may_not_use(self):
@@ -796,6 +811,25 @@ class ColumnsAndPrivacy(StoreTest):
     def test_leaving_is_described_without_a_club(self):
         self.assertEqual(store.STORED_COLUMNS["left_at"],
                          "When you left the last server you shared with this bot")
+
+    def test_losing_access_is_described_plainly(self):
+        self.assertEqual(store.STORED_COLUMNS["access_lapsed_at"],
+                         "When you stopped having access to this bot")
+
+    def test_a_users_db_from_before_gains_the_column_and_keeps_its_rows(self):
+        old = sqlite3.connect(":memory:")
+        self.addCleanup(old.close)
+        old.execute(store._PROFILES_DDL)
+        columns = [r[1] for r in old.execute("PRAGMA table_info(intern_profiles)")]
+        old.execute(f"INSERT INTO intern_profiles ({', '.join(columns)}) VALUES "
+                    f"({', '.join('?' * len(columns))})",
+                    store._encode(make(ALICE), tuple(columns)))
+        old.commit()
+
+        store.init_db(old)
+
+        self.assertNotIn("access_lapsed_at", columns)
+        self.assertEqual(store.load(old, ALICE), make(ALICE))
 
     def test_every_column_has_a_plain_english_description(self):
         for column, text in store.STORED_COLUMNS.items():
@@ -820,15 +854,43 @@ class ColumnsAndPrivacy(StoreTest):
         self.assertIsNone(store.privacy_rows(self.db, ALICE))
 
 
+class AccessLapses(StoreTest):
+    """Plan 3.3: 30 days without access deletes a profile, as 30 days after leaving does."""
+
+    def test_the_clock_starts_once_and_a_repeat_does_not_restart_it(self):
+        self.save(ALICE)
+        store.mark_access_lapsed(self.db, ALICE, NOW - 5 * DAY)
+        store.mark_access_lapsed(self.db, ALICE, NOW)
+        self.assertEqual(store.load(self.db, ALICE).access_lapsed_at, NOW - 5 * DAY)
+
+    def test_getting_access_back_stops_it(self):
+        self.save(ALICE)
+        store.mark_access_lapsed(self.db, ALICE, NOW)
+        store.clear_access_lapsed(self.db, ALICE)
+        self.assertIsNone(store.load(self.db, ALICE).access_lapsed_at)
+
+    def test_every_profile_is_listed_with_its_clock(self):
+        self.save(ALICE)
+        self.save(BOB)
+        store.mark_access_lapsed(self.db, BOB, NOW)
+        self.assertEqual(store.access_states(self.db), [(ALICE, None), (BOB, NOW)])
+
+    def test_nobody_without_a_profile_is_written(self):
+        store.mark_access_lapsed(self.db, ALICE, NOW)
+        self.assertIsNone(store.load(self.db, ALICE))
+        self.assertEqual(store.access_states(self.db), [])
+
+
 class Summary(StoreTest):
     def test_summary_counts_and_names_nobody(self):
         self.save(ALICE, alerts="daily", fields=("software", "finance"))
         self.save(BOB, alerts="hourly", fields=("software",))
         self.save(333_333_333_333_333_333, alerts="off", fields=("design",))
-        self.set_columns(BOB, dm_failures=3)
+        self.set_columns(BOB, dm_failures=3, access_lapsed_at=NOW)
         self.set_columns(333_333_333_333_333_333, left_at=NOW)
 
         s = store.summary(self.db)
+        self.assertEqual(s["no_access"], 1)
 
         self.assertEqual((s["profiles"], s["alerting"], s["hourly"], s["daily"], s["weekly"]),
                          (3, 2, 1, 1, 0))

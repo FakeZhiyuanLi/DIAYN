@@ -77,6 +77,7 @@ class Profile:
     created_at: float
     updated_at: float
     active_at: float
+    access_lapsed_at: float | None     # added in place (intern_store._ADDED_COLUMNS)
 
 
 #: What a user may change (spec 3.1 "Writes", less the two timestamps every
@@ -113,7 +114,7 @@ def new_profile(user_id: int, now: float, *, source: str, cursor: float) -> Prof
         alert_hour=DEFAULT_ALERT_HOUR, min_score=DEFAULT_MIN_SCORE, paused_until=None,
         cursor=cursor, last_run_at=now, last_sent_at=None, last_quiet_at=None, dm_failures=0,
         intro_pending=False, left_at=None, expiry_warned_at=None, created_at=now,
-        updated_at=now, active_at=now)
+        updated_at=now, active_at=now, access_lapsed_at=None)
 
 
 def _check_source(source: str) -> None:

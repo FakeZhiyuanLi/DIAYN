@@ -734,6 +734,42 @@ class OnlyThoseWhoMayUseTheBotAreDmed(DeliveryTest):
                       companies_watched=COMPANIES)
 
 
+class AccessLapses(DeliveryTest):
+    """The 30 days start when someone loses access and stop when they get it back."""
+
+    def test_losing_access_starts_the_clock_and_getting_it_back_stops_it(self):
+        self.enrol(ALICE)
+        self.enrol(BOB)
+        self.revoked.add(BOB)
+
+        first = delivery.track_access(self.db, self.allowed, MONDAY)
+        again = delivery.track_access(self.db, self.allowed, MONDAY + DAY)
+        lapsed_at = store.load(self.db, BOB).access_lapsed_at
+        self.revoked.clear()
+        back = delivery.track_access(self.db, self.allowed, MONDAY + 2 * DAY)
+
+        self.assertEqual((first, again, back), ({"lapsed": 1, "restored": 0},
+                                                {"lapsed": 0, "restored": 0},
+                                                {"lapsed": 0, "restored": 1}))
+        self.assertEqual(lapsed_at, MONDAY)
+        self.assertIsNone(store.load(self.db, ALICE).access_lapsed_at)
+        self.assertIsNone(store.load(self.db, BOB).access_lapsed_at)
+
+    def test_thirty_days_without_access_deletes_the_profile(self):
+        self.enrol(ALICE, at=MONDAY - 40 * DAY)
+        self.enrol(BOB, at=MONDAY - 40 * DAY)
+        self.revoked |= {ALICE, BOB}
+        delivery.track_access(self.db, self.allowed, MONDAY - 31 * DAY)
+        self.revoked.discard(BOB)                         # back on day 2
+        delivery.track_access(self.db, self.allowed, MONDAY - 29 * DAY)
+
+        counts = delivery.run_housekeeping(self.db, MONDAY)
+
+        self.assertEqual(counts["access_deleted"], 1)
+        self.assertIsNone(store.load(self.db, ALICE))
+        self.assertIsNotNone(store.load(self.db, BOB))
+
+
 class Housekeeping(DeliveryTest):
     def test_it_runs_once_per_day_in_diayn_tz(self):
         evening = clock(10, 5, 16, 30)                          # 23:30 UTC
