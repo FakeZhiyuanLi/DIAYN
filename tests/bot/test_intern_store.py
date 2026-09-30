@@ -688,12 +688,13 @@ class WriteMigrated(StoreTest):
         # Two rows for one user: one is written, the other is neither written
         # nor already there, so the import cannot vouch for every subscriber.
         with self.assertRaises(store.LegacyImportError) as caught:
-            self.write(rows=((1, "swe", 1), (1, "quant", 0), (2, None, None)))
+            self.write(rows=((ALICE, "swe", 1), (ALICE, "quant", 0), (BOB, None, None)))
 
-        self.assertIsNone(store.load(self.db, 1))
-        self.assertIsNone(store.load(self.db, 2))
+        self.assertIsNone(store.load(self.db, ALICE))
+        self.assertIsNone(store.load(self.db, BOB))
         self.assertIsNone(store.get_meta(self.db, store.LEGACY_IMPORT_KEY))
-        self.assertNotIn(str(ALICE), str(caught.exception))
+        for uid in (ALICE, BOB):
+            self.assertNotIn(str(uid), str(caught.exception))
 
     def test_nothing_to_import_is_still_recorded_as_done(self):
         counts = self.write(rows=())
