@@ -28,6 +28,7 @@ from aiohttp_stub import stub_aiohttp  # noqa: E402
 
 stub_aiohttp()
 
+import diayn  # noqa: E402
 import internship_poller as poller  # noqa: E402
 
 # A line of example.env that sets one variable, commented out or not:
@@ -64,6 +65,30 @@ ALLOWED_PATHS = (
     "tests/test_contract.py", "tests/aiohttp_stub.py", "LICENSE",
     "bot/README.md", "tests/bot/__init__.py", "tests/bot/test_bot_path.py",
 )
+
+
+# The quick start, in the order a stranger types it.
+QUICK_START = (
+    "git clone https://github.com/FakeZhiyuanLi/DIAYN.git",
+    "cd DIAYN",
+    "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt",
+    "cp example.env .env",
+    ".venv/bin/python diayn.py setup",
+    ".venv/bin/python diayn.py run",
+)
+# The settings every host has to know about, whatever else the table holds.
+ESSENTIAL_SETTINGS = ("DISCORD_TOKEN", "POLL_CONTACT", "DIAYN_OWNER_IDS", "DIAYN_TZ",
+                      "DIAYN_DATA", "GEMINI_API_KEY")
+# The project DIAYN grew out of. The README names it once, in one unlinked line.
+PROVENANCE_NAME = "BaronChairStair"
+# How the bot's command modules declare their slash commands, and what each is
+# called in Discord: `@internships.command(name="matches"` is /internships matches.
+SLASH_COMMANDS = {
+    os.path.join("bot", "intern_commands.py"): {"internships": "/internships"},
+    os.path.join("bot", "diayn_commands.py"): {"diayn": "/diayn", "grant": "/diayn grant",
+                                               "revoke": "/diayn revoke"},
+}
+DECLARED = re.compile(r'^@(\w+)\.command\(name="([a-z-]+)"', re.M)
 
 
 def read(name) -> str:
@@ -135,13 +160,70 @@ class Requirements(unittest.TestCase):
                 self.assertRegex(line, r"^[a-z][a-z.-]*==\d+(\.\d+)+$")
 
 
+def section(text, heading) -> str:
+    """The body of the `## heading` section of `text`, up to the next `## `."""
+    start = text.index(f"\n## {heading}\n")
+    end = text.find("\n## ", start + 1)
+    return text[start:end if end != -1 else len(text)]
+
+
 class Readme(unittest.TestCase):
+    """The README, written for a stranger who has only the repository."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.readme = read("README.md")
+
     def test_every_command_has_a_section(self):
-        readme = read("README.md")
+        # The scraper's commands, and DIAYN's own.
         commands = next(a for a in poller.arguments()._actions if a.dest == "cmd").choices
-        for cmd in commands:
+        for cmd in tuple(commands) + diayn.BOT_COMMANDS:
             with self.subTest(cmd=cmd):
-                self.assertIn(f"### `{cmd}`", readme)
+                self.assertIn(f"### `{cmd}`", self.readme)
+
+    def test_the_quick_start_is_the_path_in_order(self):
+        quick_start, at = section(self.readme, "Quick start"), -1
+        for step in QUICK_START:
+            with self.subTest(step=step):
+                found = quick_start.find(step, at + 1)
+                self.assertGreater(found, at)
+                at = found
+
+    def test_the_configuration_table_names_only_variables_the_code_reads(self):
+        read_by_code = {var for _, var, _ in poller.SETTINGS_FROM_ENV} | {ENV_FILE_VARIABLE}
+        named = self.configuration_table()
+        self.assertEqual(named - read_by_code, set())
+        self.assertEqual(set(ESSENTIAL_SETTINGS) - named, set())
+
+    def configuration_table(self) -> set:
+        """Every variable named in the first column of the Configuration table."""
+        named = set()
+        for line in section(self.readme, "Configuration").splitlines():
+            if line.startswith("| `"):
+                named.update(re.findall(r"`([A-Z][A-Z0-9_]*)`", line.split("|")[1]))
+        return named
+
+    def test_every_slash_command_is_listed(self):
+        for module, groups in SLASH_COMMANDS.items():
+            for group, name in DECLARED.findall(read(module)):
+                with self.subTest(command=f"{groups[group]} {name}"):
+                    self.assertIn(f"`{groups[group]} {name}", self.readme)
+
+    def test_says_what_the_discord_portal_needs(self):
+        for needed in ("Server Members Intent", "Public Bot", "applications.commands",
+                       "Reset Token"):
+            with self.subTest(needed=needed):
+                self.assertIn(needed, self.readme)
+
+    def test_says_it_runs_on_linux_and_macos_only(self):
+        self.assertIn("Linux and macOS only", self.readme)
+
+    def test_names_the_project_it_grew_out_of_once_without_a_link(self):
+        lines = [ln for ln in self.readme.splitlines() if PROVENANCE_NAME in ln]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].count(PROVENANCE_NAME), 1)
+        self.assertNotIn("http", lines[0])
+        self.assertNotIn("](", lines[0])
 
 
 class CitedCommits(unittest.TestCase):
