@@ -1,5 +1,5 @@
 """
-Who runs this bot: `access.is_owner`, which gates the owner's commands.
+Who runs this bot, `access.is_owner`, and who else may use it, `access.allowed`.
 
     python3 -m unittest discover -s tests      # no install needed
 
@@ -9,9 +9,16 @@ admins and developers of the team that owns it. Nobody else, and nobody at
 all before either is known: an owner check that failed open would hand the
 owner's commands to anyone.
 
+Everyone else needs a grant, which only the owner gives: one user by id, or a
+whole server. A server grant lets in anyone using the bot inside that server
+and, anywhere else (a DM included), anyone who is a member of it. Grants live
+in users.db's `access_grants`; the policy itself is pure and reads a snapshot
+of them.
+
 The ids here are made up.
 """
 
+import sqlite3
 import types
 import unittest
 from unittest import mock
@@ -20,6 +27,9 @@ import access
 import internship_poller as poller
 
 OWNER, OTHER, TEAM_ADMIN, TEAM_DEV, TEAM_READER = 101, 202, 303, 404, 505
+GRANTED, STRANGER, MEMBER = 606, 707, 808
+CLUB_SERVER, OTHER_SERVER = 9001, 9002
+NOW = 1_790_000_000.0
 
 
 def settings(**environ) -> "poller.Settings":
@@ -103,6 +113,162 @@ class WhatIsNotAnId(_AccessCase):
         self.bind()
         access.set_application_owners({OWNER, "x", True, None})
         self.assertEqual(access.owner_ids(), frozenset({OWNER}))
+
+
+def nobody_asked(guild_ids):
+    raise AssertionError("membership was looked up where it did not need to be")
+
+
+def members_of(*servers, who=MEMBER):
+    """A membership lookup: `who` is a member of `servers`, and nobody is a member of any other.
+    Records the server ids it was asked about."""
+    asked = []
+
+    def lookup(user_id):
+        def member_of(guild_ids):
+            asked.append(frozenset(guild_ids))
+            return user_id == who and bool(set(guild_ids) & set(servers))
+        return member_of
+    lookup.asked = asked
+    return lookup
+
+
+class _GrantsCase(_AccessCase):
+    def setUp(self):
+        super().setUp()
+        self.bind(DIAYN_OWNER_IDS=str(OWNER))
+        self.db = sqlite3.connect(":memory:")
+        self.addCleanup(self.db.close)
+        access.init_db(self.db)
+
+    def may(self, user_id, guild_id=None, member_of=nobody_asked):
+        return access.allowed(access.grants(self.db), user_id, guild_id,
+                              member_of(user_id) if member_of is not nobody_asked else nobody_asked)
+
+
+class ThePolicy(_GrantsCase):
+    """The table in plan 3.3: owner, user grant, server grant, a DM with and without
+    membership, revoked."""
+
+    def test_the_owner_may_use_it_anywhere_with_nothing_granted(self):
+        for guild_id in (None, CLUB_SERVER):
+            with self.subTest(guild_id=guild_id):
+                self.assertTrue(self.may(OWNER, guild_id))
+
+    def test_a_user_granted_by_id_may_use_it_anywhere(self):
+        access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
+        for guild_id in (None, OTHER_SERVER):
+            with self.subTest(guild_id=guild_id):
+                self.assertTrue(self.may(GRANTED, guild_id))
+        self.assertFalse(self.may(STRANGER, None, members_of()))
+
+    def test_anyone_inside_a_granted_server_may_with_no_lookup(self):
+        access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        self.assertTrue(self.may(STRANGER, CLUB_SERVER))
+
+    def test_in_a_dm_a_member_of_a_granted_server_may(self):
+        access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        lookup = members_of(CLUB_SERVER)
+        self.assertTrue(self.may(MEMBER, None, lookup))
+        self.assertEqual(lookup.asked, [frozenset({CLUB_SERVER})])
+
+    def test_in_a_dm_anyone_else_may_not(self):
+        access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        self.assertFalse(self.may(STRANGER, None, members_of(CLUB_SERVER)))
+
+    def test_a_member_of_a_granted_server_may_in_another_server_too(self):
+        # Access belongs to the person: the DMs they would get anyway are no more
+        # private than an ephemeral reply in a server nobody granted.
+        access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        self.assertTrue(self.may(MEMBER, OTHER_SERVER, members_of(CLUB_SERVER)))
+        self.assertFalse(self.may(STRANGER, OTHER_SERVER, members_of(CLUB_SERVER)))
+
+    def test_with_no_server_granted_membership_is_never_looked_up(self):
+        access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
+        self.assertFalse(self.may(STRANGER, None))
+        self.assertFalse(self.may(STRANGER, OTHER_SERVER))
+
+    def test_a_revoked_user_may_not(self):
+        access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
+        self.assertTrue(access.revoke(self.db, "user", GRANTED))
+        self.assertFalse(self.may(GRANTED, None, members_of()))
+
+    def test_a_revoked_server_lets_nobody_in(self):
+        access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        self.assertTrue(access.revoke(self.db, "guild", CLUB_SERVER))
+        self.assertFalse(self.may(STRANGER, CLUB_SERVER))
+        self.assertFalse(self.may(MEMBER, None, members_of(CLUB_SERVER)))
+
+    def test_revoking_a_grant_does_not_revoke_the_owner(self):
+        access.grant(self.db, "user", OWNER, granted_by=OWNER, now=NOW)
+        access.revoke(self.db, "user", OWNER)
+        self.assertTrue(self.may(OWNER))
+
+    def test_a_user_grant_and_a_server_grant_with_the_same_number_are_different_things(self):
+        access.grant(self.db, "user", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        self.assertFalse(self.may(STRANGER, CLUB_SERVER))
+        access.grant(self.db, "guild", GRANTED, granted_by=OWNER, now=NOW)
+        self.assertFalse(self.may(GRANTED, None, members_of()))
+
+    def test_anything_that_is_not_a_user_id_may_not(self):
+        access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        for value in (None, True, str(OWNER), float(OWNER)):
+            with self.subTest(value=value):
+                self.assertFalse(access.allowed(access.grants(self.db), value, CLUB_SERVER,
+                                                nobody_asked))
+
+    def test_without_users_db_only_the_owner_may(self):
+        self.assertEqual(access.grants(None), access.Grants())
+        self.assertTrue(access.allowed(access.grants(None), OWNER, None, nobody_asked))
+        self.assertFalse(access.allowed(access.grants(None), STRANGER, CLUB_SERVER, nobody_asked))
+
+
+class TheGrantsTable(_GrantsCase):
+    def test_it_holds_the_kind_the_id_who_granted_it_and_when(self):
+        columns = [row[1] for row in self.db.execute("PRAGMA table_info(access_grants)")]
+        self.assertEqual(columns, ["kind", "id", "granted_by", "granted_at"])
+
+    def test_making_it_twice_keeps_what_it_holds(self):
+        access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
+        access.init_db(self.db)
+        self.assertEqual(access.grants(self.db).users, frozenset({GRANTED}))
+
+    def test_a_grant_records_who_gave_it_and_when(self):
+        self.assertTrue(access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW))
+        self.assertTrue(access.grant(self.db, "user", GRANTED, granted_by=None, now=NOW + 1))
+        rows = self.db.execute("SELECT kind, id, granted_by, granted_at FROM access_grants "
+                               "ORDER BY kind").fetchall()
+        self.assertEqual(rows, [("guild", CLUB_SERVER, OWNER, NOW), ("user", GRANTED, None, NOW + 1)])
+
+    def test_granting_again_changes_nothing_and_says_so(self):
+        access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
+        self.assertFalse(access.grant(self.db, "user", GRANTED, granted_by=None, now=NOW + 9))
+        self.assertEqual(self.db.execute("SELECT granted_by, granted_at FROM access_grants").fetchall(),
+                         [(OWNER, NOW)])
+
+    def test_revoking_what_was_never_granted_says_so(self):
+        self.assertFalse(access.revoke(self.db, "user", GRANTED))
+        self.assertFalse(access.revoke(self.db, "guild", CLUB_SERVER))
+
+    def test_the_snapshot_splits_users_from_servers(self):
+        access.grant(self.db, "user", GRANTED, granted_by=OWNER, now=NOW)
+        access.grant(self.db, "guild", CLUB_SERVER, granted_by=OWNER, now=NOW)
+        access.grant(self.db, "guild", OTHER_SERVER, granted_by=OWNER, now=NOW)
+        self.assertEqual(access.grants(self.db),
+                         access.Grants(users=frozenset({GRANTED}),
+                                       guilds=frozenset({CLUB_SERVER, OTHER_SERVER})))
+
+    def test_a_kind_or_an_id_it_cannot_hold_is_refused(self):
+        for kind, target in (("role", GRANTED), ("user", 0), ("user", -5), ("guild", "9001"),
+                             ("guild", True), ("user", 2 ** 63)):
+            with self.subTest(kind=kind, target=target):
+                with self.assertRaises(ValueError):
+                    access.grant(self.db, kind, target, granted_by=OWNER, now=NOW)
+                with self.assertRaises(ValueError):
+                    access.revoke(self.db, kind, target)
+        with self.assertRaises(ValueError):
+            access.grant(self.db, "user", GRANTED, granted_by="owner", now=NOW)
+        self.assertEqual(access.grants(self.db), access.Grants())
 
 
 class ImportingReadsNothing(unittest.TestCase):
