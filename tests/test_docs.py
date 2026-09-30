@@ -713,6 +713,17 @@ class Deploy(unittest.TestCase):
         self.assertIn('env: { PYTHONUNBUFFERED: "1" }', self.deploy)
         self.assertIn("clean environment", " ".join(self.deploy.split()))
 
+    def test_pm2_restarts_diayn_by_name_never_through_its_config(self):
+        # Once `diayn` is in `pm2 list`, pm2 start/restart/reload of the config file
+        # restarts it with the shell's whole environment merged back in (pm2's API.js
+        # forces updateEnv there), which filter_env never sees.
+        flat = " ".join(self.deploy.split())
+        self.assertIn("never through the config file", flat)
+        self.assertIn("pm2 delete diayn && pm2 start ~/diayn.config.cjs && pm2 save", flat)
+        for line in self.deploy.splitlines():
+            with self.subTest(line=line):
+                self.assertIsNone(re.match(r"\s*pm2 (restart|reload) \S*diayn\.config", line))
+
     def test_the_backup_script_makes_its_copies_readable_by_its_user_alone(self):
         # cron's umask is 022: without this, every copy of users.db would be mode 644.
         self.assertIn("#!/bin/sh\nset -eu\numask 077\n", section(self.deploy, "Backups"))
@@ -780,7 +791,7 @@ class Deploy(unittest.TestCase):
     def test_sharing_finds_whose_pm2_runs_the_other_bot_before_any_pm2_command(self):
         # pm2 run as another user silently starts a second, empty daemon for that user.
         sharing = section(self.deploy, "Sharing the box with another bot")
-        found = sharing.index("ps -eo user,args | grep '[G]od Daemon'")
+        found = sharing.index("ps -eo user:32,args | grep '[G]od Daemon'")
         self.assertIn("systemctl list-unit-files 'pm2-*'", sharing)
         # The first pm2 command typed in a block, not prose that begins with the word.
         typed = [block.start(1) + line.start() for block in SH_BLOCK.finditer(sharing)

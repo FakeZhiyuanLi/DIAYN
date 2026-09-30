@@ -164,8 +164,8 @@ util-linux on Linux, and `brew install flock` on macOS. On a new VPS, *A fresh
 VPS*, above, installs them. Then pm2 or systemd, below.
 
 Before `setup`, give DIAYN its own application in the Discord developer
-portal, as the README's
-[*The Discord developer portal*](README.md#the-discord-developer-portal) says:
+portal, as the README's [quick start](README.md#quick-start), step 1, and
+[*The Discord developer portal*](README.md#the-discord-developer-portal) say:
 create the application, press **Reset Token** for `DISCORD_TOKEN`, turn
 **Server Members Intent** on, set **Install Link** to **None**, and turn
 **Public Bot** off.
@@ -285,10 +285,14 @@ module.exports = {
   bot. pm2 drops from it every variable whose name contains one of these
   strings, anywhere in the name, and between them they cover every variable
   DIAYN reads. `env:` is applied after the filter, so `PYTHONUNBUFFERED`
-  still arrives, and so would a setting you added there. Restart DIAYN
-  without `--update-env`, which merges the shell's whole environment back in,
-  filter or not. systemd starts DIAYN with a clean environment, so the unit
-  below needs nothing like this.
+  still arrives, and so would a setting you added there. Restart DIAYN by
+  name, `pm2 restart diayn`, never through the config file and never with
+  `--update-env`: once `diayn` is in `pm2 list`, even stopped, a `pm2 start`,
+  `pm2 restart` or `pm2 reload` of `~/diayn.config.cjs` restarts it with the
+  shell's whole environment merged back in, filter or not. To apply an edited
+  config, run `pm2 delete diayn && pm2 start ~/diayn.config.cjs && pm2 save`,
+  as *After a reboot* does. systemd starts DIAYN with a clean environment, so
+  the unit below needs nothing like this.
 - **`watch: false`**, so checking out a new tag never restarts it halfway
   through an upgrade.
 - **`exp_backoff_restart_delay`**, so a crash loop backs off. The sweep loop
@@ -309,6 +313,9 @@ module.exports = {
   SIGKILL.
 
 **Start it now:**
+
+The first time only, while `pm2 list` has no `diayn`. After that, it is
+`pm2 restart diayn`, as `filter_env` above says.
 
 ```sh
 pm2 start ~/diayn.config.cjs
@@ -411,7 +418,7 @@ that user and shows an empty list, and a `pm2 save` or `pm2 startup` there does
 nothing for the other bot.
 
 ```sh
-ps -eo user,args | grep '[G]od Daemon'    # one line per pm2 daemon: its owner, then its PM2_HOME in parentheses
+ps -eo user:32,args | grep '[G]od Daemon' # one line per pm2 daemon: its owner, then its PM2_HOME in parentheses
 systemctl list-unit-files 'pm2-*'         # pm2-<owner>.service, for each user whose pm2 starts at boot
 ```
 
@@ -486,9 +493,6 @@ paths, except what needs `sudo`, which `diayn` does not have: do that from your
 own user. systemd suits it best: `User=diayn` in the unit, which you write and
 start with `sudo` from your own user, and no second pm2. The other bot's pm2
 belongs to another user, so the first step above says systemd too.
-Under pm2, where no other pm2 runs, `diayn` has a pm2 daemon of its own, so
-`pm2 startup` and `pm2-logrotate` are once more, for it; `pm2 startup` prints a
-command to run with `sudo` from your own user.
 
 Look at it as `diayn`, too. After `sudo -iu diayn`, in `~/DIAYN`, run
 `.venv/bin/python diayn.py doctor`, and, under pm2, `pm2 list` and
