@@ -768,6 +768,19 @@ class OnlyThoseWhoMayUseTheBotAreDmed(DeliveryTest):
         self.assertEqual(report.due, 2)
         self.assertEqual(store.load(self.db, BOB).cursor, cursor)
 
+    def test_a_revocation_during_a_notices_pass_stops_the_notes_not_yet_sent(self):
+        self.enrol(ALICE, at=MONDAY - 352 * DAY, alerts="off")    # idle longest: warned first
+        self.enrol(BOB, at=MONDAY - 351 * DAY, alerts="off")      # due its expiry warning
+        self.enrol(CAROL, at=MONDAY - 20 * DAY)                   # due a quiet note
+        self.post(posting("Accountant", MONDAY - DAY))
+        self.outbox.meanwhile[ALICE] = lambda: self.revoked.update({BOB, CAROL})
+
+        result = self.notices(MONDAY)
+
+        self.assertEqual((result, self.outbox.uids()), ({"quiet": 0, "expiry": 1}, [ALICE]))
+        self.assertIsNone(store.load(self.db, BOB).expiry_warned_at)     # warned if access is back
+        self.assertIsNone(store.load(self.db, CAROL).last_quiet_at)
+
     def test_no_quiet_note_or_expiry_warning_goes_to_someone_without_access(self):
         self.enrol(ALICE, at=MONDAY - 20 * DAY)                    # due a quiet note
         self.enrol(BOB, at=MONDAY - 351 * DAY, alerts="off")       # due its expiry warning

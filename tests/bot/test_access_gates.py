@@ -502,6 +502,29 @@ class ARevocationStopsTheDmsNotYetSent(_GateCase):
         self.assertEqual((report.due, report.sent), (2, 1))
         self.assertEqual(intern_store.load(self.db, MEMBER).cursor, NOW)   # left for access back
 
+    def test_revoked_during_a_notices_pass_the_next_note_is_not_sent(self):
+        for uid in (GRANTED, MEMBER):                  # both idle since NOW: warned by id
+            self.grant("user", uid)
+            self.enrol(uid, alerts="off")
+        sent = []
+
+        async def send_dm(uid, msg):
+            sent.append(uid)
+            if uid == GRANTED:
+                access.revoke(self.db, "user", MEMBER)
+
+        async def load_window():
+            return []
+
+        with mock.patch.object(intern_delivery, "SEND_GAP_S", 0):
+            result = asyncio.run(intern_delivery.run_notices(
+                self.db, load_window=load_window, send_dm=send_dm,
+                now=NOW + intern_store.EXPIRY_WARN_S, companies_watched=0,
+                allowed=intern_ui.dm_access()))
+
+        self.assertEqual((sent, result), ([GRANTED], {"quiet": 0, "expiry": 1}))
+        self.assertIsNone(intern_store.load(self.db, MEMBER).expiry_warned_at)
+
 
 @needs_discord
 class TheOpenCommandsAnswerAnyone(_GateCase):

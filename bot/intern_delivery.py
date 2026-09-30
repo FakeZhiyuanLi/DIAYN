@@ -34,9 +34,10 @@ Four rules shape it.
 someone may use the bot (`access.allowed`, as in a DM), and every entry point
 must be given it. Someone without access is never due and never sent a note;
 their cursor stays where it was, so access given back brings one digest of
-what arrived meanwhile, not a flood. An alert asks again right before its send,
-so a revocation during a tick stops the DMs not yet sent, as long as `allowed`
-reads the grants when it is asked (`intern_ui.dm_access` does).
+what arrived meanwhile, not a flood. Every DM, an alert or a note, asks again
+right before its send, so a revocation during a tick stops the DMs not yet
+sent, as long as `allowed` reads the grants when it is asked
+(`intern_ui.dm_access` does).
 
 **Only the settled past is offered, once.** A user's cursor is a `first_seen`
 watermark. A tick offers rows first seen after it and at least SETTLE_S ago
@@ -352,10 +353,12 @@ def _expiry_due(p: Profile, now: float) -> bool:
     return p.expiry_warned_at is None and p.active_at <= now - store.EXPIRY_WARN_S
 
 
-async def _expiry(db: sqlite3.Connection, uid: int, send_dm: SendDm, now: float) -> str:
+async def _expiry(db: sqlite3.Connection, uid: int, send_dm: SendDm, now: float,
+                  allowed: Allowed) -> str:
     p = store.load(db, uid)
-    if p is None or not _expiry_due(p, now):
-        return "skipped"                         # e.g. they ran a command meanwhile
+    # They ran a command, or lost access, since the list was read: asked before each send.
+    if p is None or not _expiry_due(p, now) or not allowed(uid):
+        return "skipped"
     msg = DmMessage(intern_text.expiry_note(p.active_at + store.IDLE_EXPIRE_S), (), False)
     outcome = await _send(db, send_dm, uid, msg, now, offers_postings=False)
     if outcome in ("sent", "forbidden"):
@@ -364,9 +367,9 @@ async def _expiry(db: sqlite3.Connection, uid: int, send_dm: SendDm, now: float)
 
 
 async def _quiet(db: sqlite3.Connection, uid: int, window: _Window, send_dm: SendDm, now: float,
-                 companies: int) -> str:
+                 companies: int, allowed: Allowed) -> str:
     p = store.load(db, uid)
-    if p is None or not _quiet_due(p, now):
+    if p is None or not _quiet_due(p, now) or not allowed(uid):
         return "skipped"
     cands, gmap = window
     # At the user's alert threshold and past their ledger: "would add N" means N more DMs' worth.
@@ -393,7 +396,8 @@ async def run_notices(db: sqlite3.Connection, *, load_window: LoadWindow | None,
     """
     Spec 5.5: expiry warnings first, then quiet notes by longest silence, at most
     MAX_NOTICES_PER_TICK of them together; the rest wait for the next tick.
-    Returns how many of each were delivered. Nobody `allowed` refuses is sent either.
+    Returns how many of each were delivered. Nobody `allowed` refuses is sent either,
+    and it is asked again right before each note, as an alert asks (module docstring).
 
     The warnings go out before the window is read, so a window that fails to
     load cannot hold back the notice before a deletion. `load_window=None`
@@ -407,12 +411,13 @@ async def run_notices(db: sqlite3.Connection, *, load_window: LoadWindow | None,
              if load_window is not None else [])
     tally = Counter()
     for uid in expiring:
-        await _notify("expiry", _expiry(db, uid, send_dm, now), tally)
+        await _notify("expiry", _expiry(db, uid, send_dm, now, allowed), tally)
     if quiet:                                    # only a quiet note's relaxations read the window
         cands = await load_window()
         window: _Window = (cands, intern_match.group_map(cands))
         for uid in quiet:
-            await _notify("quiet", _quiet(db, uid, window, send_dm, now, companies_watched), tally)
+            await _notify("quiet", _quiet(db, uid, window, send_dm, now, companies_watched,
+                                          allowed), tally)
     return {"quiet": tally["quiet"], "expiry": tally["expiry"]}
 
 

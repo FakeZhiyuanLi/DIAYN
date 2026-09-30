@@ -145,17 +145,18 @@ let in.
 Anyone else gets an ephemeral "This bot is private. Ask whoever runs it for
 access.", which never names you. Access is checked in every command, every
 button and menu, the `/internships info` autocomplete, the save step of every
-form, and before every alert.
+form, and before every DM the bot sends on its own: an alert, a quiet note or
+an expiry warning.
 
 **Always open, with or without access:** anything that removes data or reduces
 contact. `/internships delete`, the profile card's "Delete my data" and its
 confirmation, and the alert buttons "Stop" and "Pause". Nobody is ever stuck
 with their data or their alerts.
 
-**Taking access away** stops alerts at once: a delivery tick asks again before
-every DM, so even one already running sends nothing more. A profile whose
-owner has had no access for 30 days is deleted, as is one whose owner has left
-every server the bot shares with them for 30 days.
+**Taking access away** stops alerts and notes at once: a delivery tick asks
+again before every DM, so even one already running sends nothing more. A
+profile whose owner has had no access for 30 days is deleted, as is one whose
+owner has left every server the bot shares with them for 30 days.
 
 Grant and revoke in Discord with `/diayn grant` and `/diayn revoke`, or from
 the host with [`.venv/bin/python diayn.py grant`](#grant), which works before

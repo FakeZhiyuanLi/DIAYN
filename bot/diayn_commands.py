@@ -15,8 +15,9 @@ words that name nobody. Every reply is private and mentions nobody.
 
 A grant or a revoke is one row of users.db's `access_grants`, the rows
 `diayn.py grant` and `revoke` write without Discord. The finder reads them on
-every check, so the next command sees the change, and a revoke stops alerts at
-the next delivery tick and starts the 30 days after which the profile goes.
+every check, so the next command sees the change. Delivery asks again before
+every alert and note, so a revoke stops the DMs a tick has not sent yet, even
+one already running, and starts the 30 days after which the profile goes.
 `debug` is the report `intern_commands.debug_report` builds.
 """
 
