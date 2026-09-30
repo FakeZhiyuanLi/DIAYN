@@ -20,8 +20,10 @@ stderr, in the scraper's words unless the caller names itself and its
 fallback, and never carries the key, the prompt or the answer.
 
 Retried: a timeout, a dropped connection, and HTTP 429, 500 and 503, after
-`backoff(attempt)` seconds. Not retried: any other status, and an answer that
-does not parse, which a model gives again for the same prompt.
+`backoff(attempt)` seconds, waited through the caller's `sleep` when it hands
+one in (the fit check does, so its tests and its deadline see every wait), else
+`asyncio.sleep`. Not retried: any other status, and an answer that does not
+parse, which a model gives again for the same prompt.
 
 The politeness gate does not apply: `polite_session` exempts this host, whose
 limit is the caller's budget rather than someone else's server.
@@ -50,6 +52,7 @@ _CHARS_PER_TOKEN, _OVERHEAD_TOKENS = 4, 64
 
 Acquire = Callable[[], Awaitable[bool]]
 OnUsage = Callable[[object], None]
+Sleep = Callable[[float], Awaitable[None]]
 
 
 class LlmError(Exception):
@@ -101,16 +104,19 @@ def _parse(body: object, on_usage: OnUsage | None) -> object:
 
 async def generate_json(sess, *, key: str, model: str, prompt: str, schema: dict,
                         max_attempts: int, acquire: Acquire, on_usage: OnUsage | None = None,
-                        label: str = "llm", fallback: str = "regex") -> object:
+                        label: str = "llm", fallback: str = "regex",
+                        sleep: Sleep | None = None) -> object:
     """
     Asks `model` for JSON matching `schema` and returns it parsed. Raises LlmError.
 
     `sess` is an aiohttp session (or anything with its `post`); `acquire` is asked
     before each attempt and a False ends the request unsent; `on_usage` gets each
     parsed reply's usageMetadata. `label` and `fallback` fill the lines printed on
-    a failure: "  {label}: HTTP 403 — falling back to {fallback}".
+    a failure: "  {label}: HTTP 403 — falling back to {fallback}". `sleep` waits out
+    each retry's backoff; None is `asyncio.sleep`, looked up when it is needed.
     """
     url, body = GEMINI_URL.format(model=model), request_body(prompt, schema)
+    wait = sleep or asyncio.sleep
     status = None
     for attempt in range(max_attempts):
         if not await acquire():
@@ -119,7 +125,7 @@ async def generate_json(sess, *, key: str, model: str, prompt: str, schema: dict
             async with sess.post(url, json=body, headers={"x-goog-api-key": key}) as r:
                 status = r.status
                 if status in RETRY_STATUSES:
-                    await asyncio.sleep(backoff(attempt))
+                    await wait(backoff(attempt))
                     continue
                 if status != 200:
                     _say(label, f"HTTP {status} — falling back to {fallback}")
@@ -134,7 +140,7 @@ async def generate_json(sess, *, key: str, model: str, prompt: str, schema: dict
                     f" — retrying in {backoff(attempt):.0f}s"))
             if last:
                 raise LlmError(type(e).__name__) from None
-            await asyncio.sleep(backoff(attempt))
+            await wait(backoff(attempt))
             continue
         except Exception as e:
             _say(label, f"{type(e).__name__} — falling back to {fallback}")

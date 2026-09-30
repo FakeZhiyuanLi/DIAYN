@@ -429,13 +429,15 @@ def with_cached(db: sqlite3.Connection, p: Profile, matches: Sequence[Match]) ->
 
 async def _request(text: str, budget: Budget, session) -> object:
     """One request through llm.generate_json, on `session`, or on a session of its own
-    whose timeout is GEMINI_HTTP_TIMEOUT."""
+    whose timeout is GEMINI_HTTP_TIMEOUT. Its retries back off through the budget's
+    sleep, the one `check` was given."""
     import aiohttp
     import llm
     s = _settings()
     ask = dict(key=s.gemini_key, model=s.gemini_model, prompt=text, schema=FIT_SCHEMA,
                max_attempts=s.llm_max_attempts, acquire=budget.acquire,
-               on_usage=budget.record_usage, label=_LOG, fallback="sending unchecked")
+               on_usage=budget.record_usage, label=_LOG, fallback="sending unchecked",
+               sleep=budget.sleep)
     if session is not None:
         return await llm.generate_json(session, **ask)
     async with aiohttp.ClientSession(

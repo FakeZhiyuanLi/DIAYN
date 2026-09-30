@@ -472,6 +472,8 @@ class Unchecked(FitTest):
                            healthy, now=NOW + fit.COOL_OFF_S)
 
         self.assertEqual(tried, 3)                       # GEMINI_MAX_ATTEMPTS, then it gave up
+        # Each retry's backoff went through the check's own sleep, so none was real.
+        self.assertEqual(self.slept, [5, 10, 20])
         self.assertEqual(healthy.requests, 1)            # not while cooling off; after, yes
         self.assertEqual([m.fit for m in soon], [None] * 3)
         self.assertTrue(all(m.fit for m in later))

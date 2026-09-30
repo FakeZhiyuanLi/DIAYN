@@ -204,6 +204,21 @@ class Failures(unittest.TestCase):
             "  llm: TimeoutError (attempt 2/2) — falling back to regex"])
         self.assertEqual(slept.await_count, 1)
 
+    def test_the_backoff_waits_through_the_callers_sleep_when_given_one(self):
+        # A caller that paces itself (the fit check) hands its own sleep in, so its
+        # tests, and its deadline, see every wait the retries make.
+        session = FakeSession(Response(503), asyncio.TimeoutError(), Response(200, gemini_body("[4]")))
+        waits = []
+
+        async def sleep(seconds):
+            waits.append(seconds)
+
+        result, _, slept = ask(session, sleep=sleep)
+
+        self.assertEqual(result, [4])
+        self.assertEqual(waits, [llm.backoff(0), llm.backoff(1)])
+        self.assertEqual(slept.await_count, 0)
+
     def test_a_transient_failure_then_an_answer_is_the_answer(self):
         session = FakeSession(ConnectionResetError(), Response(200, gemini_body('[3]')))
 
