@@ -88,7 +88,21 @@ absolute path.
     python diayn.py <command> [options]          # the same, through DIAYN's entry point
 
 `diayn.py` runs every command below with the same arguments and exit codes.
-Of its own commands for the Discord bot, three are built:
+Of its own commands for the Discord bot, four are built:
+
+    python diayn.py run                      # --interval N and --llm as for watch
+
+runs the Discord bot and the sweep loop together, in one process, until it is
+stopped. It holds the sweeper lock for as long as it runs, taken before it
+logs in to Discord, so a second `run`, or a `watch` beside it, exits 3 and
+never starts a second bot on the same token. The sweep loop is `watch`'s own:
+a failed sweep is logged and the next runs a full interval later. If the loop
+ever ends, the process exits 1, so that pm2 or systemd starts it again rather
+than leaving a bot with nothing sweeping behind it. The bot reads
+`postings.db` only through the contract, on a read-only connection of its own.
+`run` needs `DISCORD_TOKEN`, and refuses to start without a `postings.db`: it
+never makes one. `watch` still runs the sweep loop alone, for a host that
+wants the two apart.
 
     python diayn.py grant --user <id>        # or --server <id>
     python diayn.py revoke --user <id>       # or --server <id>
@@ -110,8 +124,8 @@ copies the subscribers of the old `/internships ping` tracker out of its bot's
 old file read-only and leaves it as it was. It runs once: a second run is
 refused, so nobody who has since deleted their data comes back. It prints
 counts only, and exits 1 unless every subscriber was either imported or
-already had a profile. The others (`setup`, `doctor` and `run`) are not built
-yet: each says so and exits 2.
+already had a profile. The others (`setup` and `doctor`) are not built yet:
+each says so and exits 2.
 
 **The sweeper lock.** Exactly one process may write `postings.db`. The commands
 that write hold `<POSTINGS_DB>.lock` while they run, and `watch` holds it for

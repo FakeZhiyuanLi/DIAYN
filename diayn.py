@@ -24,30 +24,47 @@ without Discord: a host can grant before the bot's first start. They write
 users.db's access_grants, which the running bot reads on every check, and
 print what they did, never an id.
 
+    python diayn.py run [--interval N] [--llm]
+
+runs the Discord bot and the sweep loop together, in one process, until it is
+stopped. It holds the sweeper lock for as long as it runs, so a second `run`,
+or a `watch` beside it, exits 3 before anything logs in to Discord. The bot
+reads postings.db only through the contract, on a read-only connection of its
+own; the sweep loop is the scraper's own `watch`, on the writer connection. If
+the sweep loop ever ends, the process exits 1, so that whatever runs it starts
+it again. `internship_poller.py watch` still runs the sweep loop alone, for a
+host that wants the two apart.
+
 The rest are in PLANNED_COMMANDS until they are built. Each says so and exits
 2, without importing the scraper or touching a file.
 
 Importing this module is inert. The scraper is imported only when a scraper
 command, a bot command, or the list of commands is asked for, so the planned
-commands work on a box without aiohttp.
+commands work on a box without aiohttp. The Discord client, and discord.py with
+it, is imported only by `run`.
 """
 
 import argparse
+import asyncio
 import os
 import pathlib
 import sqlite3
 import sys
 import time
+import traceback
 
 CHECKOUT = os.path.dirname(os.path.abspath(__file__))
 # The finder's modules, which use bare imports with this directory on sys.path.
 BOT_DIR = os.path.join(CHECKOUT, "bot")
 IMPORT_LEGACY = "import-legacy"
 GRANT, REVOKE = "grant", "revoke"
+RUN = "run"
 # DIAYN's own commands that are built.
-BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE)
+BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE, RUN)
 # DIAYN's own commands, each built in a later change.
-PLANNED_COMMANDS = ("setup", "doctor", "run")
+PLANNED_COMMANDS = ("setup", "doctor")
+# What makes a new postings.db, which `run` never does.
+SETUP_COMMAND = "python diayn.py setup"
 HELP_FLAGS = ("-h", "--help")
 # argparse's code for a usage error, which the scraper exits with too.
 USAGE_EXIT = 2
@@ -248,6 +265,154 @@ def cmd_access(poller, command, argv) -> int:
     return change_access(command, kind, target_id, settings.users_db, time.time())
 
 
+# ------------------------------------------------------------------ run
+
+def discord_bot():
+    """
+    `run`'s bot: a function of the bound settings that returns the coroutine building
+    bot/app.py's client and serving it until it stops. app, and discord.py with it, is
+    imported here, so a box without discord.py is refused before anything is locked;
+    the client is built inside the coroutine, after the sweep loop's connection has
+    published the registry the bot's reader checks.
+    """
+    _bot_path()
+    import app
+
+    async def serve(settings):
+        await app.serve(app.build(), settings.discord_token)
+    return serve
+
+
+def _how_it_ended(task) -> str:
+    """Why a finished task finished, for the log."""
+    if task.cancelled():
+        return "it was cancelled"
+    error = task.exception()
+    if error is None:
+        return "it returned"
+    return f"{type(error).__name__}: {error}"
+
+
+async def run_together(bot, sweep) -> int:
+    """
+    Runs `bot` and `sweep`, two coroutines, as tasks in this loop until the bot stops;
+    returns the exit code: 0 when the bot stopped, FAILED_EXIT when the sweep loop ended.
+
+    The sweep loop is not meant to end: the scraper's cmd_watch outlives a failed
+    sweep. If it ends anyway, a done-callback logs why and stops the bot, and the
+    process exits non-zero, so pm2 or systemd starts it again with its sweeps.
+    Otherwise the bot would go on answering from a ledger nothing updates. When the
+    bot stops first, the sweep loop is cancelled and waited for, so it is finished
+    before its connection closes. An exception from the bot is raised from here.
+    """
+    bot_task = asyncio.create_task(bot, name="bot")
+    sweep_task = asyncio.create_task(sweep, name="sweep loop")
+    ended = []
+
+    def on_sweep_done(task):
+        if bot_task.done():             # the bot stopped first, and cancelled it
+            return
+        ended.append(_how_it_ended(task))
+        if not task.cancelled() and task.exception() is not None:
+            traceback.print_exception(task.exception(), file=sys.stderr)
+        scraper().log(f"sweep loop ended ({ended[0]}); stopping the bot, so that whatever "
+                      "runs DIAYN starts both again", file=sys.stderr)
+        bot_task.cancel()
+
+    sweep_task.add_done_callback(on_sweep_done)
+    try:
+        await bot_task
+    except asyncio.CancelledError:
+        if not ended:
+            raise
+    finally:
+        sweep_task.cancel()
+        await asyncio.wait([sweep_task])
+    return FAILED_EXIT if ended else 0
+
+
+def _run_arguments(poller, argv) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog=f"diayn.py {RUN}",
+        description="Run the Discord bot and the sweep loop together, until stopped.")
+    parser.add_argument("--interval", type=int, default=poller.DEFAULT_INTERVAL_S,
+                        help="seconds between sweeps, as for `watch` "
+                             f"(default {poller.DEFAULT_INTERVAL_S}, "
+                             f"at least {poller.MIN_INTERVAL_S})")
+    parser.add_argument("--llm", action="store_true",
+                        help="classify new postings with Gemini, as `watch --llm` does "
+                             "(needs GEMINI_API_KEY)")
+    args = parser.parse_args(argv)
+    if args.interval < poller.MIN_INTERVAL_S:
+        parser.error(f"--interval {args.interval}: sweeps are at least "
+                     f"{poller.MIN_INTERVAL_S} seconds apart. "
+                     f"Pass {poller.MIN_INTERVAL_S} or more.")
+    return args
+
+
+def _database_refusal(error, path) -> str:
+    """What `run` says when postings.db is refused: a missing one points at setup."""
+    if not os.path.exists(path):
+        return (f"{path}: no such database. `{SETUP_COMMAND}` makes one, with a first "
+                "sweep that records every posting open now as seen, so that none is "
+                "announced. If this box has one, check DIAYN_DATA and POSTINGS_DB: "
+                "`python diayn.py config` shows the path in use.")
+    return (f"{error}\n`diayn.py {RUN}` never makes or bootstraps postings.db; "
+            f"for a new one, `{SETUP_COMMAND}` does.")
+
+
+def _serve_and_sweep(poller, settings, interval, bot, watch) -> int:
+    """Takes the lock for life, then opens the writer, then runs both tasks."""
+    with poller.sweeper_lock(settings.postings_db):
+        conn = poller.open_for_sweeping(init=False, interval=interval)
+        try:
+            return asyncio.run(run_together(bot(settings), watch(conn)))
+        finally:
+            conn.close()
+
+
+def cmd_run(poller, argv, bot=None, watch=None) -> int:
+    """
+    `run [--interval N] [--llm]`: the Discord bot and the sweep loop in one process, until
+    stopped; returns the exit code. The settings are bound (the scraper's boot()) before
+    anything else, and the lock is taken before the bot is built or logs in.
+
+    `bot`, a function of the settings returning the bot's coroutine, and `watch`, a
+    function of the writer connection returning the sweep loop's, are for the tests.
+    By default they are bot/app.py's client and the scraper's cmd_watch.
+    """
+    args = _run_arguments(poller, argv)
+    try:
+        poller.boot()
+    except poller.ConfigError as e:
+        return _refused(e, RUN)
+    settings = poller.SETTINGS
+    if not (settings.discord_token or "").strip():
+        return _refused("DISCORD_TOKEN is not set: the bot's token, "
+                        "from the Discord developer portal", RUN)
+    if bot is None:
+        try:
+            bot = discord_bot()
+        except ModuleNotFoundError as e:
+            return _refused(f"the bot needs {e.name}, which is not installed. "
+                            "Install the requirements: pip install -r requirements.txt", RUN)
+    if watch is None:
+        def watch(conn):
+            return poller.cmd_watch(conn, args.interval, use_llm=args.llm)
+    try:
+        return _serve_and_sweep(poller, settings, args.interval, bot, watch)
+    except poller.LockHeld as e:
+        print(f"diayn.py {RUN}: {e}", file=sys.stderr)
+        return poller.LOCK_HELD_EXIT
+    except poller.DatabaseRefused as e:
+        return _refused(_database_refusal(e, settings.postings_db), RUN)
+    except poller.SchemaMismatch as e:
+        return _refused(e, RUN)
+    except KeyboardInterrupt:
+        print("\nstopped.")
+        return 0
+
+
 # ------------------------------------------------------------------ dispatch
 
 def main(argv=None) -> int:
@@ -272,6 +437,8 @@ def main(argv=None) -> int:
         return cmd_import_legacy(poller, argv[1:])
     if command in (GRANT, REVOKE):
         return cmd_access(poller, command, argv[1:])
+    if command == RUN:
+        return cmd_run(poller, argv[1:])
     if command in HELP_FLAGS:
         print(usage(poller.COMMANDS))
         return 0

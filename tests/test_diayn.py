@@ -40,8 +40,8 @@ import internship_poller as poller  # noqa: E402
 from test_cli import CHILD as SCRAPER_CHILD  # noqa: E402
 from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, copy_scraper, v2_fixture  # noqa: E402
 
-PLANNED = ("setup", "doctor", "run")
-BUILT = ("import-legacy", "grant", "revoke")
+PLANNED = ("setup", "doctor")
+BUILT = ("import-legacy", "grant", "revoke", "run")
 USAGE_ERROR, FAILED, LOCK_HELD = 2, 1, 3
 
 # The child: the temporary checkout first on the path, so `import diayn` and
