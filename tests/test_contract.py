@@ -3,10 +3,9 @@ The read contract: what postings.db promises the bot that reads it.
 
     python3 -m unittest discover -s tests      # no install needed
 
-The scraper writes postings.db and the BaronChairStair bot reads it, from
-another repository and another process. Nothing but this contract holds the two
-together, so its machine-readable half lives in contract/ and these tests pin
-the code to it:
+The scraper writes postings.db and the bot in bot/ reads it, on a read-only
+connection of its own. The bot may assume only what this contract says, so its
+machine-readable half lives in contract/ and these tests pin the scraper to it:
 
   * the schema db_init() makes is exactly contract/postings_v1.sql;
   * the three contract tables are filled, and refreshed inside a sweep's own
@@ -151,8 +150,8 @@ class TempDirTest(unittest.TestCase):
 
 class Schema(TempDirTest):
     def test_db_init_makes_exactly_the_contract_schema(self):
-        # The bot vendors postings_v1.sql and builds its fixtures from it, so
-        # a column db_init adds, drops or reorders without it is a bot tested
+        # The bot's tests build their fixtures from postings_v1.sql, so a
+        # column db_init adds, drops or reorders without it is a bot tested
         # against a file that no longer exists.
         expected, _ = contract_schema()
         with scraper(self.dir):

@@ -283,6 +283,39 @@ class Deploy(unittest.TestCase):
                 self.assertNotIn(gone, self.deploy)
 
 
+class Contract(unittest.TestCase):
+    """CONTRACT.md: the rules between the scraper and the bot, inside this repository.
+    Runtime messages and docstrings cite its promises by number (P5, B7), so every
+    number stays."""
+
+    PROMISES = tuple(f"P{n}" for n in range(1, 9)) + tuple(f"B{n}" for n in range(1, 8))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.contract = read("CONTRACT.md")
+
+    def test_keeps_every_promise_as_a_row(self):
+        for promise in self.PROMISES:
+            with self.subTest(promise=promise):
+                self.assertRegex(self.contract, rf"(?m)^\| {promise} \| \S")
+
+    def test_names_the_version_both_halves_check(self):
+        declared = re.compile(r'^CONTRACT_VERSION = "(\d+)"', re.M)
+        bot_version = declared.search(read(os.path.join("bot", "postings_contract.py"))).group(1)
+        title = re.search(r"^# .* contract, v(\d+)$", self.contract, re.M)
+        self.assertIsNotNone(title)
+        self.assertEqual({title.group(1), bot_version}, {poller.CONTRACT_VERSION})
+
+    def test_is_about_one_repository(self):
+        # The two halves were once in two repositories, one vendoring the other's
+        # fixtures at a tag, with a staged move between them. None of that is left.
+        text = self.contract.lower()
+        for gone in ("vendor", "client/fixtures", "another repository", "both repositories",
+                     "stage 3", "`external` mode", PROVENANCE_NAME.lower()):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, text)
+
+
 class CitedCommits(unittest.TestCase):
     def test_documents_cite_only_post_rewrite_commits(self):
         for name in sorted(n for n in os.listdir(ROOT) if n.endswith(".md")):

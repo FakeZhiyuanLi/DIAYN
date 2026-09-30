@@ -30,7 +30,7 @@ working directory's. Every variable, and its default, is in Settings below.
 Rows older than 30 days are deleted from `postings` on every sweep. A separate
 `seen` table keeps every id forever, so pruned roles are never re-announced.
 
-postings.db is read by the BaronChairStair bot, under the promises in
+postings.db is read by DIAYN's bot, in bot/, under the promises in
 CONTRACT.md; contract/ holds their machine-readable half. Nothing creates the
 file unasked: `sweep` and `watch` refuse a missing file, or an empty ledger,
 without --init.
