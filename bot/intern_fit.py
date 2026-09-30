@@ -23,18 +23,24 @@ after 45 days, as sent roles do (`prune`, from the daily housekeeping).
 **Its own budget.** At most FIT_BATCH roles a request. FIT_RPD requests a
 day, the day being the date in LLM_DAY_TZ as for the scraper's --llm, counted
 in `fit_usage` with the tokens each reply reports; FIT_RPM a minute, paced in
-memory (`Pace`), so a busy alert hour waits its turn rather than going
-unchecked. It shares GEMINI_API_KEY and GEMINI_MODEL with --llm, and the two
-budgets together must fit the key's quota.
+memory (`Pace`), so a busy alert hour waits its turn, within the tick's
+deadline, rather than going unchecked. It shares GEMINI_API_KEY and
+GEMINI_MODEL with --llm, and the two budgets together must fit the key's quota.
+
+**Its own deadlines.** A request, its waits for the minute's budget and its
+retries included, gets REQUEST_DEADLINE_S, and every request of one delivery
+tick together get TICK_DEADLINE_S (`checker`). They hold whatever
+GEMINI_HTTP_TIMEOUT says, where 0 means no HTTP deadline at all: an alert never
+waits on Gemini for longer than these.
 
 **It never holds an alert back.** No key, the profile's owner turned it off,
-the day's budget is spent, the request fails or the answer does not parse:
-the matches come back as the matcher ranked them, unchecked and without a
-reason line. Verdicts already cached still apply. A request that fails can
-take GEMINI_MAX_ATTEMPTS times GEMINI_HTTP_TIMEOUT to give up, so after one
-the check asks nothing for COOL_OFF_S: in an outage one alert waits, not every
-alert in turn. The last failure's class is kept in `last_error` for
-`/diayn debug`.
+the day's budget is spent, the request fails, runs out of time or the answer
+does not parse: the matches come back as the matcher ranked them, unchecked
+and without a reason line. Verdicts already cached still apply. A request that
+fails or times out has cost a wait, so after one the check asks nothing for
+COOL_OFF_S: in an outage one alert waits, not every alert in turn. A tick that
+has spent its time is not an outage, and the next tick asks again. The last
+failure's class is kept in `last_error` for `/diayn debug`.
 
 The request goes through `llm.generate_json`, the code the scraper's --llm
 uses. Importing this module reads nothing and imports neither aiohttp nor the
@@ -76,8 +82,15 @@ _TITLE_MAX, _COMPANY_MAX, _LOCATION_MAX = 200, 100, 120
 _MINUTE_S = 60.0
 #: How long the check asks nothing after a request failed: two delivery ticks.
 COOL_OFF_S = 600
-#: Failures that say nothing about the service, so start no cool-off: they cost no wait.
-_NOT_AN_OUTAGE = frozenset({"budget spent", "unparseable response"})
+#: The longest one request may take, its budget waits and retries included, whatever
+#: GEMINI_HTTP_TIMEOUT says; after it, that alert goes out unchecked.
+REQUEST_DEADLINE_S = 90
+#: The longest every request of one delivery tick may take together, well inside the
+#: five-minute tick; after it, the tick's other alerts go out unchecked.
+TICK_DEADLINE_S = 180
+_TIMED_OUT, _OUT_OF_TIME = "timed out", "out of time this tick"
+#: Failures that say nothing about the service, so start no cool-off.
+_NOT_AN_OUTAGE = frozenset({"budget spent", "unparseable response", _OUT_OF_TIME})
 #: How many times a request waits for the minute's budget before it goes unchecked.
 _MAX_WAITS = 12
 _ORDER = {"fit": 0, "unsure": 1}
@@ -446,17 +459,25 @@ async def _request(text: str, budget: Budget, session) -> object:
 
 
 async def _ask(db: sqlite3.Connection, p: Profile, fp: str, todo: Sequence[Match], now: float,
-               *, session, pace: Pace, sleep, clock) -> dict[str, Verdict]:
-    """Verdicts for `todo` in one request, cached; nothing when anything goes wrong."""
+               *, session, pace: Pace, sleep, clock, limit: float) -> dict[str, Verdict]:
+    """Verdicts for `todo` in one request of at most `limit` seconds, cached; nothing
+    when anything goes wrong."""
     import llm
     s = _settings()
     budget = Budget(db, quota_day(now), rpd=s.fit_rpd, rpm=s.fit_rpm, pace=pace, clock=clock,
                     sleep=sleep)
     try:
-        data = await _request(prompt(request_payload(p, todo)), budget, session)
+        data = await asyncio.wait_for(_request(prompt(request_payload(p, todo)), budget,
+                                               session), limit)
         by_number = parse_verdicts(data, len(todo))
     except llm.LlmError as error:
         _note_failure(str(error), now)
+        return {}
+    except asyncio.TimeoutError:
+        cut_short = limit < REQUEST_DEADLINE_S       # by the tick's deadline, not its own
+        print(f"  {_LOG}: {_OUT_OF_TIME if cut_short else _TIMED_OUT} — falling back to "
+              "sending unchecked", file=sys.stderr)
+        _note_failure(_OUT_OF_TIME if cut_short else _TIMED_OUT, now)
         return {}
     except Unparseable:
         print(f"  {_LOG}: unparseable response — falling back to sending unchecked",
@@ -471,30 +492,37 @@ async def _ask(db: sqlite3.Connection, p: Profile, fp: str, todo: Sequence[Match
 async def check(db: sqlite3.Connection, p: Profile, matches: Sequence[Match], now: float, *,
                 session=None, pace: Pace | None = None,
                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                clock: Callable[[], float] = time.time) -> list[Match]:
+                clock: Callable[[], float] = time.time,
+                limit: float | None = None) -> list[Match]:
     """
     The matches to send to `p`, as `ordered` puts them. Cached verdicts are used; up to
-    FIT_BATCH of the rest go to Gemini in one request, unless a failure has it cooling
-    off. With the check off for `p`, or anything failing, whatever has no verdict comes
-    back unchecked (module docstring).
+    FIT_BATCH of the rest go to Gemini in one request of at most `limit` seconds
+    (None: REQUEST_DEADLINE_S), unless a failure has it cooling off or `limit` is spent.
+    With the check off for `p`, or anything failing, whatever has no verdict comes back
+    unchecked (module docstring).
     """
     if not matches or not enabled(p):
         return list(matches)
+    limit = REQUEST_DEADLINE_S if limit is None else min(limit, REQUEST_DEADLINE_S)
     fp = profile_fp(p)
     known = cached(db, fp, (m.cand.rk_hash for m in matches))
     todo = list({m.cand.rk_hash: m for m in matches
                  if m.cand.rk_hash not in known}.values())[:_settings().fit_batch]
+    asking = todo and now >= quiet_until and limit > 0
     fresh = await _ask(db, p, fp, todo, now, session=session, pace=pace or PACE, sleep=sleep,
-                       clock=clock) if todo and now >= quiet_until else {}
+                       clock=clock, limit=limit) if asking else {}
     return ordered(matches, {**known, **fresh})
 
 
 def checker(db: sqlite3.Connection) -> FitCheck:
-    """`check` on users.db, for a delivery tick: it never raises. A failure of any kind is
-    logged by its type and the matches go out unchecked."""
+    """`check` on users.db, for one delivery tick: it never raises. Every request it makes
+    shares TICK_DEADLINE_S, counted from now, so make one per tick. A failure of any kind
+    is logged by its type and the matches go out unchecked."""
+    ends = time.monotonic() + TICK_DEADLINE_S
+
     async def check_one(p: Profile, matches: Sequence[Match], now: float) -> list[Match]:
         try:
-            return await check(db, p, matches, now)
+            return await check(db, p, matches, now, limit=ends - time.monotonic())
         except Exception as error:       # an alert must never wait on the check
             print(f"{_LOG} failed: {type(error).__name__}", file=sys.stderr)
             _note_failure(type(error).__name__, now)

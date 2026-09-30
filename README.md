@@ -430,9 +430,12 @@ verdicts and never makes a request.
 
 The check never holds an alert back. Without a key, with the day's budget
 spent, on an API error or an answer that does not parse, the alert goes out
-with the rule-based matches unchecked and no reason lines. After a request
-fails, the check asks nothing for ten minutes, so an outage costs one alert a
-wait rather than every alert in turn. `/diayn debug` shows the day's requests
+with the rule-based matches unchecked and no reason lines. It keeps its own
+time, whatever `GEMINI_HTTP_TIMEOUT` says (where 0 means no deadline): a request
+gets 90 seconds, its retries included, and all the requests of one delivery tick
+get three minutes together; whatever they do not reach goes out unchecked.
+After a request fails or times out, the check asks nothing for ten minutes, so
+an outage costs one alert a wait rather than every alert in turn. `/diayn debug` shows the day's requests
 and tokens and the class of the last failure. Each person can turn the check
 off from their profile card; it is on for everyone else. What it sends is
 listed under [Privacy](#privacy).

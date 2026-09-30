@@ -518,6 +518,69 @@ class Unchecked(FitTest):
         self.assertEqual(fit.last_error, ("OperationalError", NOW))
 
 
+class Hanging(Response):
+    """A reply that never comes: the request is left waiting until something gives up."""
+
+    def __init__(self):
+        super().__init__(200)
+
+    async def __aenter__(self):
+        await asyncio.Event().wait()
+
+
+class ItsOwnDeadlines(FitTest):
+    """The check stops waiting on its own clock, whatever GEMINI_HTTP_TIMEOUT says: 0
+    there means no HTTP deadline at all, and an alert must never wait forever."""
+
+    def test_the_deadlines_are_a_request_and_a_tick(self):
+        self.assertEqual((fit.REQUEST_DEADLINE_S, fit.TICK_DEADLINE_S), (90, 180))
+        self.assertLess(fit.TICK_DEADLINE_S, 300)       # inside one five-minute delivery tick
+
+    def test_a_request_that_never_answers_goes_unchecked_even_with_no_http_timeout(self):
+        matches = self.matches()
+        with with_settings(GEMINI_HTTP_TIMEOUT="0"), \
+                mock.patch.object(fit, "REQUEST_DEADLINE_S", 0.05):
+            kept = self.check(person(), matches, FakeGemini(lambda payload: Hanging()))
+
+        self.assertEqual([m.fit for m in kept], [None] * 3)
+        self.assertEqual([m.cand.rowid for m in kept], [m.cand.rowid for m in matches])
+        self.assertEqual(fit.last_error, ("timed out", NOW))
+        self.assertEqual(fit.quiet_until, NOW + fit.COOL_OFF_S)     # an outage: it cools off
+
+    def test_a_tick_stops_asking_once_its_time_is_spent(self):
+        asked = []
+
+        async def never_answers(text, budget, session):
+            asked.append(text)
+            await asyncio.Event().wait()
+
+        people = [profile.with_changes(person(), NOW, keywords=(f"k{n}",)) for n in range(3)]
+        matches = self.matches()
+        stderr = io.StringIO()
+        with mock.patch.object(fit, "_request", never_answers), \
+                mock.patch.object(fit, "TICK_DEADLINE_S", 0.1), \
+                contextlib.redirect_stderr(stderr):
+            check_one = fit.checker(self.db)
+            kept = [asyncio.run(check_one(p, matches, NOW)) for p in people]
+
+        self.assertEqual(len(asked), 1)             # the rest of the tick asked nothing
+        for got in kept:
+            self.assertEqual([m.cand.rowid for m in got], [m.cand.rowid for m in matches])
+            self.assertEqual([m.fit for m in got], [None] * 3)
+        # Running out of the tick's time is not an outage: the next tick asks again.
+        self.assertEqual(fit.quiet_until, 0.0)
+
+    def test_a_tick_out_of_time_still_uses_the_verdicts_already_cached(self):
+        p, matches = person(), self.matches()
+        self.check(p, matches[:1], FakeGemini(lambda payload: [
+            {"i": 0, "verdict": "no_fit", "reason": "Not your field"}]))
+        with mock.patch.object(fit, "TICK_DEADLINE_S", 0), \
+                mock.patch.object(fit, "_request", side_effect=AssertionError("no request")):
+            kept = asyncio.run(fit.checker(self.db)(p, matches, NOW))
+
+        self.assertEqual([m.cand.title for m in kept], [m.cand.title for m in matches[1:]])
+
+
 # ------------------------------------------------------------------ browsing and housekeeping
 
 class Browsing(FitTest):
