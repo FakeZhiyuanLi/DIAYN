@@ -43,8 +43,15 @@ with a first sweep that records every open posting as seen, unless a
 postings.db is already there, and prints the invite link. host_checks.py has
 the steps.
 
-The rest are in PLANNED_COMMANDS until they are built. Each says so and exits
-2, without importing the scraper or touching a file.
+    python diayn.py doctor
+
+checks the host again at any time: the Python version and the platform, the
+settings, the token and the intent, the data directory, postings.db and its
+last sweep, whether anything is sweeping, POLL_CONTACT and the Gemini key. It
+changes nothing, and exits 1 when anything is to fix.
+
+A command not built yet goes in PLANNED_COMMANDS, which says so and exits 2,
+without importing the scraper or touching a file. None is left.
 
 Importing this module is inert. The scraper is imported only when a scraper
 command, a bot command, or the list of commands is asked for, so the planned
@@ -67,11 +74,13 @@ BOT_DIR = os.path.join(CHECKOUT, "bot")
 IMPORT_LEGACY = "import-legacy"
 GRANT, REVOKE = "grant", "revoke"
 RUN = "run"
-SETUP = "setup"
+SETUP, DOCTOR = "setup", "doctor"
 # DIAYN's own commands that are built.
-BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE, RUN, SETUP)
+BOT_COMMANDS = (IMPORT_LEGACY, GRANT, REVOKE, RUN, SETUP, DOCTOR)
 # DIAYN's own commands, each built in a later change.
-PLANNED_COMMANDS = ("doctor",)
+PLANNED_COMMANDS = ()
+# What the scraper needs that only a POSIX system has: DIAYN runs on Linux and macOS.
+POSIX_ONLY_MODULES = ("fcntl",)
 # What makes a new postings.db, which `run` never does.
 SETUP_COMMAND = "python diayn.py setup"
 HELP_FLAGS = ("-h", "--help")
@@ -101,7 +110,7 @@ def finder():
 
 
 def host_checks():
-    """setup's steps, imported on first use."""
+    """setup's steps and doctor's checks, imported on first use."""
     import host_checks
     return host_checks
 
@@ -114,9 +123,11 @@ def access_module():
 
 
 def usage(scraper_commands) -> str:
+    planned = (f"DIAYN's commands (not built yet): {', '.join(PLANNED_COMMANDS)}\n"
+               if PLANNED_COMMANDS else "")
     return ("usage: diayn.py <command> [options]\n\n"
             f"DIAYN's commands: {', '.join(BOT_COMMANDS)}\n"
-            f"DIAYN's commands (not built yet): {', '.join(PLANNED_COMMANDS)}\n"
+            f"{planned}"
             f"The scraper's commands: {', '.join(scraper_commands)}\n"
             "`diayn.py <command> --help` lists that command's options.")
 
@@ -444,6 +455,11 @@ def main(argv=None) -> int:
     try:
         poller = scraper()
     except ModuleNotFoundError as e:
+        if e.name in POSIX_ONLY_MODULES:
+            print(f"diayn.py: DIAYN runs on Linux and macOS only. The sweeper lock needs "
+                  f"{e.name}, which this platform ({sys.platform}) does not have.",
+                  file=sys.stderr)
+            return FAILED_EXIT
         print(f"diayn.py: the scraper needs {e.name}, which is not installed. "
               "Install the requirements: pip install -r requirements.txt",
               file=sys.stderr)
@@ -456,6 +472,8 @@ def main(argv=None) -> int:
         return cmd_run(poller, argv[1:])
     if command == SETUP:
         return host_checks().cmd_setup(poller, argv[1:])
+    if command == DOCTOR:
+        return host_checks().cmd_doctor(poller, argv[1:])
     if command in HELP_FLAGS:
         print(usage(poller.COMMANDS))
         return 0

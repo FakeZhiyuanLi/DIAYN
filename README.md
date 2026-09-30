@@ -88,7 +88,7 @@ absolute path.
     python diayn.py <command> [options]          # the same, through DIAYN's entry point
 
 `diayn.py` runs every command below with the same arguments and exit codes.
-Of its own commands for the Discord bot, five are built:
+It adds six commands of its own, for the Discord bot:
 
     python diayn.py setup
 
@@ -132,8 +132,15 @@ copies the subscribers of the old `/internships ping` tracker out of its bot's
 old file read-only and leaves it as it was. It runs once: a second run is
 refused, so nobody who has since deleted their data comes back. It prints
 counts only, and exits 1 unless every subscriber was either imported or
-already had a profile. The last, `doctor`, is not built yet: it says so and
-exits 2.
+already had a profile.
+
+    python diayn.py doctor
+
+checks the host again at any time, and changes nothing: the Python version and
+the platform, the settings, the token and the intent, the data directory,
+`postings.db` and its last sweep, whether anything is sweeping,
+`POLL_CONTACT`, and whether a Gemini key is set. It exits 1 when anything is
+to fix.
 
 **The sweeper lock.** Exactly one process may write `postings.db`. The commands
 that write hold `<POSTINGS_DB>.lock` while they run, and `watch` holds it for

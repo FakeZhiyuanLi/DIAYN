@@ -1,12 +1,13 @@
 """
 host_checks.py
 ~~~~~~~~~~~~~~
-`diayn.py setup`, which gets a new host ready: from a filled-in .env to an
-invite link.
+`diayn.py setup`, which gets a new host ready, from a filled-in .env to an
+invite link, and `diayn.py doctor`, which checks it again at any time.
 
     python diayn.py setup
+    python diayn.py doctor
 
-In this order, and stopping at the first failure:
+**setup** goes in this order, and stops at the first failure:
 
 1. **The token.** DISCORD_TOKEN must be set, and Discord must accept it
    (discord_portal). Nothing is made until it does.
@@ -22,9 +23,17 @@ In this order, and stopping at the first failure:
    the operator can say whether it is new (`sweep --init`) or the wrong file.
 5. **The invite link**, with the scopes the bot needs and no permission.
 
-Each step prints one line, `ok`, `warn`, `note` or `fail`, and a failure goes
-to stderr. Exit codes are the scraper's: 0 done, 1 failed, 3 another sweeper
-holds the lock. Nothing printed carries the token.
+**doctor** checks the Python version, the platform, the settings, the token
+and the intent, the data directory, postings.db and its last sweep, whether
+anything holds the sweeper lock, POLL_CONTACT, and the Gemini key. Every check
+runs, whatever an earlier one found, except those that need settings that
+would not load. It makes nothing and writes nothing. To see whether a sweeper
+is running it takes the lock for an instant, and only when nothing holds it.
+
+Each check prints one line, `ok`, `warn`, `note` or `fail`, and a failure goes
+to stderr. Exit codes are the scraper's: 0 done (warnings included), 1 failed
+or something to fix, 3 another sweeper holds the lock (setup only). Nothing
+printed carries the token or the Gemini key.
 
 Importing this module does nothing.
 """
@@ -32,10 +41,12 @@ Importing this module does nothing.
 import argparse
 import asyncio
 import dataclasses
+import importlib.util
 import os
 import sqlite3
 import stat
 import sys
+import time
 
 import discord_portal as portal
 
@@ -48,6 +59,12 @@ SETUP_COMMAND = "python diayn.py setup"
 RUN_COMMAND = "python diayn.py run"
 INIT_COMMAND = "python diayn.py sweep --init"
 CONFIG_COMMAND = "python diayn.py config"
+MIN_PYTHON = (3, 10)
+#: What DIAYN needs that only a POSIX system has, and what for.
+POSIX_MODULES = (("fcntl", "the sweeper lock"), ("resource", "the resume reader's limits"))
+PLATFORM_NAMES = {"linux": "Linux", "darwin": "macOS"}
+#: B6: a sweep this many intervals late is reported, as /diayn debug reports it.
+STALE_SWEEPS = 3
 INTENT_HOW = ("In the developer portal, open your application, then Bot, and under "
               "Privileged Gateway Intents turn on Server Members Intent.")
 
@@ -152,8 +169,31 @@ def _refused(error) -> Finding:
     return Finding(FAIL, "postings.db", str(error))
 
 
-def existing_ledger(poller, path: str) -> Finding:
-    """What the postings.db at `path`, which exists, holds; opened read-only, never changed."""
+@dataclasses.dataclass(frozen=True)
+class Ledger:
+    """What doctor and setup read from postings.db."""
+    seen: int                   # rows in the seen ledger
+    last_sweep: float | None    # when the last recorded sweep began
+    interval: int               # the seconds between sweeps scraper_meta names
+
+
+def _interval(poller, conn) -> int:
+    """scraper_meta's sweep_interval_s, or the scraper's default for a file without one."""
+    try:
+        row = conn.execute("SELECT value FROM scraper_meta "
+                           "WHERE key = 'sweep_interval_s'").fetchone()
+    except sqlite3.OperationalError:        # a file from before the contract tables
+        row = None
+    try:
+        interval = int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        interval = 0
+    return interval if interval > 0 else poller.DEFAULT_INTERVAL_S
+
+
+def read_ledger(poller, path: str):
+    """The Ledger of the postings.db at `path`, which exists, opened read-only; or the
+    Finding that refuses it."""
     try:
         conn = poller.db_read_only()
     except (poller.DatabaseRefused, poller.SchemaMismatch) as error:
@@ -161,20 +201,33 @@ def existing_ledger(poller, path: str) -> Finding:
     except sqlite3.Error as error:
         return _refused(f"{path}: {type(error).__name__}: {error}")
     try:
-        seen = _seen(conn)
+        return Ledger(seen=_seen(conn),
+                      last_sweep=conn.execute("SELECT MAX(started) FROM sweeps").fetchone()[0],
+                      interval=_interval(poller, conn))
     except sqlite3.Error as error:
         return _refused(f"{path}: {type(error).__name__}: {error}")
     finally:
         conn.close()
-    if not seen:
-        return _refused(
-            f"{path} exists, but its seen ledger is empty, so `{RUN_COMMAND}` would refuse "
-            "it, and setup never bootstraps a file that is already there. If setup made it "
-            f"and its first sweep failed, `{INIT_COMMAND}` finishes the bootstrap. If this "
-            f"box should have a ledger, this is the wrong file: `{CONFIG_COMMAND}` shows the "
-            "path in use.")
-    return Finding(OK, "postings.db", f"{path} exists, with {seen} postings seen, and is "
-                   "left as it is: a ledger is never bootstrapped twice.")
+
+
+def _empty(path: str) -> Finding:
+    return _refused(
+        f"{path} exists, but its seen ledger is empty, so `{RUN_COMMAND}` would refuse "
+        "it, and setup never bootstraps a file that is already there. If setup made it "
+        f"and its first sweep failed, `{INIT_COMMAND}` finishes the bootstrap. If this "
+        f"box should have a ledger, this is the wrong file: `{CONFIG_COMMAND}` shows the "
+        "path in use.")
+
+
+def existing_ledger(poller, path: str) -> Finding:
+    """What setup says of the postings.db at `path`, which exists; it is never changed."""
+    ledger = read_ledger(poller, path)
+    if isinstance(ledger, Finding):
+        return ledger
+    if not ledger.seen:
+        return _empty(path)
+    return Finding(OK, "postings.db", f"{path} exists, with {ledger.seen} postings seen, and "
+                   "is left as it is: a ledger is never bootstrapped twice.")
 
 
 def _first_sweep(poller, path: str) -> Finding:
@@ -266,3 +319,160 @@ def cmd_setup(poller, argv, fetch_application=None) -> int:
         report(Finding(FAIL, "settings", str(error)))
         return FAILED_EXIT
     return _steps(poller, poller.SETTINGS, fetch_application)
+
+
+# ------------------------------------------------------------------ doctor
+
+def _has_module(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+def python_version(version=None) -> Finding:
+    """Python `version` (default: this one), which must be 3.10 or newer."""
+    version = tuple(version or sys.version_info[:3])
+    shown = ".".join(str(n) for n in version[:3])
+    if version[:2] < MIN_PYTHON:
+        return Finding(FAIL, "Python", f"{shown}, but DIAYN needs 3.10 or newer.")
+    return Finding(OK, "Python", f"{shown}.")
+
+
+def platform_support(os_name=None, platform=None) -> Finding:
+    """Whether this platform (or the one named) has what DIAYN needs: Linux or macOS."""
+    os_name, platform = os_name or os.name, platform or sys.platform
+    name = PLATFORM_NAMES.get(platform, platform)
+    if os_name != "posix":
+        return Finding(FAIL, "platform", f"{name}. DIAYN runs on Linux and macOS only: it "
+                       "needs fcntl for the sweeper lock and resource for the resume "
+                       "reader's limits.")
+    missing = [f"{module} (for {what})" for module, what in POSIX_MODULES
+               if not _has_module(module)]
+    if missing:
+        return Finding(FAIL, "platform", f"{name}, but this Python has no "
+                       f"{' or '.join(missing)}. DIAYN runs on Linux and macOS only.")
+    return Finding(OK, "platform", f"{name}, with fcntl for the sweeper lock and resource "
+                   "for the resume reader's limits.")
+
+
+def _ago(seconds: float) -> str:
+    for unit, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= size:
+            n = int(seconds // size)
+            return f"{n} {unit}{'' if n == 1 else 's'}"
+    n = max(0, int(seconds))
+    return f"{n} second{'' if n == 1 else 's'}"
+
+
+def last_sweep(ledger: Ledger, now: float) -> Finding:
+    """How long ago the last sweep began: late beyond STALE_SWEEPS intervals."""
+    every = _ago(ledger.interval)
+    if ledger.last_sweep is None:
+        return Finding(WARN, "last sweep", f"none recorded yet. `{RUN_COMMAND}` sweeps "
+                       f"every {every}.")
+    age = max(0.0, now - ledger.last_sweep)
+    if age > STALE_SWEEPS * ledger.interval:
+        return Finding(WARN, "last sweep", f"began {_ago(age)} ago, more than "
+                       f"{STALE_SWEEPS} intervals of {every}. The bot warns of the same in "
+                       "/diayn debug; the process's log says why.")
+    return Finding(OK, "last sweep", f"began {_ago(age)} ago; one is due every {every}.")
+
+
+def sweeper(poller, path: str) -> Finding:
+    """Whether a `run` or a `watch` holds the sweeper lock. Taken for an instant, and
+    only when nothing holds it; a lock file that is not there is not made."""
+    lock = poller.lock_path(path)
+    idle = f"so nothing is sweeping. `{RUN_COMMAND}` runs the bot and its sweeps."
+    if not os.path.exists(lock):
+        return Finding(WARN, "sweeper", f"there is no {lock} yet, {idle}")
+    try:
+        with poller.sweeper_lock(path):
+            pass
+    except poller.LockHeld:
+        return Finding(OK, "sweeper", "a `run` or a `watch` holds the lock, so postings.db "
+                       "is being swept.")
+    except (OSError, poller.DatabaseRefused) as error:
+        return Finding(FAIL, "sweeper", f"{lock}: {type(error).__name__}: {error}")
+    return Finding(WARN, "sweeper", f"nothing holds {lock}, {idle}")
+
+
+def database_findings(poller, path: str, now: float) -> list:
+    """postings.db, its last sweep and its sweeper. Nothing is made: a missing file is
+    only reported."""
+    if not os.path.exists(path):
+        return [_refused(f"{path} does not exist. `{SETUP_COMMAND}` makes one, with a first "
+                         "sweep that records every open posting as seen.")]
+    ledger = read_ledger(poller, path)
+    if isinstance(ledger, Finding):
+        return [ledger]
+    held = (_empty(path) if not ledger.seen
+            else Finding(OK, "postings.db", f"{path}, with {ledger.seen} postings seen."))
+    return [held, last_sweep(ledger, now), sweeper(poller, path)]
+
+
+def contact(settings) -> Finding:
+    if settings.contact:
+        return Finding(OK, "POLL_CONTACT", f"{settings.contact}, in the User-Agent every job "
+                       "board sees.")
+    return Finding(WARN, "POLL_CONTACT", "not set. It goes in the User-Agent every job board "
+                   "sees, so a board's owner can reach whoever runs this rather than block "
+                   "it. Use a project URL or a role mailbox, never a personal address.")
+
+
+def gemini(settings) -> Finding:
+    if settings.gemini_key:
+        return Finding(OK, "GEMINI_API_KEY", "set. Before an alert, Gemini checks each match "
+                       "for everyone who has not turned the check off, up to "
+                       f"FIT_RPD={settings.fit_rpd} requests a day; that budget and --llm's "
+                       "together must fit the key's quota.")
+    return Finding(NOTE, "GEMINI_API_KEY", "not set, which is fine: it is optional. With a "
+                   "key, Gemini checks each match before an alert is sent, leaves out the "
+                   "ones that do not suit the person and says why for the rest. Without one, "
+                   "alerts carry the rule-based matches unchecked. The README's Gemini "
+                   "section says what it sends.")
+
+
+def _settings_finding(poller, env_file) -> Finding:
+    if env_file:
+        return Finding(OK, "settings", f"from {env_file}.")
+    return Finding(OK, "settings", "from the environment alone, since there is no "
+                   f"{poller.env_file_path()}.")
+
+
+def _verdict(findings: list) -> int:
+    failed = sum(f.failed for f in findings)
+    warned = sum(f.level == WARN for f in findings)
+    warnings = f", {warned} warning{'' if warned == 1 else 's'}" if warned else ""
+    print(f"\ndoctor: {failed} to fix{warnings}." if failed
+          else f"\ndoctor: nothing to fix{warnings}.")
+    return FAILED_EXIT if failed else 0
+
+
+def cmd_doctor(poller, argv, fetch_application=None, now=None) -> int:
+    """
+    `doctor`: every check, each reported as it is made; returns 1 when anything is to fix
+    and 0 otherwise. `fetch_application` stands in for discord_portal's and `now` for the
+    clock, for the tests.
+    """
+    argparse.ArgumentParser(
+        prog="diayn.py doctor",
+        description="Check this host: the token and intent, the data directory, "
+                    "postings.db, the sweeper, and the settings. Changes nothing.").parse_args(argv)
+    findings = []
+
+    def check(*found):
+        for finding in found:
+            report(finding)
+            findings.append(finding)
+
+    check(python_version(), platform_support())
+    try:
+        env_file = poller.boot()
+    except poller.ConfigError as error:
+        check(Finding(FAIL, "settings", str(error)))
+        return _verdict(findings)
+    settings = poller.SETTINGS
+    check(_settings_finding(poller, env_file))
+    check(*discord_findings(poller, settings, fetch_application)[0])
+    check(data_directory(settings.data_dir))
+    check(*database_findings(poller, settings.postings_db, time.time() if now is None else now))
+    check(contact(settings), gemini(settings))
+    return _verdict(findings)

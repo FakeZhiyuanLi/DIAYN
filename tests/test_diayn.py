@@ -40,19 +40,26 @@ import internship_poller as poller  # noqa: E402
 from test_cli import CHILD as SCRAPER_CHILD  # noqa: E402
 from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, copy_scraper, v2_fixture  # noqa: E402
 
-PLANNED = ("doctor",)
-BUILT = ("import-legacy", "grant", "revoke", "run", "setup")
+PLANNED = ()
+BUILT = ("import-legacy", "grant", "revoke", "run", "setup", "doctor")
+# The modules diayn.py imports from its checkout, besides the scraper's.
+DIAYN_FILES = ("diayn.py", "host_checks.py", "discord_portal.py")
 USAGE_ERROR, FAILED, LOCK_HELD = 2, 1, 3
 
 # The child: the temporary checkout first on the path, so `import diayn` and
 # its `import internship_poller` find the copies. The requests are replaced
 # before diayn runs, as in test_cli's child. BLOCK_AIOHTTP makes aiohttp
-# impossible to import, as on a box that never installed requirements.txt.
+# impossible to import, as on a box that never installed requirements.txt, and
+# BLOCK_FCNTL does the same for fcntl, as on Windows, which has none.
 CHILD = """
 import os, sys
 tests, checkout = sys.argv[1], sys.argv[2]
 sys.path[:0] = [checkout, tests]
-if os.environ.get("BLOCK_AIOHTTP"):
+if os.environ.get("BLOCK_FCNTL"):
+    sys.modules["fcntl"] = None
+    from aiohttp_stub import stub_aiohttp
+    stub_aiohttp()
+elif os.environ.get("BLOCK_AIOHTTP"):
     sys.modules["aiohttp"] = None
 else:
     from aiohttp_stub import stub_aiohttp
@@ -176,7 +183,8 @@ class Script(unittest.TestCase):
         self.data = os.path.join(self.tmp, "data")
         os.mkdir(self.checkout)
         self.poller_script = copy_scraper(self.checkout)
-        self.script = shutil.copy(diayn.__file__, self.checkout)
+        self.script = [shutil.copy(os.path.join(ROOT, name), self.checkout)
+                       for name in DIAYN_FILES][0]
         self.db = os.path.join(self.data, "postings.db")
 
     def _env(self, **extra):
@@ -235,8 +243,29 @@ class Script(unittest.TestCase):
                 self.assertEqual(result.returncode, USAGE_ERROR)
                 self.assertIn("not built yet", result.stdout + result.stderr)
         self.assertFalse(os.path.exists(self.data))
-        self.assertEqual(sorted(os.listdir(self.checkout)),
-                         ["diayn.py", "internship_poller.py", "llm.py"])
+        self.assertEqual(sorted(os.listdir(self.checkout)), self.copied())
+
+    def copied(self):
+        return sorted(DIAYN_FILES + ("internship_poller.py", "llm.py"))
+
+    def test_doctor_on_a_box_with_nothing_set_up_makes_nothing(self):
+        # No token, so Discord is never asked; no data directory and no database.
+        result = self._diayn("doctor")
+        self.assertEqual(result.returncode, FAILED, result.stdout + result.stderr)
+        self.assertIn("DISCORD_TOKEN", result.stderr)
+        self.assertIn("python diayn.py setup", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(os.path.exists(self.data))
+        self.assertEqual(sorted(os.listdir(self.checkout)), self.copied())
+
+    def test_without_fcntl_it_says_linux_and_macos_only(self):
+        for command in ("config", "doctor", "run"):
+            with self.subTest(command=command):
+                result = self._diayn(command, BLOCK_FCNTL="1")
+                self.assertEqual(result.returncode, FAILED)
+                self.assertIn("Linux and macOS only", result.stderr)
+                self.assertNotIn("requirements.txt", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_a_missing_dependency_names_it_and_the_fix(self):
         result = self._diayn("config", BLOCK_AIOHTTP="1")
