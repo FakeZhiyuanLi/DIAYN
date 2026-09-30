@@ -100,6 +100,28 @@ class SlowSession(FakeSession):
         return LateResponse(answer.status, answer.body, self.delay)
 
 
+def made_here(answers, delay):
+    """(a stand-in for aiohttp.ClientSession, the sessions it has made): each is a
+    SlowSession that fetch_application opens and closes itself, as it does when it is
+    handed no session, which is how setup and doctor call it."""
+    made = []
+
+    class OwnSession(SlowSession):
+        def __init__(self, **kwargs):
+            super().__init__(answers, delay)
+            self.closed = False
+            made.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            self.closed = True
+            return False
+
+    return OwnSession, made
+
+
 def answers(user=(200, USER), app=None):
     return {"/users/@me": user,
             "/oauth2/applications/@me": app if app is not None else (200, application())}
@@ -220,6 +242,32 @@ class TheDeadline(unittest.TestCase):
     def test_answers_inside_it_are_read(self):
         with mock.patch.object(portal, "TIMEOUT_S", 1.0):
             self.assertEqual(fetch(SlowSession(answers(), delay=0.01)).id, APP_ID)
+
+    def fetch_with_its_own_session(self, delay, limit):
+        """fetch_application handed no session, so it makes one: (the result, or the
+        PortalError it raised; the sessions it made)."""
+        own, made = made_here(answers(), delay)
+        with mock.patch.object(portal, "TIMEOUT_S", limit), \
+                mock.patch.object(aiohttp, "ClientSession", own):
+            try:
+                found = asyncio.run(portal.fetch_application(TOKEN, user_agent=AGENT))
+            except portal.PortalError as error:
+                found = error
+        return found, made
+
+    def test_with_its_own_session_both_requests_together_must_finish_within_it(self):
+        # setup and doctor pass no session, so this is the branch a host runs.
+        found, made = self.fetch_with_its_own_session(delay=0.2, limit=0.3)
+        self.assertIsInstance(found, portal.PortalError)
+        self.assertEqual(str(found), "could not reach Discord: TimeoutError")
+        self.assertEqual(len(made), 1)
+        self.assertTrue(made[0].closed)
+
+    def test_with_its_own_session_answers_inside_it_are_read(self):
+        found, made = self.fetch_with_its_own_session(delay=0.01, limit=1.0)
+        self.assertEqual(found.id, APP_ID)
+        self.assertEqual(len(made), 1)
+        self.assertTrue(made[0].closed)
 
 
 class TheInviteLink(unittest.TestCase):
