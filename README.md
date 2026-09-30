@@ -440,6 +440,14 @@ and tokens and the class of the last failure. Each person can turn the check
 off from their profile card; it is on for everyone else. What it sends is
 listed under [Privacy](#privacy).
 
+Nobody is checked before they have been shown what the check sends: on the
+start card or the consent screen, one of which comes before every new profile,
+or in `/internships help`. Everyone else is told in their next alert, which
+goes out unchecked and says so: the subscribers `import-legacy` brought over,
+in the introduction that alert carries, and anyone whose profile dates from
+before the host had a key, in one line at its top. The check starts with the
+alert after. The delete screen shows when each person was told.
+
 ### `--llm`
 
 With `GEMINI_API_KEY` set, `--llm` classifies newly seen postings by title with
@@ -482,7 +490,8 @@ leaves every server the bot shares with them or loses access to the bot.
 `/internships delete` erases everything at once.
 
 **What the fit check sends to Google.** Only where the host has set
-`GEMINI_API_KEY`, and only for someone who has not turned the check off:
+`GEMINI_API_KEY`, only for someone who has not turned the check off, and only
+once they have been shown what it sends (see [The fit check](#the-fit-check)):
 before an alert, one request to Google's Gemini API holding that person's
 profile as labels (majors, minors, degree, graduation date, kinds of role,
 fields, skills, keywords, places and terms) and, for each role, its title,

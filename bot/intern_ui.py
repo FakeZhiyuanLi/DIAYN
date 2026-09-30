@@ -271,6 +271,19 @@ async def profile_for(interaction, *, tracker: bool = False):
     return p
 
 
+def note_fit_notice(user_id: int) -> None:
+    """Records that `user_id` has just been shown the Gemini fit check's notice, so their
+    alerts may be checked from now on (intern_fit): only where the host has a key, and
+    only for a profile there is. Call it once the message carrying it has been sent.
+    Never raises; a failure is logged by type."""
+    if intern_error is not None or db is None or not intern_fit.available():
+        return
+    try:
+        intern_store.mark_fit_notice(db, user_id, time.time())
+    except sqlite3.Error as error:
+        log_failure("recording the Gemini notice", error)
+
+
 def touch(user_id: int) -> None:
     """Marks the user active (the 365-day expiry counts from here); no-op without a profile."""
     if intern_error is not None or db is None:

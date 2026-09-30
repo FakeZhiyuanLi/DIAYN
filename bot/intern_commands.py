@@ -137,6 +137,7 @@ async def internships_help(interaction: discord.Interaction) -> None:
     await intern_ui.refuse(interaction, chunks[0])
     for chunk in chunks[1:]:
         await intern_ui.private_send(interaction)(chunk)
+    intern_ui.note_fit_notice(interaction.user.id)      # the last chunk carries it
 
 
 # ------------------------------------------------------------------ recent (no profile)

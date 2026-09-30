@@ -102,6 +102,7 @@ STORED_COLUMNS: dict[str, str] = {
     "active_at": "When you last used the finder",
     "access_lapsed_at": "When you stopped having access to this bot",
     "fit_check": "Whether Gemini checks roles for you before I DM them",
+    "fit_notice_at": "When I told you about the Gemini check",
 }
 
 _PROFILES_DDL = """
@@ -164,7 +165,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("access_lapsed_at", "REAL"),
     # On for every row there already is, as for a new profile: the check runs only
     # where the host has a key, and its owner can turn it off on the card.
-    ("fit_check", "INTEGER NOT NULL DEFAULT 1 CHECK (fit_check IN (0, 1))"))
+    ("fit_check", "INTEGER NOT NULL DEFAULT 1 CHECK (fit_check IN (0, 1))"),
+    # When the fit check's notice was shown (intern_fit): nothing is sent to Gemini
+    # before it. NULL for every row there already is, so their next alert tells them.
+    ("fit_notice_at", "REAL"))
 
 _COLUMNS = tuple(STORED_COLUMNS)
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM intern_profiles"
@@ -483,6 +487,12 @@ def access_states(db: sqlite3.Connection) -> list[tuple[int, float | None]]:
     """(user_id, access_lapsed_at) for every profile, by user_id."""
     return db.execute("SELECT user_id, access_lapsed_at FROM intern_profiles "
                       "ORDER BY user_id").fetchall()
+
+
+def mark_fit_notice(db: sqlite3.Connection, user_id: int, now: float) -> None:
+    """Records that the user was shown the fit check's notice; the first time is the one
+    kept. No-op without a profile."""
+    _update(db, user_id, "fit_notice_at = COALESCE(fit_notice_at, ?)", (now,))
 
 
 def mark_access_lapsed(db: sqlite3.Connection, user_id: int, now: float) -> None:

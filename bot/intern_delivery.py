@@ -19,6 +19,15 @@ to send: a no_fit dropped, fit before unsure, each with its reason. It never
 raises; when it cannot check, the matches come back as they went. A role it
 drops is not sent and not recorded, and the cursor moves past it all the same.
 
+**The check's notice goes first.** Nobody is checked before they have been
+shown what the check sends (`intern_fit.enabled`). `fit_notice`
+(`intern_fit.notice_due`) says whose alerts would be checked but for that; their
+next alert leads with the notice's one line (`intern_text.fit_notice_line`)
+and goes out unchecked. A migrated subscriber's introduction says the same, so
+it needs no line. Once a DM carrying either has been delivered, the notice is
+recorded, and the check starts with the next alert. A DM that was refused, or
+never went, records nothing.
+
 Four rules shape it.
 
 **Only those the bot is open to are DMed.** `allowed(user_id)` says whether
@@ -128,6 +137,8 @@ LoadWindow = Callable[[], Awaitable[list[Candidate]]]
 Allowed = Callable[[int], bool]
 #: The fit check (`intern_fit.checker`): a user's ranked matches in, the ones to send out.
 CheckFit = Callable[[Profile, Sequence[Match], float], Awaitable[Sequence[Match]]]
+#: Whether a profile's next alert must carry the fit check's notice (`intern_fit.notice_due`).
+FitNotice = Callable[[Profile], bool]
 _Window = tuple[Sequence[Candidate], Mapping[int, str]]        # candidates and their group map
 
 
@@ -240,19 +251,23 @@ async def _send(db: sqlite3.Connection, send_dm: SendDm, uid: int, msg: DmMessag
 
 # ------------------------------------------------------------------ alerts (5.4)
 
-def _digest(p: Profile, matches: Sequence[Match], now: float, catch_up: bool) -> DmMessage:
+def _digest(p: Profile, matches: Sequence[Match], now: float, catch_up: bool,
+            fit_notice: bool) -> DmMessage:
     body, shown = intern_text.format_alert(matches, now, cadence=p.alerts, intro=p.intro_pending,
-                                           catch_up=catch_up, expiry_note=None, with_controls=True)
+                                           catch_up=catch_up, expiry_note=None, with_controls=True,
+                                           fit_notice=fit_notice)
     return DmMessage(body, intern_text.hide_options(shown), True)
 
 
 async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
                  gmap: Mapping[int, str], send_dm: SendDm, now: float, allowed: Allowed,
-                 check_fit: CheckFit | None) -> str:
+                 check_fit: CheckFit | None, fit_notice: FitNotice | None) -> str:
     """One user's digest, spec 5.4 step 3. Returns the outcome the report counts."""
     p = store.load(db, uid)
     if p is None or not is_due(p, now) or not allowed(uid):
         return "skipped"
+    # The introduction says what the check sends; anyone else not yet told gets the line.
+    notice = fit_notice is not None and fit_notice(p) and not p.intro_pending
     edge, catch_up = horizon(now), catching_up(p, now)
     mine = [c for c in cands if p.cursor < c.first_seen <= edge]
     matches = intern_match.rank(p, mine, now, min_score=p.min_score,
@@ -263,7 +278,7 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
         # Nothing matched, or the check found none of it fits: past it all the same.
         store.advance(db, uid, cursor=edge, now=now, sent=False, clear_pause=catch_up)
         return "empty"
-    msg = _digest(p, matches, now, catch_up)
+    msg = _digest(p, matches, now, catch_up, notice)
     # The check awaited, and a delete or a revocation may have landed meanwhile:
     # this read is the guard that must stay next to the send.
     fresh = store.load(db, uid)
@@ -274,6 +289,8 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
         # Every group matched, not only the ones the DM had room for (4.5.6).
         store.record_sent(db, uid, [h for m in matches for h in m.ledger], now)
         store.advance(db, uid, cursor=edge, now=now, sent=True, clear_pause=catch_up)
+        if notice or p.intro_pending:
+            store.mark_fit_notice(db, uid, now)     # it has now been told: checked from here
     elif outcome == "forbidden" and catch_up:
         # The refusal moved the cursor past what the pause held back, so the catch-up is
         # spent; left paused, the user would be due again on every five-minute tick.
@@ -283,12 +300,14 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
 
 async def run_tick(db: sqlite3.Connection, *, load_window: LoadWindow, send_dm: SendDm,
                    now: float, companies_watched: int, allowed: Allowed,
-                   check_fit: CheckFit | None = None) -> TickReport:
+                   check_fit: CheckFit | None = None,
+                   fit_notice: FitNotice | None = None) -> TickReport:
     """
     Spec 5.4: DMs every due user what is new to them since their cursor. Only a user
     `allowed` says may use the bot is due (module docstring). With `check_fit`, each
     user's matches pass through it before their digest is written; without it, they are
-    sent as ranked.
+    sent as ranked. With `fit_notice`, the alert of anyone it names carries the check's
+    notice (module docstring); without it, no alert mentions the check.
 
     At most MAX_DMS_PER_TICK sends are attempted, SEND_GAP_S apart; the due
     users after that keep their cursor and are due again next tick. The window
@@ -305,8 +324,8 @@ async def run_tick(db: sqlite3.Connection, *, load_window: LoadWindow, send_dm: 
         if sum(tally[k] for k in _ATTEMPTS) >= MAX_DMS_PER_TICK:
             tally["deferred"] = len(due) - index
             break
-        outcome = await _isolated(_alert(db, uid, cands, gmap, send_dm, now, allowed, check_fit),
-                                  "an alert")
+        outcome = await _isolated(_alert(db, uid, cands, gmap, send_dm, now, allowed, check_fit,
+                                         fit_notice), "an alert")
         tally[outcome] += 1
         if outcome in _ATTEMPTS:
             await asyncio.sleep(SEND_GAP_S)

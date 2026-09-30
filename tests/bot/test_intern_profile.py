@@ -98,6 +98,24 @@ class NewProfile(unittest.TestCase):
                 self.assertTrue(profile.with_changes(p, NOW, fit_check=junk).fit_check)
                 self.assertFalse(profile.with_changes(off, NOW, fit_check=junk).fit_check)
 
+    def test_a_new_profile_has_not_been_told_about_the_gemini_check(self):
+        # Where it was shown is the caller's to say (intern_upload); a profile never
+        # records it by itself, and nobody can set it by editing.
+        p = profile.new_profile(7, NOW, source="manual", cursor=CURSOR)
+
+        self.assertIsNone(p.fit_notice_at)
+        self.assertNotIn("fit_notice_at", profile.EDITABLE)
+        self.assertIsNone(profile.from_draft(7, DRAFT, NOW, source="resume", cursor=CURSOR,
+                                             today=TODAY).fit_notice_at)
+
+    def test_a_replaced_resume_keeps_when_the_gemini_notice_was_shown(self):
+        existing = dataclasses.replace(mech_student(), fit_notice_at=NOW - 9)
+
+        replaced = profile.from_draft(7, DRAFT, NOW, source="resume", cursor=CURSOR,
+                                      today=TODAY, existing=existing)
+
+        self.assertEqual(replaced.fit_notice_at, NOW - 9)
+
     def test_a_replaced_resume_keeps_the_gemini_setting(self):
         existing = profile.with_changes(mech_student(), NOW, fit_check=False)
 

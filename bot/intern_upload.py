@@ -18,6 +18,13 @@ The bot is private: every button and submit here checks
 `intern_ui.need_access` first, except Cancel. A refused consent screen drops
 the file it was holding, as any answer does.
 
+**The Gemini notice is recorded where it is shown.** The start card and the
+consent screen carry the fit check's notice wherever the host has a key. A
+consent screen shown to someone with a profile records it on the spot. Someone
+without one reaches a draft only through one of the two, so a new profile's
+draft is made told (`_told`), except after a file refused before any consent
+screen (`ResumeFailView` with `consented` False).
+
 The card's two edit modals (J4) live here too, so every modal the finder opens
 is in one module; `intern_views` opens them.
 """
@@ -25,6 +32,7 @@ is in one module; `intern_views` opens them.
 import asyncio
 import calendar
 import contextlib
+import dataclasses
 import math
 import sys
 import time
@@ -123,6 +131,13 @@ async def open_upload_with_consent(interaction) -> None:
         intern_text.consent_screen(gemini=intern_fit.available()), ephemeral=True,
         allowed_mentions=intern_ui.NO_MENTIONS,
         view=ConsentView(interaction.user.id, None, "", then_modal=True))
+    intern_ui.note_fit_notice(interaction.user.id)
+
+
+def _told(draft: Profile, now: float) -> Profile:
+    """A new profile's draft, on record as shown the Gemini notice where the host has a key:
+    the start card or the consent screen came before it (module docstring)."""
+    return dataclasses.replace(draft, fit_notice_at=now) if intern_fit.available() else draft
 
 
 @contextlib.contextmanager
@@ -155,6 +170,7 @@ async def begin_upload(interaction, attachment: discord.Attachment) -> None:
             intern_text.consent_text(attachment.filename, gemini=intern_fit.available()),
             ephemeral=True,
             allowed_mentions=intern_ui.NO_MENTIONS, view=ConsentView(uid, attachment, kind))
+        intern_ui.note_fit_notice(uid)
         return
     await start_read(interaction, attachment, kind, source="resume")
 
@@ -224,6 +240,8 @@ async def _show_parsed(interaction, draft: dict, *, source: str) -> None:
     existing = intern_store.load(intern_ui.db, uid)
     profile = from_draft(uid, draft, now, source=source, cursor=intern_delivery.horizon(now),
                          today=intern_ui.today(), existing=existing)
+    if existing is None:
+        profile = _told(profile, now)
     header = intern_text.draft_header(profile, found_field=bool(draft.get("fields")),
                                       replacing=existing)
     await intern_views.show_draft(interaction, profile, evidence=intern_text.evidence_line(draft),
@@ -235,15 +253,17 @@ async def open_upload(interaction) -> None:
     await interaction.response.send_modal(UploadModal())
 
 
-async def start_manual(interaction) -> None:
+async def start_manual(interaction, *, told: bool = True) -> None:
     """Pick by hand: an empty draft to fill in. Someone with a profile gets their card instead,
-    so a stray press can never save an empty profile over theirs."""
+    so a stray press can never save an empty profile over theirs. `told`: the start card or
+    the consent screen came first, so the draft is on record as shown the Gemini notice."""
     uid, now = interaction.user.id, time.time()
     if intern_store.load(intern_ui.db, uid) is not None:
         await intern_ui.defer_update(interaction)
         await intern_views.show_card(interaction, edit=True)
         return
     draft = new_profile(uid, now, source="manual", cursor=intern_delivery.horizon(now))
+    draft = _told(draft, now) if told else draft
     await intern_ui.defer_update(interaction)
     await intern_views.show_draft(interaction, draft, evidence=None, replacing=None,
                                   header=intern_text.draft_header(draft, found_field=False, replacing=None))
@@ -376,7 +396,8 @@ class ResumeFailView(intern_ui.OwnedView):
     @discord.ui.button(label="Pick by hand", style=discord.ButtonStyle.secondary)
     async def manual(self, interaction, button) -> None:
         if await intern_ui.need_access(interaction) and await intern_ui.need_finder(interaction):
-            await start_manual(interaction)
+            # Refused before the consent screen, nothing has shown the Gemini notice yet.
+            await start_manual(interaction, told=self.consented)
 
 
 # ------------------------------------------------------------------ the two modals (J4)

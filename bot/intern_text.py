@@ -588,8 +588,18 @@ def migrated_intro() -> str:
             "profile card's Alerts menu stops that.")
 
 
+def fit_notice_line() -> str:
+    """The Gemini fit check's notice, on the alert that carries it to someone the start card,
+    the consent screen and help never told: a profile from before the host had a key. That
+    alert goes out unchecked, and the check starts with the next one."""
+    return ("**Gemini checks your alerts from the next one on.** Before an alert I'll ask "
+            "Google's Gemini whether each role suits your profile's labels, never your resume, "
+            "name or Discord id. This alert wasn't checked. **Turn the Gemini check off** in "
+            "your profile card's Alerts menu stops it.")
+
+
 def _alert_text(total: int, blocks: list[str], *, cadence: str, intro: bool, catch_up: bool,
-                expiry: str | None, with_controls: bool) -> str:
+                expiry: str | None, with_controls: bool, fit_notice: bool = False) -> str:
     shown = len(blocks)
     head = (f"**Welcome back: {_plural(total, 'new role')} while you were paused.**"
             + (f" Here are the best {shown}." if 0 < shown < total else "")) if catch_up \
@@ -598,20 +608,23 @@ def _alert_text(total: int, blocks: list[str], *, cadence: str, intro: bool, cat
               if with_controls else "Not quite right? Change what you get with `/internships profile`.")
     tail = ([f"...and {total - shown} more: `/internships matches`"] if total > shown else []) \
         + [footer] + ([expiry] if expiry else [])
-    top = "\n".join(([migrated_intro()] if intro else []) + [head])
+    top = "\n".join(([migrated_intro()] if intro else [])
+                    + ([fit_notice_line()] if fit_notice else []) + [head])
     return "\n\n".join([top, *blocks, "\n".join(tail)])
 
 
 def format_alert(matches: Sequence[Match], now: float, *, cadence: str, intro: bool,
-                 catch_up: bool, expiry_note: str | None, with_controls: bool
-                 ) -> tuple[str, tuple[Match, ...]]:
+                 catch_up: bool, expiry_note: str | None, with_controls: bool,
+                 fit_notice: bool = False) -> tuple[str, tuple[Match, ...]]:
     """J7 and 4.5.6: one DM of at most ALERT_MAX characters and ALERT_LISTINGS_MAX listings, best
-    first, the rest counted in "...and N more". Returns the text and the matches it shows (only
-    those feed `hide_options`)."""
+    first, the rest counted in "...and N more". With `fit_notice`, it leads with the Gemini
+    check's notice (`fit_notice_line`). Returns the text and the matches it shows (only those
+    feed `hide_options`)."""
     blocks = [match_block(m, now) for m in matches[:ALERT_LISTINGS_MAX]]
     for shown in range(len(blocks), -1, -1):
         body = _alert_text(len(matches), blocks[:shown], cadence=cadence, intro=intro,
-                           catch_up=catch_up, expiry=expiry_note, with_controls=with_controls)
+                           catch_up=catch_up, expiry=expiry_note, with_controls=with_controls,
+                           fit_notice=fit_notice)
         if len(body) <= ALERT_MAX:
             return body, tuple(matches[:shown])
     return body[:ALERT_MAX], ()
@@ -724,7 +737,7 @@ _SOURCE_WORDS = {"resume": "your resume", "pasted": "pasted text", "manual": "pi
                  "migrated": "copied from the old tracker"}
 _TIMESTAMPS = frozenset({"paused_until", "cursor", "last_run_at", "last_sent_at", "last_quiet_at",
                          "left_at", "expiry_warned_at", "created_at", "updated_at", "active_at",
-                         "access_lapsed_at"})
+                         "access_lapsed_at", "fit_notice_at"})
 _ID_LISTS = {"majors": MAJOR_BY_ID, "minors": MAJOR_BY_ID, "skills": SKILL_BY_ID,
              "fields": vocab.FIELD_LABELS, "levels": vocab.LEVEL_LABELS}
 _SCALARS = {

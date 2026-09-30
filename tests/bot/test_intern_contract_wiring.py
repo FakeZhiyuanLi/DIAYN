@@ -484,6 +484,8 @@ class TheFitCheckInBrowsingAndDebug(_ContractCase):
         self.addCleanup(patch.stop)
         self.addCleanup(setattr, intern_fit, "last_error", None)
         self.enrol(DUE, NOW - 2 * 3600)
+        # Shown what the check sends, as the start card does: no verdict shows before that.
+        intern_store.mark_fit_notice(self.db, DUE, NOW - 2 * 3600)
         self.p = intern_store.load(self.db, DUE)
 
     def cache(self, verdict, reason):

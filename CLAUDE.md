@@ -148,6 +148,14 @@ description fetcher matches them with its own patterns.
   pinned by `tests/bot/test_intern_fit.py`: profile labels and posting fields,
   never an id, a name, contact details or resume text. README's *Privacy* and
   the consent screen say the same, and must change with it.
+- **The fit check never runs before its notice.** A profile is checked only
+  once `fit_notice_at` says its owner was shown what the check sends
+  (`intern_fit.enabled`). The start card, the consent screen and
+  `/internships help` record it where they show it, a new profile's draft
+  records it because one of the first two came before it, and anyone else is
+  told in their next alert, which goes out unchecked. A new screen that shows
+  the notice records it (`intern_ui.note_fit_notice`); a new way to make a
+  profile says whether the notice came first.
 - **The bot's window is 30 days.** `PRUNE_DAYS` and `prune --max-age` never go
   below it, and the bot checks `prune_days` when it opens the file.
 - **`seen` is never pruned.** The bot's bootstrap guard reads

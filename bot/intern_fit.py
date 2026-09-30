@@ -14,6 +14,15 @@ a name, an email address or a word of a resume: the profile holds none of
 those, and `labels` reads only the fields listed. The prompt is FIT_PROMPT
 followed by that payload as JSON.
 
+**Never before the notice.** A profile is checked only once its owner has
+been shown what is sent (`fit_notice_at`): on the start card or the consent
+screen a new profile is made behind, in `/internships help`, or in a DM that
+says so, the migrated subscribers' introduction or the one line
+(`intern_text.fit_notice_line`) that `intern_delivery` puts on the next alert
+of a profile from before the host had a key (`notice_due`). That alert goes
+out unchecked; the check starts with the one after. Until then `enabled` is
+False, so no request is made and no cached verdict is shown.
+
 **Asked once.** Verdicts are kept in users.db's `fit_verdicts`, keyed by
 (`profile_fp`, `role_hash`): the sha256 of the labels sent, so an edit to any
 of them asks again, and the role's taxonomy key, the one `intern_seen` keeps.
@@ -195,8 +204,15 @@ def available() -> bool:
 
 
 def enabled(p: Profile) -> bool:
-    """Whether this profile's alerts are checked: a key, and its owner has not said no."""
-    return p.fit_check and available()
+    """Whether this profile's alerts are checked: a key, its owner has not said no, and has
+    been shown what is sent."""
+    return p.fit_check and available() and p.fit_notice_at is not None
+
+
+def notice_due(p: Profile) -> bool:
+    """Whether this profile's alerts would be checked but for its owner never having been
+    shown the notice, which its next alert must carry (module docstring)."""
+    return p.fit_check and available() and p.fit_notice_at is None
 
 
 def init_db(db: sqlite3.Connection) -> None:

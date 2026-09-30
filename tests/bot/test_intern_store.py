@@ -162,7 +162,7 @@ class SaveAndLoad(StoreTest):
                     last_quiet_at=NOW - 8, dm_failures=1, intro_pending=True,
                     left_at=NOW - 9, expiry_warned_at=NOW - 10, created_at=NOW - 11,
                     updated_at=NOW, active_at=NOW, access_lapsed_at=NOW - 12,
-                    fit_check=False)
+                    fit_check=False, fit_notice_at=NOW - 13)
 
     def test_every_field_survives_a_round_trip(self):
         p = self.everything_set()
@@ -813,7 +813,7 @@ class ColumnsAndPrivacy(StoreTest):
         table = [r[1] for r in self.db.execute("PRAGMA table_info(intern_profiles)")]
 
         self.assertEqual(list(store.STORED_COLUMNS), table)
-        self.assertEqual(len(table), 35)
+        self.assertEqual(len(table), 36)
         self.assertEqual([f.name for f in dataclasses.fields(profile.Profile)], table)
 
     def test_no_description_names_a_zone_the_host_may_not_use(self):
@@ -833,6 +833,10 @@ class ColumnsAndPrivacy(StoreTest):
         self.assertEqual(store.STORED_COLUMNS["fit_check"],
                          "Whether Gemini checks roles for you before I DM them")
 
+    def test_the_gemini_notice_is_described_plainly(self):
+        self.assertEqual(store.STORED_COLUMNS["fit_notice_at"],
+                         "When I told you about the Gemini check")
+
     def test_a_users_db_from_before_gains_the_column_and_keeps_its_rows(self):
         old = sqlite3.connect(":memory:")
         self.addCleanup(old.close)
@@ -847,9 +851,12 @@ class ColumnsAndPrivacy(StoreTest):
 
         self.assertNotIn("access_lapsed_at", columns)
         self.assertNotIn("fit_check", columns)
+        self.assertNotIn("fit_notice_at", columns)
         # Rows from before are checked, as a new profile is: on until turned off.
         self.assertEqual(store.load(old, ALICE), make(ALICE))
         self.assertTrue(store.load(old, ALICE).fit_check)
+        # But nobody from before is on record as told about it: their next alert tells them.
+        self.assertIsNone(store.load(old, ALICE).fit_notice_at)
 
     def test_every_column_has_a_plain_english_description(self):
         for column, text in store.STORED_COLUMNS.items():
@@ -872,6 +879,39 @@ class ColumnsAndPrivacy(StoreTest):
 
     def test_privacy_rows_for_nobody_is_none(self):
         self.assertIsNone(store.privacy_rows(self.db, ALICE))
+
+
+class TheGeminiNotice(StoreTest):
+    """When someone was shown what the fit check sends: until then, nothing is sent."""
+
+    def test_the_first_time_it_is_shown_is_the_one_kept(self):
+        self.save(ALICE)
+        store.mark_fit_notice(self.db, ALICE, NOW)
+        store.mark_fit_notice(self.db, ALICE, NOW + DAY)
+        self.assertEqual(store.load(self.db, ALICE).fit_notice_at, NOW)
+
+    def test_a_new_profile_keeps_what_its_draft_says(self):
+        told = self.save(ALICE, fit_notice_at=NOW - 5)
+        untold = self.save(BOB)
+        self.assertEqual((told.fit_notice_at, untold.fit_notice_at), (NOW - 5, None))
+
+    def test_a_stale_card_can_neither_erase_nor_forge_it(self):
+        told = self.save(ALICE, fit_notice_at=NOW - 5)
+        untold = self.save(BOB)
+
+        store.save(self.db, dataclasses.replace(told, fit_notice_at=None), now=NOW + 1)
+        store.save(self.db, dataclasses.replace(untold, fit_notice_at=NOW), now=NOW + 1)
+
+        self.assertEqual(store.load(self.db, ALICE).fit_notice_at, NOW - 5)
+        self.assertIsNone(store.load(self.db, BOB).fit_notice_at)
+
+    def test_nobody_without_a_profile_is_written(self):
+        store.mark_fit_notice(self.db, ALICE, NOW)
+        self.assertIsNone(store.load(self.db, ALICE))
+
+    def test_an_imported_subscriber_has_not_been_told(self):
+        store.write_migrated(self.db, [(ALICE, "swe", 1)], NOW, cursor=CURSOR)
+        self.assertIsNone(store.load(self.db, ALICE).fit_notice_at)
 
 
 class AccessLapses(StoreTest):

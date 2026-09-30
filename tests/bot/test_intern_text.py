@@ -377,6 +377,35 @@ class Alerts(unittest.TestCase):
         self.assertIn(f"...and {12 - len(shown)} more", body)
         self.assertTrue(body.startswith(text.migrated_intro()))
 
+    def test_the_gemini_notice_leads_the_alert_that_carries_it(self):
+        body, shown = text.format_alert([self.long(n) for n in range(3)], NOW, cadence="daily",
+                                        intro=False, catch_up=False, expiry_note=None,
+                                        with_controls=True, fit_notice=True)
+        plain, _ = text.format_alert([self.long(n) for n in range(3)], NOW, cadence="daily",
+                                     intro=False, catch_up=False, expiry_note=None,
+                                     with_controls=True)
+
+        self.assertTrue(body.startswith(text.fit_notice_line() + "\n**3 new roles for you**"))
+        self.assertEqual(body, text.fit_notice_line() + "\n" + plain)
+
+    def test_the_gemini_notice_says_what_is_sent_and_how_to_stop_it_in_one_line(self):
+        line = text.fit_notice_line()
+
+        self.assertNotIn("\n", line)
+        self.assertIn("Google's Gemini", line)
+        self.assertIn("never your resume, name or Discord id", line)
+        self.assertIn("**Turn the Gemini check off**", line)
+        self.assertIn("This alert", line)                    # the one it rides on is unchecked
+
+    def test_the_worst_case_with_the_gemini_notice_still_fits(self):
+        body, shown = text.format_alert([worst_match(n) for n in range(12)], NOW, cadence="weekly",
+                                        intro=False, catch_up=True,
+                                        expiry_note=text.expiry_note(NOW + 14 * DAY),
+                                        with_controls=True, fit_notice=True)
+        self.assertLessEqual(len(body), text.ALERT_MAX)
+        self.assertGreaterEqual(len(shown), 1)
+        self.assertTrue(body.startswith(text.fit_notice_line()))
+
     def test_catch_up_header(self):
         body, shown = text.format_alert([self.long(n) for n in range(12)], NOW, cadence="daily",
                                         intro=False, catch_up=True, expiry_note=None, with_controls=True)
@@ -519,6 +548,14 @@ class TheZoneIsDiaynTz(unittest.TestCase):
             card = text.card_text(person(), mode="saved", coverage=None)
 
         self.assertIn("**Alerts:** Daily at 9am UTC", card)
+
+    def test_when_the_gemini_notice_was_shown_is_a_time_in_the_zone(self):
+        at = datetime(2026, 9, 21, 8, 5, tzinfo=PACIFIC).timestamp()     # 15:05 UTC
+        with in_zone("UTC"):
+            lines = text.privacy_text(stored_rows(person(fit_notice_at=at)))
+
+        self.assertIn(f"**{intern_store.STORED_COLUMNS['fit_notice_at']}:** 2026-09-21 15:05 UTC",
+                      lines)
 
     def test_a_stored_time_is_shown_in_the_zone_it_names(self):
         at = datetime(2026, 9, 21, 8, 5, tzinfo=PACIFIC).timestamp()     # 15:05 UTC

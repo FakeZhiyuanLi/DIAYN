@@ -261,12 +261,14 @@ async def _alerts(db: sqlite3.Connection, now: float) -> None:
     # raises here, and the tick ends with every cursor where it was (B5).
     _guard_bootstrap(db, intern_ui.pconn)
     # Each digest passes through the Gemini fit check first (intern_fit), which never
-    # holds one back: without a key, or failing, the matches go out unchecked.
+    # holds one back: without a key, or failing, the matches go out unchecked. Someone
+    # not yet told what it sends is told in that alert instead, and checked from the next.
     report = await intern_delivery.run_tick(db, load_window=intern_ui.window,
                                             send_dm=intern_ui.send_dm, now=now,
                                             companies_watched=intern_ui.companies_watched(),
                                             allowed=intern_ui.dm_access(),
-                                            check_fit=intern_fit.checker(db))
+                                            check_fit=intern_fit.checker(db),
+                                            fit_notice=intern_fit.notice_due)
     for key, value in zip(REPORT_KEYS, (now, report.due, report.sent, report.empty,
                                          report.forbidden)):
         intern_store.set_meta(db, key, value)

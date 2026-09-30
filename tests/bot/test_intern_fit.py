@@ -10,6 +10,9 @@ reaches the network, and every database is in memory.
 
 The rules that matter most, because breaking them breaks nothing visible:
 
+  * nobody's labels are sent before they have been shown what is sent: the
+    profiles here have been (`person`), and `NeverBeforeTheNotice` and
+    `TheNoticeComesFirst` hold the rule for those who have not;
   * only labels and four posting fields are ever sent: never a Discord id, a
     name, an email address or a word of a resume;
   * whatever goes wrong (no key, a spent budget, an error, an answer that
@@ -34,15 +37,24 @@ import intern_fit as fit
 import intern_match
 import intern_profile as profile
 import intern_store as store
+import intern_text
 import internship_poller as poller
 import resume_parse
 from test_intern_delivery import (ALICE, BOB, COMPANIES, DAY, HOUR, MINUTE, MONDAY,
-                                  DeliveryTest, person, posting)
+                                  DeliveryTest, posting)
+from test_intern_delivery import person as unsaved_person
 from test_llm import Response, gemini_body
 
 KEY = "test-key-not-real"
 NOW = MONDAY + HOUR
 TITLES = ("Software Engineer Intern", "Backend Software Intern", "Frontend Engineering Intern")
+#: When the profiles here were shown the Gemini notice: the check asks nothing before it.
+TOLD = MONDAY - DAY
+
+
+def person(*args, **fields) -> profile.Profile:
+    """test_intern_delivery's profile, its owner already shown the Gemini notice."""
+    return unsaved_person(*args, **{"fit_notice_at": TOLD, **fields})
 
 
 def settings(**env):
@@ -212,7 +224,7 @@ class WhatIsSent(FitTest):
         draft = resume_parse.derive_draft(resume, date(2026, 9, 28))
         p = profile.from_draft(ALICE, draft, NOW, source="resume", cursor=NOW - 600,
                                today=date(2026, 9, 28))
-        p = dataclasses.replace(p, fields=p.fields or ("mechanical",))
+        p = dataclasses.replace(p, fields=p.fields or ("mechanical",), fit_notice_at=TOLD)
         gemini = FakeGemini()
 
         self.check(p, self.matches(p, titles=("Mechanical Engineering Intern",)), gemini)
@@ -388,6 +400,44 @@ class Checking(FitTest):
         self.assertEqual(gemini.requests, 2)
         self.assertEqual(len(self.slept), 1)
         self.assertGreater(self.slept[0], 59)
+
+
+# ------------------------------------------------------------------ never before the notice
+
+class NeverBeforeTheNotice(FitTest):
+    """Nobody's labels go to Google before they have been shown what goes (plan 3.5):
+    on the start card, the consent screen, `/internships help`, or a DM that says so."""
+
+    def test_someone_never_told_is_asked_about_by_no_request(self):
+        gemini, untold = FakeGemini(), person(fit_notice_at=None)
+        matches = self.matches(untold)
+
+        kept = self.check(untold, matches, gemini)
+
+        self.assertEqual(gemini.requests, 0)
+        self.assertEqual([m.fit for m in kept], [None] * 3)
+        self.assertEqual([m.cand.rowid for m in kept], [m.cand.rowid for m in matches])
+        self.assertIsNone(fit.last_error)
+
+    def test_the_notice_is_due_only_where_the_check_would_otherwise_run(self):
+        untold = person(fit_notice_at=None)
+
+        self.assertTrue(fit.notice_due(untold))
+        self.assertFalse(fit.enabled(untold))
+        self.assertFalse(fit.notice_due(person()))
+        self.assertTrue(fit.enabled(person()))
+        self.assertFalse(fit.notice_due(dataclasses.replace(untold, fit_check=False)))
+        with mock.patch.object(poller, "SETTINGS", poller.configure({})):
+            self.assertFalse(fit.notice_due(untold))
+
+    def test_browsing_shows_no_verdict_before_the_notice(self):
+        # The same labels as someone already checked, so the cache has their verdicts.
+        matches = self.matches()
+        self.check(person(), matches, FakeGemini())
+
+        shown = fit.with_cached(self.db, person(BOB, fit_notice_at=None), matches)
+
+        self.assertEqual([m.fit for m in shown], [None] * 3)
 
 
 # ------------------------------------------------------------------ never held back
@@ -623,6 +673,10 @@ class AlertsAreChecked(DeliveryTest):
         self.addCleanup(setattr, fit, "quiet_until", 0.0)
         self.gemini = FakeGemini()
 
+    def enrol(self, uid=ALICE, at=MONDAY, **fields):
+        """Saved as a first Save leaves it, by someone the start card told about the check."""
+        return super().enrol(uid, at, **{"fit_notice_at": at, **fields})
+
     def checked_tick(self, now, gemini=None):
         gemini = gemini or self.gemini
 
@@ -633,7 +687,8 @@ class AlertsAreChecked(DeliveryTest):
         with contextlib.redirect_stderr(stderr):
             return asyncio.run(delivery.run_tick(
                 self.db, load_window=self.load_window, send_dm=self.outbox, now=now,
-                companies_watched=COMPANIES, allowed=self.allowed, check_fit=check_fit))
+                companies_watched=COMPANIES, allowed=self.allowed, check_fit=check_fit,
+                fit_notice=fit.notice_due))
 
     def post_three(self):
         self.post(*(posting(title, MONDAY + (n + 1) * MINUTE, company=f"Firm {n}")
@@ -761,6 +816,124 @@ class AlertsAreChecked(DeliveryTest):
         self.assertEqual(self.gemini.requests, 1)
         self.assertEqual(len(self.outbox.calls), 2)
         self.assertEqual(self.outbox.to(ALICE)[0].text, self.outbox.to(BOB)[0].text)
+
+
+class TheNoticeComesFirst(AlertsAreChecked):
+    """Someone who has not been shown the Gemini notice gets it in an alert, and that alert
+    goes out unchecked: no request is made for them until it has been delivered."""
+
+    def everything_no_fit(self):
+        return FakeGemini(lambda payload: [
+            {"i": p["i"], "verdict": "no_fit", "reason": "Not a role for you"}
+            for p in payload["postings"]])
+
+    def untold(self, uid=ALICE, **fields):
+        """A profile made while the host had no key, or before the notice was recorded."""
+        return self.enrol(uid, **{"alerts": "hourly", "fit_notice_at": None, **fields})
+
+    def test_an_imported_subscribers_first_alert_is_the_intro_and_it_is_not_checked(self):
+        store.write_migrated(self.db, [(ALICE, "swe", 1)], MONDAY, cursor=delivery.horizon(MONDAY))
+        self.post_three()
+
+        report = self.checked_tick(NOW, self.everything_no_fit())
+
+        # Before, every labels-only no_fit meant a request, no DM and no intro, every hour.
+        (msg,) = self.outbox.to(ALICE)
+        self.assertEqual((report.sent, self.gemini.requests), (1, 0))
+        self.assertTrue(msg.text.startswith(intern_text.migrated_intro()))
+        self.assertNotIn(intern_text.fit_notice_line(), msg.text)     # the intro says it
+        self.assertTrue(all(title in msg.text for title in TITLES))
+        self.assertNotIn("Gemini: ", msg.text)
+        told = store.load(self.db, ALICE)
+        self.assertEqual((told.intro_pending, told.fit_notice_at), (False, NOW))
+
+    def test_an_imported_subscriber_is_checked_from_the_alert_after_the_intro(self):
+        store.write_migrated(self.db, [(ALICE, "swe", 1)], MONDAY, cursor=delivery.horizon(MONDAY))
+        self.post_three()
+        self.checked_tick(NOW)
+        self.post(posting("Platform Engineering Intern", NOW + MINUTE, company="Firm 9"))
+
+        self.checked_tick(NOW + HOUR)
+
+        self.assertEqual(self.gemini.requests, 1)
+        self.assertIn("Gemini: fits", self.outbox.to(ALICE)[1].text)
+
+    def test_someone_never_told_gets_the_notice_in_an_unchecked_alert(self):
+        self.untold()
+        self.post_three()
+
+        report = self.checked_tick(NOW, self.everything_no_fit())
+
+        (msg,) = self.outbox.to(ALICE)
+        self.assertEqual((report.sent, self.gemini.requests), (1, 0))
+        self.assertTrue(msg.text.startswith(intern_text.fit_notice_line()))
+        self.assertTrue(all(title in msg.text for title in TITLES))
+        self.assertNotIn("Gemini: ", msg.text)
+        self.assertEqual(store.load(self.db, ALICE).fit_notice_at, NOW)
+
+    def test_the_check_starts_with_the_alert_after_the_notice(self):
+        self.untold()
+        self.post_three()
+        self.checked_tick(NOW)
+        self.post(posting("Platform Engineering Intern", NOW + MINUTE, company="Firm 9"))
+
+        self.checked_tick(NOW + HOUR)
+
+        second = self.outbox.to(ALICE)[1].text
+        self.assertEqual(self.gemini.requests, 1)
+        self.assertNotIn(intern_text.fit_notice_line(), second)
+        self.assertIn("Gemini: fits", second)
+
+    def test_a_notice_that_never_arrived_is_not_recorded(self):
+        for failure in (delivery.DmForbidden, delivery.DmTransient):
+            with self.subTest(failure=failure.__name__):
+                self.db.execute("DELETE FROM intern_profiles")
+                self.untold()
+                self.post_three()
+                self.outbox.raises[ALICE] = failure
+
+                self.checked_tick(NOW)
+
+                self.assertEqual(self.gemini.requests, 0)
+                self.assertIsNone(store.load(self.db, ALICE).fit_notice_at)
+
+    def test_nothing_new_means_no_notice_yet(self):
+        self.untold()
+
+        report = self.checked_tick(NOW)
+
+        self.assertEqual((report.empty, self.outbox.calls, self.gemini.requests), (1, [], 0))
+        self.assertIsNone(store.load(self.db, ALICE).fit_notice_at)
+
+    def test_someone_who_turned_the_check_off_is_told_nothing_and_asked_nothing(self):
+        self.untold(fit_check=False)
+        self.post_three()
+
+        self.checked_tick(NOW)
+
+        (msg,) = self.outbox.to(ALICE)
+        self.assertEqual(self.gemini.requests, 0)
+        self.assertNotIn("Gemini", msg.text)
+        self.assertIsNone(store.load(self.db, ALICE).fit_notice_at)
+
+    def test_without_a_key_there_is_nothing_to_tell(self):
+        self.untold()
+        self.post_three()
+        with mock.patch.object(poller, "SETTINGS",
+                               poller.configure({"DIAYN_TZ": "America/Los_Angeles"})):
+            self.checked_tick(NOW)
+
+        self.assertNotIn("Gemini", self.outbox.to(ALICE)[0].text)
+        self.assertIsNone(store.load(self.db, ALICE).fit_notice_at)
+
+    def test_a_tick_that_is_not_told_how_says_nothing_about_gemini(self):
+        self.untold()
+        self.post_three()
+
+        self.tick(NOW)                                # no check and no notice wired in
+
+        self.assertNotIn("Gemini", self.outbox.to(ALICE)[0].text)
+        self.assertIsNone(store.load(self.db, ALICE).fit_notice_at)
 
 
 class Housekeeping(FitTest):
