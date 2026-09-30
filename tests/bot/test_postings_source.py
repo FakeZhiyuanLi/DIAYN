@@ -139,6 +139,27 @@ class TheBotOpensTheScrapersFile(unittest.TestCase):
         self.assertEqual((conn, source), (None, None))
         self.assertEqual(error, "FileNotFoundError: No such file or directory")
 
+    def test_a_connection_whose_source_cannot_be_built_is_closed(self):
+        # The file can be renamed between the open and the stat, and the connection
+        # opened for it must not be left for the garbage collector.
+        path = fixture.contract_db(self.dir.name)
+        real_open, opened = contract.open_readonly, []
+        self.addCleanup(lambda: [c.close() for c in opened])
+
+        def recording(p):
+            opened.append(real_open(p))
+            return opened[-1]
+
+        gone = FileNotFoundError(2, "No such file or directory")
+        with mock.patch.object(contract, "open_readonly", side_effect=recording), \
+                mock.patch.object(contract, "inode", side_effect=gone):
+            conn, source, error = sources.open_contract(str(path))
+
+        self.assertEqual((conn, source), (None, None))
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")
+
     def test_a_contract_failure_is_named(self):
         conn, source, error = self.at(fixture.contract_db(self.dir.name, meta={"prune_days": "7"}))
 

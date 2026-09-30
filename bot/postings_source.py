@@ -100,10 +100,12 @@ def open_contract(path: str | None) -> tuple[sqlite3.Connection | None, "Source 
     """The read-only open, also run again by intern_ui.ensure_postings. Never raises."""
     if not path:
         return None, None, "no path to postings.db was given"
+    conn = None
     try:
         conn = contract.open_readonly(path)
         return conn, ContractSource(conn, path), None
     except Exception as error:
+        close_quietly(conn)             # the file went between the open and the stat
         return None, None, describe(error)
 
 
