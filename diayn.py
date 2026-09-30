@@ -377,7 +377,9 @@ async def run_together(bot, sweep) -> int:
     answering from a ledger nothing updates. The bot gets BOT_SHUTDOWN_S to stop; one
     still stopping then is left behind. When the bot stops first, the sweep loop is
     cancelled and waited for, so it is finished before its connection closes. An
-    exception from the bot is raised from here.
+    exception from the bot is raised from here. A stop from outside (Ctrl-C, or the
+    SIGINT pm2 and systemd send) cancels each task once, and waits for both: the bot
+    logs out of Discord, and nothing is logged.
     """
     bot_task = asyncio.create_task(bot, name="bot")
     sweep_task = asyncio.create_task(sweep, name="sweep loop")
@@ -397,6 +399,10 @@ async def run_together(bot, sweep) -> int:
     try:
         await asyncio.wait([bot_task, sweep_task], return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:      # the process is stopping: Ctrl-C, or pm2's SIGINT
+        # Detached first: the sweep loop finishes stopping before the bot has logged
+        # out, and the callback would cancel the bot a second time, cutting its logout
+        # off, and log a sweep loop that ended by itself.
+        sweep_task.remove_done_callback(on_sweep_done)
         bot_task.cancel()
         sweep_task.cancel()
         await asyncio.wait([bot_task, sweep_task])

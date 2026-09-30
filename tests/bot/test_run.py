@@ -19,6 +19,9 @@ cmd_watch. What is pinned here:
   so pm2 or systemd restarts the process and its sweeps with it: the bot is
   cancelled before anything is logged, and a bot still stopping after
   BOT_SHUTDOWN_S is left behind;
+- a stop from outside (Ctrl-C, or the SIGINT pm2 and systemd send) cancels each
+  task once and waits for both, so a logout that takes several turns of the
+  loop, as discord.py's does, finishes, and nothing is logged;
 - Discord refusing the Server Members Intent exits 78, once, with one line
   naming the portal toggle: DEPLOY.md's units never restart on 78, since a
   loop of refused logins can get the token reset;
@@ -72,6 +75,8 @@ FAILED, USAGE_ERROR, LOCK_HELD = 1, 2, 3
 #: sysexits.h's EX_CONFIG, which DEPLOY.md's pm2 and systemd units do not restart on.
 CONFIG = 78
 INTERVAL = poller.DEFAULT_INTERVAL_S
+#: Seconds a stop from outside is given to finish before the test calls it hung.
+STOPS_WITHIN_S = 5
 #: The injected clock: the fixture's last sweep began long before it, so one is due.
 NOW = 1_790_000_000.0
 SCRAPER_VARIABLES = {var for _, var, _ in poller.SETTINGS_FROM_ENV} | {"POLLER_ENV_FILE"}
@@ -456,8 +461,25 @@ class TheSweepLoop(_RunCase):
 
 
 class Stopping(unittest.TestCase):
+    """Ctrl-C, or the SIGINT pm2 and systemd send: asyncio.run cancels run_together."""
+
+    def stop_from_outside(self, bot, sweep) -> str:
+        """Runs `bot` and `sweep` through run_together, cancels it from outside as
+        asyncio.run's SIGINT handler does, and returns what was written to stderr."""
+        async def stop_it():
+            task = asyncio.create_task(diayn.run_together(bot, sweep))
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                # A stop that hangs fails here, with TimeoutError, rather than hanging.
+                await asyncio.wait_for(task, STOPS_WITHIN_S)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            asyncio.run(stop_it())
+        return err.getvalue()
+
     def test_a_stop_from_outside_cancels_both_tasks_and_waits_for_them(self):
-        # What Ctrl-C, or pm2's SIGINT, does to run_together through asyncio.run.
         bot, cancelled = FakeBot(), []
 
         async def watching():
@@ -467,16 +489,34 @@ class Stopping(unittest.TestCase):
                 cancelled.append(True)
                 raise
 
-        async def stop_it():
-            task = asyncio.create_task(diayn.run_together(bot(None), watching()))
-            await asyncio.sleep(0.01)
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-
-        asyncio.run(stop_it())
+        err = self.stop_from_outside(bot(None), watching())
         self.assertTrue(bot.cancelled)
         self.assertEqual(cancelled, [True])
+        self.assertNotIn("sweep loop ended", err)
+
+    def test_a_stop_from_outside_lets_the_bot_finish_logging_out(self):
+        # discord.py's close() awaits a task of its own, so the logout takes several
+        # turns of the loop, and the sweep loop has finished stopping long before it.
+        # A second cancel then would cut the websocket's close off halfway.
+        stages = []
+
+        async def bot():
+            try:
+                await forever()
+            except asyncio.CancelledError:
+                stages.append("logging out")
+                closing = asyncio.create_task(asyncio.sleep(0.05))
+                try:
+                    await closing
+                    stages.append("logged out")
+                except asyncio.CancelledError:
+                    stages.append("logout cut off")
+                raise
+
+        err = self.stop_from_outside(bot(), forever())
+        self.assertEqual(stages, ["logging out", "logged out"])
+        self.assertNotIn("sweep loop ended", err)
+        self.assertEqual(err, "")
 
 
 class TheIntent(_RunCase):
