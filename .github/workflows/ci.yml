@@ -60,8 +60,14 @@ jobs:
               sys.exit(f"aiohttp present: {present}, but this leg is {os.environ['AIOHTTP']}")
           PY
       - name: Compile
-        run: python -m py_compile *.py tests/*.py
+        run: |
+          # nullglob: a directory with no module yet adds nothing, rather than
+          # a literal "bot/*.py" that py_compile cannot open.
+          shopt -s nullglob
+          python -m py_compile *.py tests/*.py bot/*.py tests/bot/*.py
       - name: Tests
+        # tests/bot/ is a package, so this reaches it; tests/test_layout.py
+        # fails if it does not.
         run: python -m unittest discover -s tests -v
 
   guards:

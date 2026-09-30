@@ -62,6 +62,7 @@ ALLOWED_PATHS = (
     ".github/workflows/ci.yml", "contract/postings_v1.sql",
     "contract/company_norm_cases.json", "contract/sample_urls.json",
     "tests/test_contract.py", "tests/aiohttp_stub.py", "LICENSE",
+    "bot/README.md", "tests/bot/__init__.py", "tests/bot/test_bot_path.py",
 )
 
 
