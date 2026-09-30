@@ -9,7 +9,8 @@ records every open posting as seen, and prints the invite link. What is pinned
 here:
 
 - nothing is made until the token checks out;
-- the intent being off is a warning, not a failure;
+- the Server Members Intent being off is a failure, naming the portal toggle,
+  and nothing is made: the bot cannot log in without it;
 - an existing postings.db is never bootstrapped again, and one with an empty
   ledger is left alone and refused, pointing at `sweep --init`;
 - a first sweep that records nothing, or fails, is a failure;
@@ -189,13 +190,17 @@ class TheToken(_SetupCase):
 
 
 class TheIntent(_SetupCase):
-    def test_the_members_intent_off_is_a_warning_that_says_where_to_turn_it_on(self):
+    def test_the_members_intent_off_stops_setup_and_names_the_portal_toggle(self):
+        # Discord refuses the login of a bot that asks for an intent the portal has
+        # off, and the bot always asks for this one.
         self.portal.app = application(members_intent=False)
-        code, out, err = self.setup()
-        self.assertEqual(code, 0, err)
-        self.assertRegex(out, r"(?m)^warn\s+Server Members Intent")
-        self.assertIn("Privileged Gateway Intents", out)
-        self.assertEqual(self.seen(), 2)
+        code, out, err = self.setup(fetch_nothing_allowed())
+        self.assertEqual(code, FAILED)
+        self.assertRegex(err, r"(?m)^fail\s+Server Members Intent")
+        self.assertIn(hints.INTENT_HOW, err)
+        self.assertFalse(os.path.exists(self.data))
+        self.assertNotIn("oauth2/authorize", out)
+        self.assertNotIn("Then start it", out)
 
     def test_the_members_intent_on_is_no_warning(self):
         _, out, _ = self.setup()

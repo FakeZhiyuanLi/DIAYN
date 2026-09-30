@@ -66,8 +66,9 @@ Everything the bot needs from Discord is set on the application's pages:
   it if it ever leaks.
 - **Bot → Privileged Gateway Intents → Server Members Intent: on.** The bot
   uses it to notice when someone has left every server it shares with them, and
-  to tell, in a DM, whether someone belongs to a server that has access. It runs
-  without it, and `setup` and `doctor` warn.
+  to tell, in a DM, whether someone belongs to a server that has access. It
+  cannot log in without it: Discord refuses the connection. `setup` stops and
+  `doctor` fails until it is on.
 - **Presence Intent and Message Content Intent: off.** The bot has no use for
   either: every command is a slash command.
 - **Bot → Public Bot: off**, unless other people should be able to add the bot
@@ -184,8 +185,8 @@ lock. `.venv/bin/python diayn.py <command> --help` lists a command's options.
 Gets a new host ready, and is safe to run again: nothing that exists is
 changed. In order, stopping at the first failure, it:
 
-- checks `DISCORD_TOKEN` with Discord (nothing is made until it is accepted),
-  and warns if the Server Members Intent is off;
+- checks `DISCORD_TOKEN` with Discord, and that the Server Members Intent is
+  on: nothing is made until both are;
 - makes the data directory at mode 700, or warns if an existing one is
   readable by others;
 - bootstraps `postings.db`, holding the sweeper lock, with a first sweep that

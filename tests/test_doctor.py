@@ -188,12 +188,15 @@ class WhatIsToFix(_DoctorCase):
         self.assertEqual(code, FAILED)
         self.assertIn("HTTP 401", err)
 
-    def test_the_members_intent_off_is_a_warning(self):
+    def test_the_members_intent_off_is_to_fix_and_names_the_portal_toggle(self):
         self.healthy()
         self.portal.app = application(members_intent=False)
-        code, out, _ = self.doctor_holding_the_lock()
-        self.assertEqual(code, 0)
-        self.assertEqual(lines(out)["Server Members Intent"], "warn")
+        code, out, err = self.doctor_holding_the_lock()
+        self.assertEqual(code, FAILED)
+        self.assertEqual(lines(err)["Server Members Intent"], "fail")
+        self.assertIn(hints.INTENT_HOW, err)
+        self.assertEqual(lines(out)["postings.db"], "ok")     # the rest is still checked
+        self.assertIn("1 to fix", out)
 
     def test_a_missing_data_directory_fails_and_is_not_made(self):
         code, out, err = self.doctor()

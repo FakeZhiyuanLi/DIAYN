@@ -11,9 +11,11 @@ invite link, and `diayn.py doctor`, which checks it again at any time.
 
 1. **The token.** DISCORD_TOKEN must be set, and Discord must accept it
    (discord_portal). Nothing is made until it does.
-2. **The intent.** The Server Members Intent being off is a warning: the bot
-   runs without it, but cannot notice someone leaving every server it shares
-   with them, and a DM cannot tell who is a member of a granted server.
+2. **The intent.** The Server Members Intent must be on. The bot always asks
+   for it, to notice someone leaving every server it shares with them and to
+   tell in a DM who is a member of a granted server, and Discord refuses the
+   login of a bot that asks for an intent its portal toggle has off. Nothing
+   is made until it is on.
 3. **The data directory**, DIAYN_DATA, made at mode 700. One that exists keeps
    the mode it has, with a warning if others on the box can read it.
 4. **postings.db**, bootstrapped as `sweep --init` would: a first sweep that
@@ -101,10 +103,9 @@ def discord_findings(poller, settings, fetch_application=None):
     if app.members_intent:
         found.append(Finding(OK, "Server Members Intent", "on."))
     else:
-        found.append(Finding(WARN, "Server Members Intent", "off. The bot runs without it, but "
-                             "cannot tell when someone has left every server it shares with "
-                             "them, or who in a DM belongs to a server with access. "
-                             + INTENT_HOW))
+        found.append(Finding(FAIL, "Server Members Intent", "off, and the bot cannot log in "
+                             "without it: Discord refuses the connection, and `run` stops "
+                             "rather than restart into the same refusal. " + INTENT_HOW))
     if app.public:
         found.append(Finding(NOTE, "Public Bot", "on, so anyone with the invite link can add "
                              "this bot to a server. It still answers only you and those you "
@@ -282,7 +283,7 @@ def _steps(poller, settings, fetch_application) -> int:
     found, app = discord_findings(poller, settings, fetch_application)
     for finding in found:
         report(finding)
-    if app is None:
+    if app is None or any(finding.failed for finding in found):
         return FAILED_EXIT
     directory = data_directory(settings.data_dir, make=True)
     report(directory)
