@@ -1,7 +1,8 @@
 # bot/
 
-The Discord bot: the internship finder's modules, which arrive in a later
-change. Its tests go in [`tests/bot/`](../tests/bot/).
+The Discord bot: [`app.py`](app.py), the client, which opens the databases,
+syncs the commands and starts the delivery loop, and the internship finder's
+modules, which it wires in. Its tests are in [`tests/bot/`](../tests/bot/).
 
 The modules use bare imports (`import intern_store`), with this directory on
 `sys.path`, rather than forming a package. `tests/bot/__init__.py` puts it
