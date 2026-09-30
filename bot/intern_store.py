@@ -101,6 +101,7 @@ STORED_COLUMNS: dict[str, str] = {
     "updated_at": "When you last changed your profile",
     "active_at": "When you last used the finder",
     "access_lapsed_at": "When you stopped having access to this bot",
+    "fit_check": "Whether Gemini checks roles for you before I DM them",
 }
 
 _PROFILES_DDL = """
@@ -159,7 +160,11 @@ _META_DDL = """
 #: Columns added since the table was first made, as (name, declaration): added in
 #: place by `init_db`, never by recreating the table, so a users.db from an older
 #: release keeps its rows. They come last, in this order, in STORED_COLUMNS too.
-_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (("access_lapsed_at", "REAL"),)
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("access_lapsed_at", "REAL"),
+    # On for every row there already is, as for a new profile: the check runs only
+    # where the host has a key, and its owner can turn it off on the card.
+    ("fit_check", "INTEGER NOT NULL DEFAULT 1 CHECK (fit_check IN (0, 1))"))
 
 _COLUMNS = tuple(STORED_COLUMNS)
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM intern_profiles"
@@ -167,7 +172,7 @@ _JSON_DEFAULTS: dict[str, tuple[str, ...]] = {
     "majors": (), "minors": (), "skills": (), "keywords": (), "fields": (),
     "levels": vocab.DEFAULT_LEVELS, "locations": vocab.DEFAULT_LOCATIONS, "terms": (),
     "companies_only": (), "companies_hidden": ()}
-_BOOLEANS = frozenset({"fields_locked", "levels_locked", "intro_pending"})
+_BOOLEANS = frozenset({"fields_locked", "levels_locked", "intro_pending", "fit_check"})
 #: What `save` may write over an existing row (spec 3.1 "Writes").
 _SAVED = tuple(c for c in _COLUMNS
                if c in (EDITABLE - {"alerts", "alert_hour"}) | {"updated_at", "active_at"})

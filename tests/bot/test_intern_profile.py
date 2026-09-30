@@ -83,7 +83,28 @@ class NewProfile(unittest.TestCase):
             "source", "consent_version", "majors", "minors", "degree", "grad_year",
             "grad_month", "skills", "keywords", "fields", "fields_locked", "levels",
             "levels_locked", "locations", "terms", "companies_only", "companies_hidden",
-            "min_score", "alerts", "alert_hour"}))
+            "min_score", "alerts", "alert_hour", "fit_check"}))
+
+    def test_the_gemini_check_is_on_until_its_owner_turns_it_off(self):
+        # On by default: it only runs where the host has a key (intern_fit).
+        p = profile.new_profile(7, NOW, source="manual", cursor=CURSOR)
+        off = profile.with_changes(p, NOW, fit_check=False)
+
+        self.assertTrue(p.fit_check)
+        self.assertFalse(off.fit_check)
+        self.assertTrue(profile.with_changes(off, NOW, fit_check=True).fit_check)
+        for junk in ("no", 0, None, "off"):
+            with self.subTest(junk=junk):
+                self.assertTrue(profile.with_changes(p, NOW, fit_check=junk).fit_check)
+                self.assertFalse(profile.with_changes(off, NOW, fit_check=junk).fit_check)
+
+    def test_a_replaced_resume_keeps_the_gemini_setting(self):
+        existing = profile.with_changes(mech_student(), NOW, fit_check=False)
+
+        replaced = profile.from_draft(7, DRAFT, NOW, source="resume", cursor=CURSOR,
+                                      today=TODAY, existing=existing)
+
+        self.assertFalse(replaced.fit_check)
 
 
 class DefaultLevels(unittest.TestCase):

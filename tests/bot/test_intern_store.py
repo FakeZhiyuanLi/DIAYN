@@ -161,7 +161,8 @@ class SaveAndLoad(StoreTest):
                     cursor=CURSOR, last_run_at=NOW, last_sent_at=NOW - 7,
                     last_quiet_at=NOW - 8, dm_failures=1, intro_pending=True,
                     left_at=NOW - 9, expiry_warned_at=NOW - 10, created_at=NOW - 11,
-                    updated_at=NOW, active_at=NOW, access_lapsed_at=NOW - 12)
+                    updated_at=NOW, active_at=NOW, access_lapsed_at=NOW - 12,
+                    fit_check=False)
 
     def test_every_field_survives_a_round_trip(self):
         p = self.everything_set()
@@ -184,6 +185,18 @@ class SaveAndLoad(StoreTest):
                     self.assertEqual(getattr(store.load(self.db, ALICE), column),
                                      getattr(defaults, column))
                     store.delete_user(self.db, ALICE)
+
+    def test_turning_the_gemini_check_off_is_saved_and_on_again(self):
+        p = self.save(ALICE)
+
+        off = store.save(self.db, profile.with_changes(p, NOW + 1, fit_check=False), now=NOW + 1)
+        on = store.save(self.db, profile.with_changes(off, NOW + 2, fit_check=True), now=NOW + 2)
+
+        self.assertTrue(p.fit_check)
+        self.assertFalse(off.fit_check)
+        self.assertTrue(on.fit_check)
+        self.assertEqual(self.db.execute("SELECT typeof(fit_check), fit_check FROM intern_profiles")
+                         .fetchone(), ("integer", 1))
 
     def test_a_list_holding_something_other_than_text_keeps_only_the_text(self):
         self.save(ALICE)
@@ -800,7 +813,7 @@ class ColumnsAndPrivacy(StoreTest):
         table = [r[1] for r in self.db.execute("PRAGMA table_info(intern_profiles)")]
 
         self.assertEqual(list(store.STORED_COLUMNS), table)
-        self.assertEqual(len(table), 34)
+        self.assertEqual(len(table), 35)
         self.assertEqual([f.name for f in dataclasses.fields(profile.Profile)], table)
 
     def test_no_description_names_a_zone_the_host_may_not_use(self):
@@ -816,6 +829,10 @@ class ColumnsAndPrivacy(StoreTest):
         self.assertEqual(store.STORED_COLUMNS["access_lapsed_at"],
                          "When you stopped having access to this bot")
 
+    def test_the_gemini_setting_is_described_plainly(self):
+        self.assertEqual(store.STORED_COLUMNS["fit_check"],
+                         "Whether Gemini checks roles for you before I DM them")
+
     def test_a_users_db_from_before_gains_the_column_and_keeps_its_rows(self):
         old = sqlite3.connect(":memory:")
         self.addCleanup(old.close)
@@ -829,7 +846,10 @@ class ColumnsAndPrivacy(StoreTest):
         store.init_db(old)
 
         self.assertNotIn("access_lapsed_at", columns)
+        self.assertNotIn("fit_check", columns)
+        # Rows from before are checked, as a new profile is: on until turned off.
         self.assertEqual(store.load(old, ALICE), make(ALICE))
+        self.assertTrue(store.load(old, ALICE).fit_check)
 
     def test_every_column_has_a_plain_english_description(self):
         for column, text in store.STORED_COLUMNS.items():
