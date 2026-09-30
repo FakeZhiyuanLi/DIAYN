@@ -226,6 +226,63 @@ class Readme(unittest.TestCase):
         self.assertNotIn("](", lines[0])
 
 
+def shell_commands(text) -> list:
+    """Every line of `text`, with a line ending in a backslash joined to the next, as the
+    shell joins them."""
+    return re.sub(r"\s*\\\n\s*", " ", text).splitlines()
+
+
+class Deploy(unittest.TestCase):
+    """DEPLOY.md: running DIAYN for good, on any Linux or macOS host."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.deploy = read("DEPLOY.md")
+        cls.commands = [c.strip() for c in shell_commands(cls.deploy)]
+
+    def test_pm2_runs_the_one_process(self):
+        self.assertRegex(self.deploy, r'script: "[^"]*/diayn\.py"')
+        self.assertIn('args: "run"', self.deploy)
+        # 3 is another sweeper holding the lock: restarting into it only loops.
+        self.assertIn("stop_exit_codes: [3]", self.deploy)
+
+    def test_systemd_runs_the_one_process(self):
+        self.assertRegex(self.deploy, r"(?m)^ExecStart=/\S+/python /\S+/diayn\.py run$")
+        # run stops cleanly on SIGINT, as on Ctrl-C; SIGTERM would kill it outright.
+        self.assertIn("KillSignal=SIGINT", self.deploy)
+        self.assertIn("RestartPreventExitStatus=3", self.deploy)
+
+    def test_backs_up_both_databases_with_backup(self):
+        for db in ("postings.db", "users.db"):
+            with self.subTest(db=db):
+                self.assertTrue(any(f'"file:$D/{db}?mode=ro" ".backup ' in c
+                                    for c in self.commands))
+
+    def test_restores_both_databases_with_restore_under_the_lock(self):
+        restores = [c for c in self.commands if '".restore ' in c or "'.restore " in c]
+        for db in ("postings.db", "users.db"):
+            with self.subTest(db=db):
+                self.assertTrue(any(f'"$D/{db}"' in c for c in restores))
+        for command in restores:
+            with self.subTest(command=command):
+                self.assertTrue(command.startswith('flock -n "$D/postings.db.lock" sqlite3 '))
+
+    def test_never_copies_a_database_as_a_file(self):
+        for command in self.commands:
+            with self.subTest(command=command):
+                self.assertNotRegex(command, r"^(cp|mv|rsync|scp)\b.*\.db\b")
+
+    def test_upgrades_by_tag(self):
+        self.assertIn("git fetch --tags", self.deploy)
+        self.assertIn("git checkout --detach vX.Y.Z", self.deploy)
+
+    def test_the_move_from_an_in_process_sweep_is_gone(self):
+        for gone in ("INTERN_SWEEP", "in-process", "Stage 1", "Stage 2", "Stage 3",
+                     PROVENANCE_NAME):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, self.deploy)
+
+
 class CitedCommits(unittest.TestCase):
     def test_documents_cite_only_post_rewrite_commits(self):
         for name in sorted(n for n in os.listdir(ROOT) if n.endswith(".md")):
