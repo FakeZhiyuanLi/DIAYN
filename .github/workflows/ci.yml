@@ -131,7 +131,7 @@ jobs:
           ROOT_REPO_CREATED: acc1d1dffc64553714cc73cad6633828a814f84e
           # The scraper's single root: its import from BaronChairStair 9f00cd5,
           # where the audited history begins.
-          ROOT_SCRAPER_IMPORT: 6788def22ac97bc1737e411b757b7b12c86a4099
+          ROOT_SCRAPER_IMPORT: 210ac1414027d86299923852a584b65ed9cc41b0
         run: |
           # Any other root is history merged in from somewhere else, and could
           # carry what BaronChairStair's history rewrite removed. Changing this
