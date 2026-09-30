@@ -47,6 +47,7 @@ import postings_contract
 import postings_source
 import private_files
 import test_postings_contract
+from module_imports import imported_at_module_scope
 from test_private_files import POSIX_MODES, PRIVATE_FILE, loose_umask, mode_of
 
 try:
@@ -275,8 +276,9 @@ class ImportingTheClientDoesNothing(unittest.TestCase):
 
     def test_the_scraper_is_never_imported_at_module_scope(self):
         # Its settings are read when the client is built, after boot() has bound them.
-        top = {a.name.split(".")[0] for s in _tree().body
-               if isinstance(s, (ast.Import, ast.ImportFrom)) for a in s.names}
+        # `from internship_poller import SETTINGS` is caught by its module, not its names.
+        top = imported_at_module_scope(_tree())
+        self.assertIn("discord", top)                   # it does read the source it guards
         self.assertNotIn("internship_poller", top)
 
 
@@ -805,14 +807,22 @@ class TheStartUpHook(_ClientCase):
             self.assertFalse(app.access.is_owner(202))
 
     def test_a_failed_sync_is_logged_by_type_and_stops_nothing(self):
-        async def failing(client):
-            raise RuntimeError("canary 50240 message")
+        # What Discord raises (a rate limit, a refusal) and anything else: an except
+        # narrowed to either kind would let the other stop the start-up.
+        response = types.SimpleNamespace(status=429, reason="Too Many Requests")
+        for error in (RuntimeError("canary 50240 message"),
+                      discord.HTTPException(response, "canary 50240 message")):
+            with self.subTest(error=type(error).__name__):
+                self.started.clear()
 
-        with mock.patch.object(app, "sync_global_commands", failing):
-            added, log = self.start_up(self.client())
-        self.assertIn("command sync failed: RuntimeError", log)
-        self.assertNotIn("canary", log)
-        self.assertEqual((len(added), self.started), (3, [True]))
+                async def failing(client, error=error):
+                    raise error
+
+                with mock.patch.object(app, "sync_global_commands", failing):
+                    added, log = self.start_up(self.client())
+                self.assertIn(f"command sync failed: {type(error).__name__}", log)
+                self.assertNotIn("canary", log)
+                self.assertEqual((len(added), self.started), (3, [True]))
 
 
 @needs_discord

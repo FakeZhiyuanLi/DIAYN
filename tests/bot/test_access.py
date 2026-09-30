@@ -19,6 +19,7 @@ them.
 The ids here are made up.
 """
 
+import ast
 import sqlite3
 import types
 import unittest
@@ -282,14 +283,31 @@ class TheGrantsTable(_GrantsCase):
         self.assertEqual(access.grants(self.db), access.Grants())
 
 
+class TheImportGuardReadsBothForms(unittest.TestCase):
+    """The guard below, and test_intern_wiring's, read `from x import y` by its module:
+    its alias names are what it imports from x, never x itself."""
+
+    def test_every_form_of_import_that_runs_at_import_is_found_by_its_package(self):
+        from module_imports import imported_at_module_scope
+        cases = {"from discord import Client": {"discord"},
+                 "from discord.ext import tasks": {"discord"},
+                 "import internship_poller.settings as p": {"internship_poller"},
+                 "try:\n    import aiohttp\nexcept ImportError:\n    aiohttp = None": {"aiohttp"},
+                 "class C:\n    from discord import ui": {"discord"},
+                 "def later():\n    import discord": set(),
+                 "from . import sibling": set()}
+        for source, found in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(imported_at_module_scope(ast.parse(source)), found)
+
+
 class ImportingReadsNothing(unittest.TestCase):
     def test_the_module_imports_neither_discord_nor_the_scraper_at_module_scope(self):
-        import ast
         import pathlib
+        from module_imports import imported_at_module_scope
         tree = ast.parse(pathlib.Path(access.__file__).read_text(encoding="utf-8"))
-        top = {alias.name.split(".")[0] for node in tree.body
-               if isinstance(node, (ast.Import, ast.ImportFrom))
-               for alias in getattr(node, "names", ())}
+        top = imported_at_module_scope(tree)
+        self.assertIn("sqlite3", top)                   # it does read the source it guards
         self.assertFalse(top & {"discord", "internship_poller", "aiohttp"})
 
 
