@@ -31,8 +31,10 @@ from unittest import mock
 
 import access
 import intern_delivery
+import intern_fit
 import intern_profile
 import intern_store
+import internship_poller as poller
 import postings_contract as contract
 import postings_source as sources
 import test_postings_contract as fixture
@@ -51,6 +53,7 @@ if REAL_DISCORD:
     import intern_alert_views
     import intern_commands
     import intern_ui
+    import intern_views
 else:  # pragma: no cover - depends on the environment
     diayn_commands = intern_alert_views = intern_commands = intern_ui = None
 
@@ -89,6 +92,7 @@ class _ContractCase(unittest.TestCase):
         self.addCleanup(self.db.close)
         intern_store.init_db(self.db)
         access.init_db(self.db)
+        intern_fit.init_db(self.db)
         self.sent = []
 
         async def send_dm(uid, msg):
@@ -464,6 +468,72 @@ class CommandsReadOnlyTheContract(_ContractCase):
     def test_companies_come_from_the_published_registry(self):
         self.assertEqual(intern_ui.companies_watched(), 4)
         self.assertEqual(intern_ui.known_companies()["kimleyhorn"], "Kimley-Horn")
+
+
+@needs_discord
+class TheFitCheckInBrowsingAndDebug(_ContractCase):
+    """`/internships matches` shows the verdicts already cached and never asks Gemini;
+    `/diayn debug` shows the day's fit usage and the last failure."""
+
+    def setUp(self):
+        super().setUp()
+        add_postings(self.path, ("n1", "Newco", "Software Engineer Intern", NOW - 3600))
+        patch = mock.patch.object(poller, "SETTINGS", poller.configure(
+            {"GEMINI_API_KEY": "test-key-not-real", "LLM_DAY_TZ": "America/Los_Angeles"}))
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(setattr, intern_fit, "last_error", None)
+        self.enrol(DUE, NOW - 2 * 3600)
+        self.p = intern_store.load(self.db, DUE)
+
+    def cache(self, verdict, reason):
+        (cand,) = intern_commands.intern_match.tag_rows([intern_commands._find_posting("newco")])
+        intern_fit.remember(self.db, intern_fit.profile_fp(self.p),
+                            {cand.rk_hash: intern_fit.Verdict(verdict, reason)}, "m", NOW)
+
+    def listing(self, p):
+        with mock.patch.object(intern_fit, "_request", side_effect=AssertionError("asked")), \
+                mock.patch.object(intern_views.time, "time", lambda: NOW):
+            chunks, _ = asyncio.run(intern_views._listing(p, days=14, sort="best"))
+        return "\n".join(chunks)
+
+    def test_matches_show_a_cached_verdict_and_its_reason(self):
+        self.cache("fit", "Software work fits your software field")
+
+        self.assertIn("Gemini: fits · Software work fits your software field", self.listing(self.p))
+
+    def test_matches_show_a_no_fit_too_rather_than_hide_it(self):
+        self.cache("no_fit", "Needs a clearance you did not list")
+
+        body = self.listing(self.p)
+
+        self.assertIn("Software Engineer Intern", body)
+        self.assertIn("Gemini: doesn't fit · Needs a clearance you did not list", body)
+
+    def test_matches_without_a_cached_verdict_ask_nothing_and_show_none(self):
+        body = self.listing(self.p)
+
+        self.assertIn("Software Engineer Intern", body)
+        self.assertNotIn("Gemini", body)
+
+    def test_debug_shows_the_days_fit_usage_and_the_last_failure(self):
+        day = intern_fit.quota_day(NOW)
+        self.db.execute("INSERT INTO fit_usage VALUES (?, 4, 5000, 300)", (day,))
+        intern_fit.last_error = ("unparseable response", NOW - 600)
+        with mock.patch.object(intern_commands.time, "time", lambda: NOW):
+            body = "\n".join(asyncio.run(intern_commands.debug_report()))
+
+        self.assertIn("**Gemini fit check**", body)
+        self.assertIn("today: 4/200 requests · 5,000 tokens in · 300 out", body)
+        self.assertIn("resets at midnight Los Angeles time", body)
+        self.assertIn("last fallback to unchecked: unparseable response (10m ago)", body)
+        self.assertIn("Gemini quota (today)", body)          # the scraper's --llm, as before
+
+    def test_debug_says_when_there_is_no_key(self):
+        with mock.patch.object(poller, "SETTINGS", poller.configure({})):
+            body = "\n".join(asyncio.run(intern_commands.debug_report()))
+
+        self.assertIn("off: this bot has no Gemini key, so alerts go out unchecked", body)
 
 
 @needs_discord

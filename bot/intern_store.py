@@ -622,6 +622,7 @@ def summary(db: sqlite3.Connection) -> dict[str, int]:
     rows = db.execute("SELECT alerts, dm_failures, left_at, fields FROM intern_profiles").fetchall()
     no_access = db.execute("SELECT COUNT(*) FROM intern_profiles "
                            "WHERE access_lapsed_at IS NOT NULL").fetchone()[0]
+    fit_off = db.execute("SELECT COUNT(*) FROM intern_profiles WHERE fit_check = 0").fetchone()[0]
     chosen = [_json_list(fields, ()) for *_, fields in rows]
     cadences = {cadence: sum(1 for alerts, *_ in rows if alerts == cadence)
                 for cadence in ("hourly", "daily", "weekly")}
@@ -632,6 +633,7 @@ def summary(db: sqlite3.Connection) -> dict[str, int]:
         "dm_blocked": sum(1 for _, failures, *_ in rows if failures >= DM_FAILURE_LIMIT),
         "left": sum(1 for _, _, left_at, _ in rows if left_at is not None),
         "no_access": no_access,
+        "fit_off": fit_off,
         **{f"field:{field}": sum(1 for picked in chosen if field in picked)
            for field in vocab.FIELD_IDS},
     }

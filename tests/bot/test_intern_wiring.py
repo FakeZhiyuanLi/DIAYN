@@ -1009,6 +1009,18 @@ class DeliveryLoopKeepsTheRetentionPromise(unittest.TestCase):
         self.assertEqual(checked, [(DUE, 1, NOW)])
         self.assertIn(DUE, self.sent)
 
+    def test_housekeeping_prunes_verdicts_older_than_45_days(self):
+        intern_fit.remember(self.db, "a" * 64, {"old": intern_fit.Verdict("fit", "r")}, "m",
+                            NOW - 46 * DAY)
+        intern_fit.remember(self.db, "a" * 64, {"new": intern_fit.Verdict("fit", "r")}, "m",
+                            NOW - 44 * DAY)
+
+        log = self.run_loop()
+
+        self.assertEqual([r[0] for r in self.db.execute("SELECT role_hash FROM fit_verdicts")],
+                         ["new"])
+        self.assertIn("fit_pruned 1", log)
+
     def test_without_a_key_the_loop_never_asks_gemini(self):
         self.assertFalse(intern_fit.available())
         with mock.patch.object(intern_fit, "_request",

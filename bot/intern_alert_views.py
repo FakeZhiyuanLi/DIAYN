@@ -232,6 +232,9 @@ async def _access(db: sqlite3.Connection, now: float) -> None:
 async def _housekeeping(db: sqlite3.Connection, now: float) -> None:
     if intern_delivery.housekeeping_due(db, now):
         counts = intern_delivery.run_housekeeping(db, now)
+        # The fit check's verdicts go after 45 days, as sent roles do. After the day is
+        # recorded, so a failure here costs one day's prune and never a deletion.
+        counts = {**counts, "fit_pruned": intern_fit.prune(db, now)}
         print("internship finder: housekeeping " + ", ".join(f"{k} {v}" for k, v in counts.items()),
               file=sys.stderr)
 

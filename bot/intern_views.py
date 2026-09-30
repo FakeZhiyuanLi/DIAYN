@@ -29,6 +29,7 @@ import discord
 import intern_alert_views
 import intern_clock
 import intern_delivery
+import intern_fit
 import intern_match
 import intern_store
 import intern_text
@@ -152,7 +153,9 @@ async def _listing(p: Profile, *, days: int, sort: str):
     (matches, recent, gmap), now = ranked, time.time()
     if matches:
         header = intern_ui.with_banner(p, intern_text.matches_header(len(matches), days=days, sort=sort))
-        return intern_text.matches_messages(matches[:intern_match.MATCHES_MAX], now, header=header), []
+        # Gemini's verdicts where they are already cached (intern_fit); browsing never asks.
+        shown = intern_fit.with_cached(intern_ui.db, p, matches[:intern_match.MATCHES_MAX])
+        return intern_text.matches_messages(shown, now, header=header), []
     relax = intern_match.relaxations(p, recent, now, exclude=intern_ui.hidden(p.user_id), gmap=gmap)
     text = intern_text.empty_state(p, relax, pool=len(recent), days=days,
                                    companies=intern_ui.companies_watched(), now=now)

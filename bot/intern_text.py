@@ -899,6 +899,26 @@ def _bucket(value: object) -> str:
     return "<3" if 1 <= n <= 2 else str(n)
 
 
+def fit_debug_lines(*, key: bool, model: str, requests: int, prompt_tokens: int,
+                    output_tokens: int, rpd: int, rpm: int, batch: int, zone: str, cached: int,
+                    opted_out: int, last_error: tuple[str, float] | None, now: float) -> list[str]:
+    """The Gemini fit check (intern_fit) in `/diayn debug`: today's requests and tokens
+    against its own limits, what is cached, and the class of its last fallback. Counts
+    only; `zone` names the zone its day resets in."""
+    head = "**Gemini fit check**"
+    if not key:
+        return [head, "off: this bot has no Gemini key, so alerts go out unchecked"]
+    failed = (f"{last_error[0]} ({_ago(last_error[1], now)})" if last_error
+              else "none since the bot started")
+    return [head,
+            f"today: {requests}/{rpd} requests · {prompt_tokens:,} tokens in · "
+            f"{output_tokens:,} out · model `{model}`",
+            f"limits: {batch} roles a request · {rpm} req/min · {rpd} req/day · resets at "
+            f"midnight {zone}",
+            f"cached verdicts: {cached:,} · profiles that turned it off: {_bucket(opted_out)}",
+            f"last fallback to unchecked: {failed}"]
+
+
 def debug_lines(summary: Mapping[str, int], report: Mapping[str, float | None],
                 supply: Mapping[str, int], *, pdf_ok: bool, migrated: float | None,
                 now: float | None = None) -> list[str]:

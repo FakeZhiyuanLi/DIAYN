@@ -32,6 +32,7 @@ from discord import app_commands
 import intern_alert_views
 import intern_clock
 import intern_delivery
+import intern_fit
 import intern_match
 import intern_store
 import intern_text
@@ -416,8 +417,9 @@ def _ago(ts: float) -> str:
 
 
 def _gemini_lines(pconn: sqlite3.Connection, source: postings_source.Source) -> list[str]:
-    """Quota the scraper's CLI spends (`sweep --llm`, `list --llm`, `llm-diff`); the bot
-    never calls Gemini. Keyed by the day the source names, which SQL date('now') (UTC) is not."""
+    """Quota the scraper's CLI spends (`sweep --llm`, `list --llm`, `llm-diff`), from
+    postings.db; the fit check's own is `_fit_lines`. Keyed by the day the source names,
+    which SQL date('now') (UTC) is not."""
     quota = source.quota()
     row = pconn.execute("SELECT n, COALESCE(prompt_tokens,0), COALESCE(output_tokens,0) "
                         "FROM llm_usage WHERE day=?", (quota.today,)).fetchone()
@@ -472,6 +474,19 @@ def _store_lines(pconn: sqlite3.Connection, source: postings_source.Source) -> l
             f"{sweep[3]} new" if sweep else "last recorded sweep: none yet"]
 
 
+def _fit_lines(db: sqlite3.Connection) -> list[str]:
+    """The Gemini fit check's day, from users.db (`intern_fit`): requests and tokens
+    against FIT_RPD, the cache, and the class of the last fallback to unchecked."""
+    now, limits = time.time(), intern_fit.limits()
+    today = intern_fit.usage(db, intern_fit.quota_day(now))
+    return intern_text.fit_debug_lines(
+        key=intern_fit.available(), model=limits.model, requests=today.requests,
+        prompt_tokens=today.prompt_tokens, output_tokens=today.output_tokens, rpd=limits.rpd,
+        rpm=limits.rpm, batch=limits.batch, zone=intern_clock.zone_label(limits.zone),
+        cached=intern_fit.cached_count(db), opted_out=intern_store.summary(db)["fit_off"],
+        last_error=intern_fit.last_error, now=now)
+
+
 async def _finder_lines() -> list[str]:
     db = intern_ui.db
     if intern_ui.intern_error is not None or db is None:
@@ -489,6 +504,8 @@ async def debug_report() -> list[str]:
     so it never changes the numbers it exists to report. It reads the window, so the
     caller defers first."""
     finder = await _finder_lines()
+    if intern_ui.intern_error is None and intern_ui.db is not None:
+        finder = finder + [""] + _fit_lines(intern_ui.db)
     intern_ui.ensure_postings()                 # read after the await: a reopen may have run
     pconn, source = intern_ui.pconn, intern_ui.source
     return finder + [""] + (

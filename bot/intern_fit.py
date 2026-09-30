@@ -195,6 +195,22 @@ def usage(db: sqlite3.Connection, day: str) -> Usage:
     return Usage(*row) if row else Usage(0, 0, 0)
 
 
+@dataclass(frozen=True)
+class Limits:
+    """What bounds the check, as the host set it: for /diayn debug."""
+    model: str
+    rpd: int
+    rpm: int
+    batch: int
+    zone: str           # the IANA zone the day resets in, LLM_DAY_TZ
+
+
+def limits() -> Limits:
+    s = _settings()
+    return Limits(model=s.gemini_model, rpd=s.fit_rpd, rpm=s.fit_rpm, batch=s.fit_batch,
+                  zone=s.llm_day_tz)
+
+
 def cached_count(db: sqlite3.Connection) -> int:
     return db.execute("SELECT COUNT(*) FROM fit_verdicts").fetchone()[0]
 

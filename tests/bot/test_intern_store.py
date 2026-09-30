@@ -906,11 +906,12 @@ class Summary(StoreTest):
         self.save(ALICE, alerts="daily", fields=("software", "finance"))
         self.save(BOB, alerts="hourly", fields=("software",))
         self.save(333_333_333_333_333_333, alerts="off", fields=("design",))
-        self.set_columns(BOB, dm_failures=3, access_lapsed_at=NOW)
+        self.set_columns(BOB, dm_failures=3, access_lapsed_at=NOW, fit_check=0)
         self.set_columns(333_333_333_333_333_333, left_at=NOW)
 
         s = store.summary(self.db)
         self.assertEqual(s["no_access"], 1)
+        self.assertEqual(s["fit_off"], 1)
 
         self.assertEqual((s["profiles"], s["alerting"], s["hourly"], s["daily"], s["weekly"]),
                          (3, 2, 1, 1, 0))

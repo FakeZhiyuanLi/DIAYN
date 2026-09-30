@@ -642,6 +642,32 @@ class Debug(unittest.TestCase):
         self.assertIn("legacy import: none", never)
         self.assertNotIn("start-up", imported + never)
 
+    def test_the_fit_check_reports_the_days_usage_and_its_last_failure(self):
+        lines = text.fit_debug_lines(key=True, model="gemini-test", requests=7, prompt_tokens=12_345,
+                                     output_tokens=678, rpd=200, rpm=10, batch=15,
+                                     zone="Los Angeles time", cached=1_204, opted_out=2,
+                                     last_error=("HTTP 429", NOW - 3 * 3600), now=NOW)
+        body = "\n".join(lines)
+        self.assertEqual(lines[0], "**Gemini fit check**")
+        self.assertIn("today: 7/200 requests · 12,345 tokens in · 678 out · model `gemini-test`", body)
+        self.assertIn("limits: 15 roles a request · 10 req/min · 200 req/day · resets at midnight "
+                      "Los Angeles time", body)
+        self.assertIn("cached verdicts: 1,204 · profiles that turned it off: <3", body)
+        self.assertIn("last fallback to unchecked: HTTP 429 (3.0h ago)", body)
+        self.assertTrue(all(len(line) <= text.ALERT_MAX for line in lines))
+
+    def test_the_fit_check_says_when_it_has_not_failed_or_has_no_key(self):
+        healthy = "\n".join(text.fit_debug_lines(
+            key=True, model="m", requests=0, prompt_tokens=0, output_tokens=0, rpd=200, rpm=10,
+            batch=15, zone="UTC", cached=0, opted_out=0, last_error=None, now=NOW))
+        keyless = text.fit_debug_lines(
+            key=False, model="m", requests=0, prompt_tokens=0, output_tokens=0, rpd=200, rpm=10,
+            batch=15, zone="UTC", cached=0, opted_out=0, last_error=None, now=NOW)
+
+        self.assertIn("last fallback to unchecked: none since the bot started", healthy)
+        self.assertEqual(keyless, ["**Gemini fit check**",
+                                   "off: this bot has no Gemini key, so alerts go out unchecked"])
+
     def test_help_chunks_fit(self):
         chunks = text.help_text(pdf_ok=True, companies=412)
         self.assertEqual(len(chunks), 2)
