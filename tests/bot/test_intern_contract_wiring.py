@@ -428,6 +428,18 @@ class CommandsReadOnlyTheContract(_ContractCase):
         self.assertIn("resets at midnight Berlin time", other)
         self.assertNotIn("Pacific", published + other)
 
+    def test_debug_names_the_finders_own_database(self):
+        lines = "\n".join(intern_commands._store_lines(intern_ui.pconn, intern_ui.source))
+        self.assertIn("`users.db`", lines)
+        self.assertNotIn("stats.db", lines)
+
+    def test_debug_counts_the_subscribers_import_legacy_brought_over(self):
+        before = "\n".join(asyncio.run(intern_commands._finder_lines()))
+        intern_store.set_meta(self.db, intern_store.LEGACY_IMPORT_KEY, 12.0)
+        after = "\n".join(asyncio.run(intern_commands._finder_lines()))
+        self.assertIn("legacy import: none", before)
+        self.assertIn("legacy import: 12 subscribers imported", after)
+
     def test_details_are_fetched_with_the_boards_icims_hosts(self):
         seen = {}
 

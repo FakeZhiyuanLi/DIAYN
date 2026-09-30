@@ -431,7 +431,8 @@ def _gemini_lines(pconn: sqlite3.Connection, source: postings_source.Source) -> 
     return lines
 
 
-def _stats_path(db: sqlite3.Connection | None) -> Path | None:
+def _db_path(db: sqlite3.Connection | None) -> Path | None:
+    """The file behind a connection: users.db, for the finder's. None in memory."""
     rows = db.execute("PRAGMA database_list").fetchall() if db is not None else []
     main = next((row[2] for row in rows if row[1] == "main"), "")
     return Path(main) if main else None
@@ -457,7 +458,7 @@ def _store_lines(pconn: sqlite3.Connection, source: postings_source.Source) -> l
     return ["", "**Databases**",
             f"`postings.db` {_db_size(Path(source.db_path))} — {post_n:,} postings · "
             f"{seen_n:,} seen (dedup ledger) · {cache_n:,} cached verdicts",
-            f"`stats.db` {_db_size(_stats_path(db))} — {profiles} internship profile(s)",
+            f"`users.db` {_db_size(_db_path(db))} — {profiles} internship profile(s)",
             "", "**Sweeps**", *_sweep_lines(pconn, source),
             f"last recorded sweep: {_ago(sweep[0])} · {sweep[1]:.0f}s · {sweep[2]} errors · "
             f"{sweep[3]} new" if sweep else "last recorded sweep: none yet"]
@@ -471,7 +472,7 @@ async def _finder_lines() -> list[str]:
     return intern_text.debug_lines(
         intern_store.summary(db), {key: intern_store.get_meta(db, key) for key in intern_alert_views.REPORT_KEYS},
         parts.supply if parts else {}, pdf_ok=resume_parse.pdf_supported(),
-        migrated=intern_store.get_meta(db, "profiles_migrated_n"))
+        migrated=intern_store.get_meta(db, intern_store.LEGACY_IMPORT_KEY))
 
 
 @internships.command(name="debug",
