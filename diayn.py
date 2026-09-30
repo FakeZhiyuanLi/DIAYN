@@ -54,6 +54,12 @@ changes nothing, and exits 1 when anything is to fix.
 A command not built yet goes in PLANNED_COMMANDS, which says so and exits 2,
 without importing the scraper or touching a file. None is left.
 
+Before anything else, main() checks that Python is 3.10 or newer. The scraper
+and host_checks use 3.10's syntax, and on 3.9, macOS's own python3, they die
+with a TypeError as they are imported, before doctor could say why. So this
+module, and hints.py, the one module of the checkout it imports at the top,
+stay within what Python 3.9 parses and runs; tests/test_diayn.py checks both.
+
 Importing this module is inert. The scraper is imported only when a scraper
 command, a bot command, or the list of commands is asked for, so the planned
 commands work on a box without aiohttp. The Discord client, and discord.py with
@@ -89,6 +95,8 @@ HELP_FLAGS = ("-h", "--help")
 USAGE_EXIT = 2
 # A failure: the scraper's code for a refusal or a bad setting.
 FAILED_EXIT = 1
+# The oldest Python DIAYN runs on, checked before anything that needs it is imported.
+MIN_PYTHON = (3, 10)
 # sysexits.h's EX_CONFIG: `run` exits with it when Discord refuses the Server Members
 # Intent. That is a toggle in the developer portal, which no restart changes, so
 # DEPLOY.md's pm2 and systemd units never restart on it: a loop of refused logins can
@@ -132,6 +140,15 @@ def access_module():
     _bot_path()
     import access
     return access
+
+
+def python_refusal(version=None):
+    """Why this Python, or `version`, is too old for DIAYN; None when it is new enough."""
+    version = tuple(sys.version_info if version is None else version)[:3]
+    if version[:2] >= MIN_PYTHON:
+        return None
+    wanted = ".".join(str(n) for n in MIN_PYTHON)
+    return f"DIAYN needs Python {wanted} or newer; this is {'.'.join(str(n) for n in version)}"
 
 
 def usage(scraper_commands) -> str:
@@ -486,6 +503,11 @@ def main(argv=None) -> int:
     A scraper command that fails exits from inside the scraper, with the
     scraper's own code.
     """
+    refusal = python_refusal()
+    if refusal is not None:
+        print(f"{refusal}\n{hints.interpreter()} is that Python. Make .venv with a newer one, "
+              "as the README's quick start says.", file=sys.stderr)
+        return FAILED_EXIT
     argv = sys.argv[1:] if argv is None else list(argv)
     command = argv[0] if argv else None
     if command in PLANNED_COMMANDS:

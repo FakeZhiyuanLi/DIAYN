@@ -15,6 +15,7 @@ process from a temporary checkout, as test_cli does, with the requests
 replaced so that nothing is ever fetched.
 """
 
+import ast
 import contextlib
 import io
 import os
@@ -113,6 +114,72 @@ class Planned(unittest.TestCase):
     def test_diayn_s_built_commands_are_neither_planned_nor_the_scraper_s(self):
         self.assertEqual(set(diayn.BOT_COMMANDS), set(BUILT))
         self.assertEqual(set(BUILT) & (set(PLANNED) | set(scraper_commands())), set())
+
+
+class AnOldPython(unittest.TestCase):
+    """On Python 3.9, macOS's own python3, the scraper and host_checks die with a
+    TypeError as they are imported, so diayn.py checks the version before either."""
+
+    #: What diayn.py imports before its check, so what must parse and run on 3.9.
+    CHECKED_FIRST = ("diayn.py", "hints.py")
+
+    def test_is_refused_first_naming_both_versions(self):
+        for argv in (["doctor"], ["setup"], ["run"], ["config"], ["--help"], []):
+            with self.subTest(argv=argv), \
+                    mock.patch.object(sys, "version_info", (3, 9, 6, "final", 0)), \
+                    mock.patch.object(diayn, "scraper",
+                                      side_effect=AssertionError("imported the scraper")):
+                code, out, err = run_main(argv)
+            self.assertEqual(code, FAILED)
+            self.assertEqual(err.splitlines()[0], "DIAYN needs Python 3.10 or newer; this is 3.9.6")
+            self.assertIn(hints.interpreter(), err)
+            self.assertEqual(out, "")
+
+    def test_3_10_and_newer_pass(self):
+        for version in ((3, 10, 0), (3, 12, 7), (3, 14, 2), (4, 0, 0)):
+            with self.subTest(version=version):
+                self.assertIsNone(diayn.python_refusal(version))
+        self.assertIsNone(diayn.python_refusal())
+
+    def sources(self):
+        for name in self.CHECKED_FIRST:
+            with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+                yield name, f.read()
+
+    def test_what_is_imported_before_the_check_parses_as_python_3_9(self):
+        for name, source in self.sources():
+            with self.subTest(file=name):
+                ast.parse(source, filename=name, feature_version=(3, 9))
+
+    def test_no_annotation_there_is_a_3_10_union(self):
+        # `str | None` in an annotation is evaluated as the def runs: on 3.9, a TypeError.
+        for name, source in self.sources():
+            for node in ast.walk(ast.parse(source)):
+                annotations = []
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    arguments = node.args
+                    annotations.append(node.returns)
+                    annotations += [a.annotation for a in (arguments.posonlyargs + arguments.args
+                                                           + arguments.kwonlyargs)]
+                    annotations += [a.annotation for a in (arguments.vararg, arguments.kwarg) if a]
+                elif isinstance(node, ast.AnnAssign):
+                    annotations.append(node.annotation)
+                for annotation in filter(None, annotations):
+                    with self.subTest(file=name, line=annotation.lineno):
+                        self.assertFalse(any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
+                                             for n in ast.walk(annotation)))
+
+    def test_nothing_else_of_the_checkout_is_imported_at_the_top(self):
+        # The scraper, host_checks and bot/ are imported only after the check.
+        with open(os.path.join(ROOT, "diayn.py"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        imported = set()
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add((node.module or "").split(".")[0])
+        self.assertEqual(imported - set(sys.stdlib_module_names), {"hints"})
 
 
 class PassThrough(unittest.TestCase):

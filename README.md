@@ -39,6 +39,12 @@ You need Python 3.10 or newer, on Linux or macOS, and a Discord account.
    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    ```
 
+   The venv gets whichever Python `python3` is, and it must be 3.10 or newer.
+   macOS's own `python3` is 3.9, and pip then fails to find python-dotenv
+   without saying why. Install a newer Python (python.org or Homebrew) and make
+   the venv with it, as in `python3.12 -m venv .venv`. `diayn.py` names both
+   versions if the venv's Python is too old.
+
 3. **Configure:** `cp example.env .env && chmod 600 .env`, then set
    `DISCORD_TOKEN` and `POLL_CONTACT` in it.
 4. **Set up:** run `.venv/bin/python diayn.py setup`. It does four things:
