@@ -2715,11 +2715,15 @@ def boot() -> Optional[str]:
     return env_file
 
 
+# Every command, in the order --help lists them. diayn.py hands each of these
+# to main() unchanged.
+COMMANDS = ("verify", "list", "sweep", "watch", "stats", "prune", "discover",
+            "llm-diff", "upgrade-db", "config")
+
+
 def arguments() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["verify", "list", "sweep", "watch", "stats",
-                                    "prune", "discover", "llm-diff", "upgrade-db",
-                                    "config"])
+    ap.add_argument("cmd", choices=COMMANDS)
     ap.add_argument("--us", action="store_true", help="US/remote only")
     ap.add_argument("--dupes", action="store_true", help="show collapsed duplicates")
     ap.add_argument("--category", help="swe|quant|hardware|data-ml|pm|other")
@@ -2810,9 +2814,14 @@ def run(a, env_file):
             print("\nstopped.")
 
 
-def main():
+def main(argv=None):
+    """Run the command in `argv`, or on the command line when it is None.
+
+    Exits 1 on a refusal or a bad setting, 2 on a usage error (argparse), 3
+    when another sweeper holds the lock; returns when the command is done.
+    """
     ap = arguments()
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if a.cmd == "prune" and a.max_age < PRUNE_DAYS:
         ap.error(f"prune --max-age {a.max_age}: the bot shows postings up to "
                  f"{PRUNE_DAYS} days old, so prune never deletes a younger row. "

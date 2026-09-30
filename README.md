@@ -85,6 +85,11 @@ absolute path.
 ## Commands
 
     python internship_poller.py <command> [options]
+    python diayn.py <command> [options]          # the same, through DIAYN's entry point
+
+`diayn.py` runs every command below with the same arguments and exit codes.
+Its own commands for the Discord bot (`setup`, `doctor`, `run`,
+`import-legacy` and `grant`) are not built yet: each says so and exits 2.
 
 **The sweeper lock.** Exactly one process may write `postings.db`. The commands
 that write hold `<POSTINGS_DB>.lock` while they run, and `watch` holds it for

@@ -56,7 +56,8 @@ FORBIDDEN_PATHS = (
     ".env", ".env.local", "tests/.env", "boards.json", "yc_cache.json",
 )
 ALLOWED_PATHS = (
-    "example.env", "internship_poller.py", "resolve_boards.py", "README.md",
+    "example.env", "internship_poller.py", "resolve_boards.py", "diayn.py",
+    "README.md",
     "CONTRACT.md", "DEPLOY.md", "CLAUDE.md", "requirements.txt", ".gitignore",
     ".github/workflows/ci.yml", "contract/postings_v1.sql",
     "contract/company_norm_cases.json", "contract/sample_urls.json",
