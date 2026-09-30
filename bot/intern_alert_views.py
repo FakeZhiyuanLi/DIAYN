@@ -54,6 +54,7 @@ import discord
 from discord.ext import tasks
 
 import intern_delivery
+import intern_fit
 import intern_store
 import intern_text
 import intern_ui
@@ -256,10 +257,13 @@ async def _alerts(db: sqlite3.Connection, now: float) -> None:
     # The guard reads postings.db before anything else: a file that cannot be read
     # raises here, and the tick ends with every cursor where it was (B5).
     _guard_bootstrap(db, intern_ui.pconn)
+    # Each digest passes through the Gemini fit check first (intern_fit), which never
+    # holds one back: without a key, or failing, the matches go out unchecked.
     report = await intern_delivery.run_tick(db, load_window=intern_ui.window,
                                             send_dm=intern_ui.send_dm, now=now,
                                             companies_watched=intern_ui.companies_watched(),
-                                            allowed=intern_ui.dm_access())
+                                            allowed=intern_ui.dm_access(),
+                                            check_fit=intern_fit.checker(db))
     for key, value in zip(REPORT_KEYS, (now, report.due, report.sent, report.empty,
                                          report.forbidden)):
         intern_store.set_meta(db, key, value)

@@ -471,18 +471,34 @@ def _posted(m: Match, now: float) -> str:
     return f"{verb} {f'{days}d ago' if days else f'{hours}h ago' if hours else 'just now'}"
 
 
-def _why(reasons: Sequence[str]) -> str:
-    """Whole reasons, escaped, joined " · ", within WHY_MAX."""
+def _why(reasons: Sequence[str], limit: int = WHY_MAX) -> str:
+    """Whole reasons, escaped, joined " · ", within `limit` (WHY_MAX)."""
     kept = []
     for reason in (safe_inline(r, REASON_MAX) for r in reasons):
-        if reason and len(" · ".join([*kept, reason])) <= WHY_MAX:
+        if reason and len(" · ".join([*kept, reason])) <= limit:
             kept.append(reason)
     return " · ".join(kept)
 
 
+#: How a role's Gemini verdict reads, before its reason (intern_fit).
+_FIT_WORDS = {"fit": "Gemini: fits", "unsure": "Gemini: not sure", "no_fit": "Gemini: doesn't fit"}
+
+
+def _fit_line(m: Match) -> str | None:
+    """The fit check's verdict and reason, for a role that has one. The reason is outside
+    text, escaped and cut like any other."""
+    if m.fit is None or m.fit[0] not in _FIT_WORDS:
+        return None
+    verdict, reason = m.fit
+    return f"{_FIT_WORDS[verdict]} · {safe_inline(reason, REASON_MAX)}"
+
+
 def match_block(m: Match, now: float, *, with_why: bool = True) -> str:
-    """J6. Under 1,000 characters whatever the posting says."""
-    c, why = m.cand, _why(m.why) if with_why else ""
+    """J6. Under 1,000 characters whatever the posting says. A role the fit check has a
+    verdict on shows it, with its reason, above the link, and the matcher's reasons give
+    it the room."""
+    fit = _fit_line(m)
+    c, why = m.cand, _why(m.why, WHY_MAX - len(fit or "")) if with_why else ""
     more = f" (+{m.more} more location{'' if m.more == 1 else 's'})" if m.more > 0 else ""
     meta = (safe_inline(m.place, PLACE_MAX), _LEVEL_WORDS.get(c.level, ""), c.term[0], _posted(m, now))
     company = safe_inline(c.company, COMPANY_MAX) or "Unknown company"
@@ -490,6 +506,8 @@ def match_block(m: Match, now: float, *, with_why: bool = True) -> str:
              " · ".join(x for x in meta if x) + more]
     if with_why and (m.band or why):
         lines.append(" · ".join(part for part in (m.band, f"Why: {why}" if why else "") if part))
+    if fit:
+        lines.append(fit)
     url = safe_url(c.url)
     return "\n".join(lines + ([f"<{url}>"] if url else []))
 

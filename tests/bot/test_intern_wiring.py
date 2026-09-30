@@ -38,6 +38,7 @@ from unittest import mock
 
 import access
 import intern_delivery
+import intern_fit
 import intern_match
 import intern_profile
 import intern_store
@@ -946,6 +947,7 @@ class DeliveryLoopKeepsTheRetentionPromise(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         intern_store.init_db(self.db)
         access.init_db(self.db)
+        intern_fit.init_db(self.db)
         self.enrol(IDLE, NOW - 366 * DAY, alerts="off")         # housekeeping deletes it
         self.enrol(DUE, NOW - 2 * 3600, alerts="hourly")         # a tick loads the window
         self.enrol(WARNED, NOW - 351 * DAY, alerts="off")        # due its expiry warning
@@ -988,6 +990,33 @@ class DeliveryLoopKeepsTheRetentionPromise(unittest.TestCase):
         with redirect_stderr(stderr):
             asyncio.run(intern_alert_views.intern_delivery_loop.coro())
         return stderr.getvalue()
+
+    def test_each_due_persons_matches_go_through_the_fit_check_on_users_db(self):
+        checked, dbs = [], []
+
+        def checker(db):
+            dbs.append(db)
+
+            async def check(p, matches, now):
+                checked.append((p.user_id, len(matches), now))
+                return matches
+            return check
+
+        with mock.patch.object(intern_fit, "checker", checker):
+            self.run_loop()
+
+        self.assertEqual(dbs, [self.db])
+        self.assertEqual(checked, [(DUE, 1, NOW)])
+        self.assertIn(DUE, self.sent)
+
+    def test_without_a_key_the_loop_never_asks_gemini(self):
+        self.assertFalse(intern_fit.available())
+        with mock.patch.object(intern_fit, "_request",
+                               side_effect=AssertionError("asked Gemini")):
+            log = self.run_loop()
+
+        self.assertNotIn("failed", log)
+        self.assertIn(DUE, self.sent)
 
     def test_someone_without_access_gets_neither_alerts_nor_warnings(self):
         for uid in (DUE, WARNED):

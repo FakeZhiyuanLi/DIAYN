@@ -9,9 +9,15 @@ outlives its owner's access), `run_tick` (alerts), `run_notices` (the
 quiet-period note and the expiry warning) and, once a day in DIAYN_TZ,
 `run_housekeeping`. Everything that decides who is due and what a send, a
 refusal or a network failure changes lives here; the loop only supplies
-`send_dm`, `load_window` and `allowed`. Split from the Discord modules for the
-reason `intern_store` is: those arrive as arguments, so a test drives a real
-tick with fakes under bare `python3`.
+`send_dm`, `load_window`, `allowed` and `check_fit`. Split from the Discord
+modules for the reason `intern_store` is: those arrive as arguments, so a test
+drives a real tick with fakes under bare `python3`.
+
+**An alert may be checked, never held.** `check_fit` (the Gemini fit check,
+`intern_fit.checker`) gets each due user's ranked matches and returns the ones
+to send: a no_fit dropped, fit before unsure, each with its reason. It never
+raises; when it cannot check, the matches come back as they went. A role it
+drops is not sent and not recorded, and the cursor moves past it all the same.
 
 Four rules shape it.
 
@@ -120,6 +126,8 @@ SendDm = Callable[[int, DmMessage], Awaitable[None]]
 LoadWindow = Callable[[], Awaitable[list[Candidate]]]
 #: Whether a user may use the bot now, and so be DMed (`access.allowed`, as in a DM).
 Allowed = Callable[[int], bool]
+#: The fit check (`intern_fit.checker`): a user's ranked matches in, the ones to send out.
+CheckFit = Callable[[Profile, Sequence[Match], float], Awaitable[Sequence[Match]]]
 _Window = tuple[Sequence[Candidate], Mapping[int, str]]        # candidates and their group map
 
 
@@ -239,7 +247,8 @@ def _digest(p: Profile, matches: Sequence[Match], now: float, catch_up: bool) ->
 
 
 async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
-                 gmap: Mapping[int, str], send_dm: SendDm, now: float, allowed: Allowed) -> str:
+                 gmap: Mapping[int, str], send_dm: SendDm, now: float, allowed: Allowed,
+                 check_fit: CheckFit | None) -> str:
     """One user's digest, spec 5.4 step 3. Returns the outcome the report counts."""
     p = store.load(db, uid)
     if p is None or not is_due(p, now) or not allowed(uid):
@@ -248,11 +257,15 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
     mine = [c for c in cands if p.cursor < c.first_seen <= edge]
     matches = intern_match.rank(p, mine, now, min_score=p.min_score,
                                 exclude=store.seen_hashes(db, uid, states=_LEDGER), gmap=gmap)
+    if matches and check_fit is not None:
+        matches = list(await check_fit(p, matches, now))
     if not matches:
+        # Nothing matched, or the check found none of it fits: past it all the same.
         store.advance(db, uid, cursor=edge, now=now, sent=False, clear_pause=catch_up)
         return "empty"
     msg = _digest(p, matches, now, catch_up)
-    # Nothing above awaits today; this read is the guard that must stay next to the send.
+    # The check awaited, and a delete or a revocation may have landed meanwhile:
+    # this read is the guard that must stay next to the send.
     fresh = store.load(db, uid)
     if fresh is None or not is_due(fresh, now) or not allowed(uid):
         return "skipped"
@@ -269,10 +282,13 @@ async def _alert(db: sqlite3.Connection, uid: int, cands: Sequence[Candidate],
 
 
 async def run_tick(db: sqlite3.Connection, *, load_window: LoadWindow, send_dm: SendDm,
-                   now: float, companies_watched: int, allowed: Allowed) -> TickReport:
+                   now: float, companies_watched: int, allowed: Allowed,
+                   check_fit: CheckFit | None = None) -> TickReport:
     """
     Spec 5.4: DMs every due user what is new to them since their cursor. Only a user
-    `allowed` says may use the bot is due (module docstring).
+    `allowed` says may use the bot is due (module docstring). With `check_fit`, each
+    user's matches pass through it before their digest is written; without it, they are
+    sent as ranked.
 
     At most MAX_DMS_PER_TICK sends are attempted, SEND_GAP_S apart; the due
     users after that keep their cursor and are due again next tick. The window
@@ -289,7 +305,8 @@ async def run_tick(db: sqlite3.Connection, *, load_window: LoadWindow, send_dm: 
         if sum(tally[k] for k in _ATTEMPTS) >= MAX_DMS_PER_TICK:
             tally["deferred"] = len(due) - index
             break
-        outcome = await _isolated(_alert(db, uid, cands, gmap, send_dm, now, allowed), "an alert")
+        outcome = await _isolated(_alert(db, uid, cands, gmap, send_dm, now, allowed, check_fit),
+                                  "an alert")
         tally[outcome] += 1
         if outcome in _ATTEMPTS:
             await asyncio.sleep(SEND_GAP_S)

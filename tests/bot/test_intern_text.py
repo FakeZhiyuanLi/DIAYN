@@ -269,6 +269,31 @@ class MatchBlocks(unittest.TestCase):
     def test_the_worst_block_stays_under_a_thousand(self):
         self.assertLess(len(text.match_block(worst_match(), NOW)), 1000)
 
+    def test_a_checked_role_shows_its_reason_line_before_the_link(self):
+        m = dataclasses.replace(a_match(url="https://example.com/j"),
+                                fit=("fit", "Your mechanical engineering major fits this role"))
+        lines = text.match_block(m, NOW).split("\n")
+        self.assertEqual(lines[-2], "Gemini: fits · Your mechanical engineering major fits this role")
+        self.assertEqual(lines[-1], "<https://example.com/j>")
+
+    def test_each_verdict_has_its_own_words(self):
+        for verdict, words in (("fit", "Gemini: fits"), ("unsure", "Gemini: not sure"),
+                               ("no_fit", "Gemini: doesn't fit")):
+            with self.subTest(verdict=verdict):
+                m = dataclasses.replace(a_match(), fit=(verdict, "A reason"))
+                self.assertIn(f"{words} · A reason", text.match_block(m, NOW))
+
+    def test_a_reason_is_outside_text_escaped_and_bounded(self):
+        m = dataclasses.replace(worst_match(), fit=("unsure", "*bold* @everyone " + "r" * 400))
+        block = text.match_block(m, NOW)
+        line = next(x for x in block.split("\n") if x.startswith("Gemini: not sure · "))
+        self.assertIn("\\*bold\\*", line)
+        self.assertLessEqual(len(line), len("Gemini: not sure · ") + text.REASON_MAX)
+        self.assertLess(len(block), 1000)
+
+    def test_an_unchecked_role_has_no_reason_line(self):
+        self.assertNotIn("Gemini", text.match_block(a_match(), NOW))
+
 
 class Alerts(unittest.TestCase):
     def long(self, n):

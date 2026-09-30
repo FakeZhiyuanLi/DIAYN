@@ -29,13 +29,15 @@ import unittest
 from datetime import date
 from unittest import mock
 
+import intern_delivery as delivery
 import intern_fit as fit
 import intern_match
 import intern_profile as profile
 import intern_store as store
 import internship_poller as poller
 import resume_parse
-from test_intern_delivery import ALICE, BOB, DAY, HOUR, MINUTE, MONDAY, person, posting
+from test_intern_delivery import (ALICE, BOB, COMPANIES, DAY, HOUR, MINUTE, MONDAY,
+                                  DeliveryTest, person, posting)
 from test_llm import Response, gemini_body
 
 KEY = "test-key-not-real"
@@ -502,6 +504,161 @@ class Browsing(FitTest):
         shown = fit.with_cached(self.db, profile.with_changes(p, NOW, fit_check=False), matches)
 
         self.assertEqual([m.fit for m in shown], [None] * 3)
+
+
+# ------------------------------------------------------------------ delivery
+
+class AlertsAreChecked(DeliveryTest):
+    """A delivery tick with the check wired in: Gemini decides what an alert carries,
+    never whether one goes."""
+
+    def setUp(self):
+        super().setUp()
+        fit.init_db(self.db)
+        patch = mock.patch.object(poller, "SETTINGS", settings(DIAYN_TZ="America/Los_Angeles"))
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(setattr, fit, "last_error", None)
+        self.gemini = FakeGemini()
+
+    def checked_tick(self, now, gemini=None):
+        gemini = gemini or self.gemini
+
+        async def check_fit(p, matches, at):
+            return await fit.check(self.db, p, matches, at, session=gemini, pace=fit.Pace())
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            return asyncio.run(delivery.run_tick(
+                self.db, load_window=self.load_window, send_dm=self.outbox, now=now,
+                companies_watched=COMPANIES, allowed=self.allowed, check_fit=check_fit))
+
+    def post_three(self):
+        self.post(*(posting(title, MONDAY + (n + 1) * MINUTE, company=f"Firm {n}")
+                    for n, title in enumerate(TITLES)))
+
+    def test_no_fit_is_never_sent_and_the_cursor_still_moves_past_it(self):
+        self.enrol(alerts="hourly")
+        self.post_three()
+        everything_no_fit = FakeGemini(lambda payload: [
+            {"i": p["i"], "verdict": "no_fit", "reason": "Not a role for you"}
+            for p in payload["postings"]])
+
+        report = self.checked_tick(NOW, everything_no_fit)
+
+        self.assertEqual((report.due, report.sent, report.empty), (1, 0, 1))
+        self.assertEqual(self.outbox.calls, [])
+        self.assertEqual(store.load(self.db, ALICE).cursor, delivery.horizon(NOW))
+        self.assertEqual(self.seen(ALICE), {})        # nothing was sent, so nothing is recorded
+
+    def test_fit_goes_first_then_unsure_each_with_its_reason_line(self):
+        self.enrol(alerts="hourly")
+        self.post_three()
+        table = {TITLES[0]: ("unsure", "Backend skills are not on your profile"),
+                 TITLES[1]: ("no_fit", "Needs a clearance you did not list"),
+                 TITLES[2]: ("fit", "Frontend work fits your software field")}
+
+        report = self.checked_tick(NOW, FakeGemini(verdicts_by_title(table)))
+
+        (msg,) = self.outbox.to(ALICE)
+        self.assertEqual(report.sent, 1)
+        self.assertNotIn(TITLES[1], msg.text)
+        self.assertLess(msg.text.index(TITLES[2]), msg.text.index(TITLES[0]))
+        self.assertIn("Gemini: fits · Frontend work fits your software field", msg.text)
+        self.assertIn("Gemini: not sure · Backend skills are not on your profile", msg.text)
+        self.assertTrue(msg.text.startswith("**2 new roles for you**"))
+        sent = {c.rk_hash for c in self.window if c.title != TITLES[1]}
+        self.assertTrue(sent <= set(self.seen(ALICE)))
+        dropped = next(c for c in self.window if c.title == TITLES[1])
+        self.assertNotIn(dropped.rk_hash, self.seen(ALICE))
+
+    def test_a_malformed_answer_sends_the_rule_based_matches_unchecked(self):
+        self.enrol(alerts="hourly")
+        self.post_three()
+
+        report = self.checked_tick(NOW, FakeGemini(lambda payload: "no verdicts here"))
+
+        (msg,) = self.outbox.to(ALICE)
+        self.assertEqual(report.sent, 1)
+        self.assertTrue(all(title in msg.text for title in TITLES))
+        self.assertNotIn("Gemini", msg.text)
+        self.assertEqual(fit.last_error, ("unparseable response", NOW))
+
+    def test_a_spent_budget_sends_them_unchecked_and_asks_nothing(self):
+        self.enrol(alerts="hourly")
+        self.post_three()
+        self.db.execute("INSERT INTO fit_usage (day, requests) VALUES (?, ?)",
+                        (fit.quota_day(NOW), poller.SETTINGS.fit_rpd))
+
+        report = self.checked_tick(NOW)
+
+        self.assertEqual((report.sent, self.gemini.requests), (1, 0))
+        self.assertNotIn("Gemini", self.outbox.to(ALICE)[0].text)
+
+    def test_without_a_key_the_alert_is_the_one_sent_without_the_check(self):
+        self.enrol(alerts="hourly")
+        self.post_three()
+        with mock.patch.object(poller, "SETTINGS",
+                               poller.configure({"DIAYN_TZ": "America/Los_Angeles"})):
+            self.checked_tick(NOW)
+            self.enrol(BOB, alerts="hourly")
+            self.tick(NOW)                            # BOB: no check wired in at all
+
+        self.assertEqual(self.gemini.requests, 0)
+        self.assertEqual(self.outbox.to(ALICE)[0].text, self.outbox.to(BOB)[0].text)
+
+    def test_an_opted_out_user_is_sent_unchecked_and_asks_nothing(self):
+        p = self.enrol(alerts="hourly")
+        store.save(self.db, profile.with_changes(p, MONDAY, fit_check=False), now=MONDAY)
+        self.post_three()
+
+        report = self.checked_tick(NOW)
+
+        self.assertEqual((report.sent, self.gemini.requests), (1, 0))
+        self.assertNotIn("Gemini", self.outbox.to(ALICE)[0].text)
+
+    def test_a_user_deleted_while_being_checked_is_sent_nothing(self):
+        self.enrol(alerts="hourly")
+        self.post_three()
+
+        def deleting(payload):
+            store.delete_user(self.db, ALICE)
+            return all_fit(payload)
+
+        report = self.checked_tick(NOW, FakeGemini(deleting))
+
+        self.assertEqual((report.sent, self.outbox.calls), (0, []))
+        self.assertIsNone(store.load(self.db, ALICE))
+
+    def test_access_revoked_while_being_checked_stops_the_dm(self):
+        self.enrol(alerts="hourly")
+        self.post_three()
+
+        def revoking(payload):
+            self.revoked.add(ALICE)
+            return all_fit(payload)
+
+        report = self.checked_tick(NOW, FakeGemini(revoking))
+
+        self.assertEqual((report.sent, self.outbox.calls), (0, []))
+
+    def test_nothing_new_asks_nothing(self):
+        self.enrol(alerts="hourly")
+
+        report = self.checked_tick(NOW)
+
+        self.assertEqual((report.empty, self.gemini.requests), (1, 0))
+
+    def test_a_role_checked_once_is_not_asked_about_again(self):
+        self.enrol(ALICE, alerts="hourly")
+        self.enrol(BOB, alerts="hourly")              # the same labels as ALICE
+        self.post_three()
+
+        self.checked_tick(NOW)
+
+        self.assertEqual(self.gemini.requests, 1)
+        self.assertEqual(len(self.outbox.calls), 2)
+        self.assertEqual(self.outbox.to(ALICE)[0].text, self.outbox.to(BOB)[0].text)
 
 
 class Housekeeping(FitTest):
