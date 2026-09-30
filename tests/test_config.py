@@ -227,6 +227,16 @@ class BotSettings(unittest.TestCase):
         self.assertEqual(settings.boards_file, "/srv/diayn/boards.json")
         self.assertEqual(settings.yc_cache, "/srv/diayn/yc_cache.json")
 
+    def test_the_bot_s_users_db_lives_in_the_data_directory(self):
+        # The bot's own database: profiles and ledgers, never the scraper's.
+        # It moves with DIAYN_DATA and has no variable of its own.
+        self.assertEqual(poller.configure({}).users_db,
+                         os.path.join(poller.DATA_DIR, "users.db"))
+        self.assertEqual(poller.configure({"DIAYN_DATA": "/srv/diayn"}).users_db,
+                         "/srv/diayn/users.db")
+        self.assertEqual(poller.configure({"POSTINGS_DB": "/var/lib/postings.db"}).users_db,
+                         os.path.join(poller.DATA_DIR, "users.db"))
+
     def test_a_relative_data_directory_is_refused(self):
         # It would resolve against the working directory, which under pm2 is
         # wherever the process was started. `~` is not expanded by a .env.

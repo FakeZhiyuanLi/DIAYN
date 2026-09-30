@@ -173,6 +173,13 @@ class Settings:
     fit_rpd: int = 200
     fit_rpm: int = 10
 
+    @property
+    def users_db(self) -> str:
+        """The bot's own database, users.db, in the data directory: its users'
+        profiles and ledgers, never the scraper's postings. It moves with
+        DIAYN_DATA and has no variable of its own."""
+        return os.path.join(self.data_dir, "users.db")
+
 
 def absolute_path(raw) -> str:
     """`raw`, which must be an absolute path; ValueError otherwise.

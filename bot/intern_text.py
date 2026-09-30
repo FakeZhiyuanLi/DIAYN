@@ -814,7 +814,9 @@ def _bucket(value: object) -> str:
 def debug_lines(summary: Mapping[str, int], report: Mapping[str, float | None],
                 supply: Mapping[str, int], *, pdf_ok: bool, migrated: float | None,
                 now: float | None = None) -> list[str]:
-    """1.3: counts only, bucketed, as short lines for the caller to pack with the rest."""
+    """1.3: counts only, bucketed, as short lines for the caller to pack with the rest.
+    `migrated` is how many profiles `diayn.py import-legacy` wrote (intern_meta's
+    `legacy_imported`), or None when there has been no import."""
     def n(key: str, source: Mapping = summary) -> str:
         return _bucket(source.get(key))
 
@@ -832,8 +834,8 @@ def debug_lines(summary: Mapping[str, int], report: Mapping[str, float | None],
         f"{tick('sent')} · nothing new {tick('empty')} · DMs refused {tick('forbidden')}",
         "resume parsing: PDF available" if pdf_ok
         else "resume parsing: PDF unavailable (install pypdf); DOCX, TXT and paste work",
-        f"migration: {_bucket(migrated)} legacy subscribers copied at last start-up" if migrated is not None
-        else "migration: nothing copied yet",
+        f"legacy import: {_bucket(migrated)} subscribers imported" if migrated is not None
+        else "legacy import: none",
         "**Coverage by field, last 30 days** (roles for students in the US or unlisted · profiles that "
         "picked it)",
         *pack(coverage, _DEBUG_LINE, " | "),

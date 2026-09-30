@@ -14,8 +14,8 @@ The rules that matter most, because breaking them breaks nothing visible:
 
   * a stale card can never overwrite delivery bookkeeping;
   * a deleted user stays deleted, even when a DM in flight tries to record
-    something about them afterwards, and even across a restart that runs the
-    legacy migration again;
+    something about them afterwards, and even when the import of the old
+    tracker's subscribers is run again;
   * `/internships delete` erases every row that names the user, in every
     finder table, including ones added after this test was written.
 """
@@ -597,19 +597,45 @@ class SecureDelete(unittest.TestCase):
         self.assertNotIn(self.CANARY, after)
 
 
-class MigrateLegacy(StoreTest):
+def legacy_db(rows=()) -> sqlite3.Connection:
+    """The old bot's stats.db, in memory: its subscriber table holding `rows`."""
+    db = sqlite3.connect(":memory:")
+    create_pings(db)
+    for uid, categories, us_only in rows:
+        add_legacy(db, uid, categories, us_only)
+    return db
+
+
+class ReadLegacy(unittest.TestCase):
+    def test_every_subscriber_is_read_with_the_columns_the_mapping_needs(self):
+        old = legacy_db(((1, "swe", 1), (2, None, None)))
+
+        rows = store.read_legacy(old)
+
+        self.assertEqual(sorted(rows), [(1, "swe", 1), (2, None, None)])
+        old.close()
+
+    def test_a_database_without_the_legacy_table_is_refused(self):
+        other = sqlite3.connect(":memory:")
+        other.execute("CREATE TABLE sticker_stats (user_id INTEGER PRIMARY KEY, count INTEGER)")
+
+        with self.assertRaises(store.LegacyImportError) as caught:
+            store.read_legacy(other)
+
+        self.assertIn("intern_pings", str(caught.exception))
+        other.close()
+
+
+class WriteMigrated(StoreTest):
     ROWS = ((1, "swe", 1), (2, None, None), (3, "hardware", 0), (4, "pm,quant", 1))
 
-    def setUp(self):
-        super().setUp()
-        create_pings(self.db)
-        for uid, categories, us_only in self.ROWS:
-            add_legacy(self.db, uid, categories, us_only)
+    def write(self, rows=ROWS, now=NOW, cursor=CURSOR) -> store.ImportCounts:
+        return store.write_migrated(self.db, list(rows), now, cursor=cursor)
 
     def test_every_legacy_subscriber_gets_a_migrated_profile(self):
-        n = store.migrate_legacy(self.db, NOW, CURSOR)
+        counts = self.write()
 
-        self.assertEqual(n, 4)
+        self.assertEqual(counts, store.ImportCounts(legacy=4, written=4, already=0))
         expected = {
             1: (("software", "security", "it"), ("us", "unlisted", "remote_us")),
             2: (intern_vocab.LEGACY_ALL_TECH, ("us", "unlisted", "remote_us", "abroad")),
@@ -628,45 +654,62 @@ class MigrateLegacy(StoreTest):
                 self.assertEqual((p.intro_pending, p.consent_version), (True, 0))
                 self.assertEqual((p.cursor, p.last_run_at, p.created_at), (CURSOR, NOW, NOW))
 
-    def test_running_it_again_adds_nothing(self):
-        store.migrate_legacy(self.db, NOW, CURSOR)
+    def test_the_import_is_recorded_with_how_many_it_wrote(self):
+        self.write()
 
-        self.assertEqual(store.migrate_legacy(self.db, NOW + DAY, NOW), 0)
+        self.assertEqual(store.get_meta(self.db, store.LEGACY_IMPORT_KEY), 4.0)
+
+    def test_a_second_import_is_refused_and_changes_nothing(self):
+        self.write()
+
+        with self.assertRaises(store.LegacyImportError):
+            self.write(now=NOW + DAY, cursor=NOW)
+
         self.assertEqual(store.load(self.db, 1).last_run_at, NOW)
 
-    def test_a_deleted_user_is_not_brought_back_by_the_next_start_up(self):
-        store.migrate_legacy(self.db, NOW, CURSOR)
+    def test_a_deleted_user_is_not_brought_back_by_a_second_import(self):
+        self.write()
         store.delete_user(self.db, 1)
 
-        store.migrate_legacy(self.db, NOW + DAY, NOW)
+        with self.assertRaises(store.LegacyImportError):
+            self.write(now=NOW + DAY, cursor=NOW)
 
         self.assertIsNone(store.load(self.db, 1))
 
-    def test_an_existing_profile_is_never_overwritten(self):
+    def test_an_existing_profile_is_counted_and_never_overwritten(self):
         mine = self.save(3, fields=("finance",))
 
-        store.migrate_legacy(self.db, NOW, CURSOR)
+        counts = self.write()
 
+        self.assertEqual(counts, store.ImportCounts(legacy=4, written=3, already=1))
         self.assertEqual(store.load(self.db, 3), mine)
 
-    def test_the_legacy_rows_stay_for_a_rollback(self):
-        store.migrate_legacy(self.db, NOW, CURSOR)
+    def test_counts_that_do_not_add_up_write_nothing(self):
+        # Two rows for one user: one is written, the other is neither written
+        # nor already there, so the import cannot vouch for every subscriber.
+        with self.assertRaises(store.LegacyImportError) as caught:
+            self.write(rows=((1, "swe", 1), (1, "quant", 0), (2, None, None)))
 
-        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM intern_pings").fetchone()[0], 4)
+        self.assertIsNone(store.load(self.db, 1))
+        self.assertIsNone(store.load(self.db, 2))
+        self.assertIsNone(store.get_meta(self.db, store.LEGACY_IMPORT_KEY))
+        self.assertNotIn(str(ALICE), str(caught.exception))
 
-    def test_no_legacy_table_means_nothing_to_migrate(self):
-        fresh_db = sqlite3.connect(":memory:")
-        store.init_db(fresh_db)
+    def test_nothing_to_import_is_still_recorded_as_done(self):
+        counts = self.write(rows=())
 
-        self.assertEqual(store.migrate_legacy(fresh_db, NOW, CURSOR), 0)
-        fresh_db.close()
+        self.assertEqual(counts, store.ImportCounts(legacy=0, written=0, already=0))
+        self.assertEqual(store.get_meta(self.db, store.LEGACY_IMPORT_KEY), 0.0)
 
-    def test_a_subscriber_migrated_after_a_bootstrap_starts_past_the_seed(self):
+    def test_a_subscriber_imported_after_a_bootstrap_starts_past_the_seed(self):
         store.advance_all_cursors(self.db, NOW + 1000)
 
-        store.migrate_legacy(self.db, NOW + 1180, NOW + 580)
+        self.write(now=NOW + 1180, cursor=NOW + 580)
 
         self.assertEqual({store.load(self.db, uid).cursor for uid, *_ in self.ROWS}, {NOW + 1000})
+
+    def test_the_old_migration_on_every_start_is_gone(self):
+        self.assertFalse(hasattr(store, "migrate_legacy"))
 
 
 class Housekeeping(StoreTest):

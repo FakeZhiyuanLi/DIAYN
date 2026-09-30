@@ -8,19 +8,37 @@ the same arguments and the same exit codes: 0 done, 1 failed, 2 a usage error,
 3 another sweeper holds the lock. `python diayn.py sweep --init` and
 `python internship_poller.py sweep --init` are the same run.
 
-DIAYN's own commands, for the Discord bot, are in PLANNED_COMMANDS until they
-are built. Each says so and exits 2, without importing the scraper or touching
-a file.
+DIAYN's own commands, for the Discord bot, are in BOT_COMMANDS:
+
+    python diayn.py import-legacy --from <stats.db>
+
+copies the old `/internships ping` tracker's subscribers out of its bot's
+stats.db, which it opens read-only, into DIAYN's users.db as profiles. It runs
+once, and prints counts only.
+
+The rest are in PLANNED_COMMANDS until they are built. Each says so and exits
+2, without importing the scraper or touching a file.
 
 Importing this module is inert. The scraper is imported only when a scraper
-command, or the list of commands, is asked for, so the planned commands work
-on a box without aiohttp.
+command, a bot command, or the list of commands is asked for, so the planned
+commands work on a box without aiohttp.
 """
 
+import argparse
+import os
+import pathlib
+import sqlite3
 import sys
+import time
 
+CHECKOUT = os.path.dirname(os.path.abspath(__file__))
+# The finder's modules, which use bare imports with this directory on sys.path.
+BOT_DIR = os.path.join(CHECKOUT, "bot")
+IMPORT_LEGACY = "import-legacy"
+# DIAYN's own commands that are built.
+BOT_COMMANDS = (IMPORT_LEGACY,)
 # DIAYN's own commands, each built in a later change.
-PLANNED_COMMANDS = ("setup", "doctor", "run", "import-legacy", "grant")
+PLANNED_COMMANDS = ("setup", "doctor", "run", "grant")
 HELP_FLAGS = ("-h", "--help")
 # argparse's code for a usage error, which the scraper exits with too.
 USAGE_EXIT = 2
@@ -34,12 +52,100 @@ def scraper():
     return internship_poller
 
 
+def finder():
+    """The finder's store and delivery modules, with bot/ on sys.path, imported on first use."""
+    if BOT_DIR not in sys.path:
+        sys.path.insert(0, BOT_DIR)
+    import intern_delivery
+    import intern_store
+    return intern_store, intern_delivery
+
+
 def usage(scraper_commands) -> str:
     return ("usage: diayn.py <command> [options]\n\n"
+            f"DIAYN's commands: {', '.join(BOT_COMMANDS)}\n"
             f"DIAYN's commands (not built yet): {', '.join(PLANNED_COMMANDS)}\n"
             f"The scraper's commands: {', '.join(scraper_commands)}\n"
-            "`diayn.py <scraper command> --help` lists that command's options.")
+            "`diayn.py <command> --help` lists that command's options.")
 
+
+# ------------------------------------------------------------------ import-legacy
+
+def open_legacy(path) -> sqlite3.Connection:
+    """The old bot's stats.db at `path`, opened read-only (mode=ro), so nothing
+    can be written to it. A path that is not a file is refused with
+    FileNotFoundError rather than created."""
+    real = pathlib.Path(os.path.realpath(path))
+    if not real.is_file():
+        raise FileNotFoundError(f"{path}: no such file")
+    return sqlite3.connect(real.as_uri() + "?mode=ro", uri=True)
+
+
+def _refused(reason) -> int:
+    print(f"diayn.py {IMPORT_LEGACY}: {reason}", file=sys.stderr)
+    return FAILED_EXIT
+
+
+def _read_legacy(store, source):
+    """(the legacy rows of the file at `source`, None), or (None, why there are none)."""
+    try:
+        old = open_legacy(source)
+    except OSError as e:
+        return None, str(e)
+    try:
+        return store.read_legacy(old), None
+    except store.LegacyImportError as e:
+        return None, str(e)
+    except sqlite3.Error as e:
+        return None, f"{source}: {type(e).__name__}: {e}"
+    finally:
+        old.close()
+
+
+def import_legacy(source, users_path, now) -> int:
+    """
+    Copies the old tracker's subscribers from the stats.db at `source` into the
+    users.db at `users_path`; returns the exit code. The old file is only read.
+    users.db is made only once the old file has been read, and a refusal leaves
+    it as it was. Prints counts and reasons, never an id.
+    """
+    store, delivery = finder()
+    rows, reason = _read_legacy(store, source)
+    if reason is not None:
+        return _refused(reason)
+    os.makedirs(os.path.dirname(users_path), exist_ok=True)
+    users = sqlite3.connect(users_path)
+    try:
+        store.init_db(users)
+        counts = store.write_migrated(users, rows, now, cursor=delivery.horizon(now))
+    except store.LegacyImportError as e:
+        return _refused(e)
+    except sqlite3.Error as e:
+        return _refused(f"users.db: {type(e).__name__}: {e}")
+    finally:
+        users.close()
+    print(f"{IMPORT_LEGACY}: {counts.legacy} subscribers in the old tracker; "
+          f"{counts.written} imported, {counts.already} already had a profile.")
+    return 0
+
+
+def cmd_import_legacy(poller, argv) -> int:
+    """`import-legacy --from <stats.db>`, with the scraper's settings for where users.db is."""
+    parser = argparse.ArgumentParser(
+        prog=f"diayn.py {IMPORT_LEGACY}",
+        description="Copy the old tracker's subscribers into users.db, once.")
+    parser.add_argument("--from", dest="source", required=True, metavar="STATS_DB",
+                        help="the old bot's stats.db, which is opened read-only")
+    args = parser.parse_args(argv)
+    try:
+        poller.load_env_file()
+        settings = poller.configure(os.environ)
+    except poller.ConfigError as e:
+        return _refused(e)
+    return import_legacy(args.source, settings.users_db, time.time())
+
+
+# ------------------------------------------------------------------ dispatch
 
 def main(argv=None) -> int:
     """Run the command in `argv` (default: the command line); return its exit code.
@@ -59,6 +165,8 @@ def main(argv=None) -> int:
               "Install the requirements: pip install -r requirements.txt",
               file=sys.stderr)
         return FAILED_EXIT
+    if command == IMPORT_LEGACY:
+        return cmd_import_legacy(poller, argv[1:])
     if command in HELP_FLAGS:
         print(usage(poller.COMMANDS))
         return 0

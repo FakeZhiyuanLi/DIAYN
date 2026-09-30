@@ -40,7 +40,8 @@ import internship_poller as poller  # noqa: E402
 from test_cli import CHILD as SCRAPER_CHILD  # noqa: E402
 from test_cli import SCRAPER_PREFIXES, SCRAPER_VARIABLES, v2_fixture  # noqa: E402
 
-PLANNED = ("setup", "doctor", "run", "import-legacy", "grant")
+PLANNED = ("setup", "doctor", "run", "grant")
+BUILT = ("import-legacy",)
 USAGE_ERROR, FAILED, LOCK_HELD = 2, 1, 3
 
 # The child: the temporary checkout first on the path, so `import diayn` and
@@ -101,6 +102,10 @@ class Planned(unittest.TestCase):
         self.assertEqual(set(diayn.PLANNED_COMMANDS), set(PLANNED))
         self.assertEqual(set(PLANNED) & set(scraper_commands()), set())
 
+    def test_diayn_s_built_commands_are_neither_planned_nor_the_scraper_s(self):
+        self.assertEqual(set(diayn.BOT_COMMANDS), set(BUILT))
+        self.assertEqual(set(BUILT) & (set(PLANNED) | set(scraper_commands())), set())
+
 
 class PassThrough(unittest.TestCase):
     def test_every_scraper_command_reaches_the_scraper_with_its_arguments(self):
@@ -138,7 +143,7 @@ class Usage(unittest.TestCase):
                     mock.patch.object(poller, "main") as scraper_main:
                 code, out, _ = run_main([flag])
                 self.assertEqual(code, 0)
-                for command in PLANNED + tuple(scraper_commands()):
+                for command in PLANNED + BUILT + tuple(scraper_commands()):
                     self.assertIn(command, out)
                 scraper_main.assert_not_called()
 
@@ -155,7 +160,7 @@ class Usage(unittest.TestCase):
             code, _, err = run_main(["sweeep"])
         self.assertEqual(code, USAGE_ERROR)
         self.assertIn("sweeep", err)
-        for command in PLANNED + tuple(scraper_commands()):
+        for command in PLANNED + BUILT + tuple(scraper_commands()):
             self.assertIn(command, err)
         scraper_main.assert_not_called()
 

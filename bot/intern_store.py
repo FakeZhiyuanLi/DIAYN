@@ -57,6 +57,9 @@ DM_FAILURE_LIMIT = 3
 QUIET_AFTER_S = 14 * DAY_S
 #: intern_meta: when the latest bootstrap sweep stored its seed. No cursor starts below it.
 CURSOR_FLOOR_KEY = "cursor_floor"
+#: intern_meta: set once the old tracker's subscribers were imported, to how many profiles
+#: the import wrote. Its presence refuses a second import (`write_migrated`).
+LEGACY_IMPORT_KEY = "legacy_imported"
 
 #: Every `intern_profiles` column, in table order, as `/internships delete`
 #: names it to the user (J11). Plain words, no markdown: the caller bolds them.
@@ -177,12 +180,27 @@ _HIDE = ("INSERT INTO intern_seen (user_id, role_hash, state, at) "
          "ON CONFLICT(user_id, role_hash) DO UPDATE SET state = 'hidden', at = excluded.at")
 _FLOOR = ("INSERT INTO intern_meta (key, value) VALUES (?, ?) ON CONFLICT(key) "
           "DO UPDATE SET value = MAX(COALESCE(value, excluded.value), excluded.value)")
+_SET_META = ("INSERT INTO intern_meta (key, value) VALUES (?, ?) "
+             "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
 _MIGRATE = ("INSERT OR IGNORE INTO intern_profiles "
             "(user_id, source, consent_version, fields, fields_locked, levels, levels_locked, "
             "locations, alerts, alert_hour, min_score, cursor, last_run_at, intro_pending, "
             "created_at, updated_at, active_at) "
             "VALUES (?, 'migrated', 0, ?, 1, '[\"intern\",\"coop\"]', 1, ?, 'hourly', 9, 45, "
             "?, ?, 1, ?, ?, ?)")
+
+
+class LegacyImportError(Exception):
+    """An import of the old tracker's subscribers that must not report success. The
+    message gives counts and reasons only, never a user."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ImportCounts:
+    """What `write_migrated` did: every legacy row is either written or already there."""
+    legacy: int
+    written: int
+    already: int
 
 
 # ------------------------------------------------------------------ schema
@@ -465,26 +483,55 @@ def advance_all_cursors(db: sqlite3.Connection, cursor: float) -> int:
 
 # ------------------------------------------------------------------ lifecycle
 
-def migrate_legacy(db: sqlite3.Connection, now: float, cursor: float) -> int:
+def read_legacy(old: sqlite3.Connection) -> list[tuple]:
     """
-    Gives every old `/internships ping` subscriber a migrated profile (spec 3.3).
+    Every subscriber of the old `/internships ping` tracker, as (user_id, categories,
+    us_only), from `old`: a connection to that tracker's bot's own stats.db, which the
+    caller opens read-only. Nothing is written to it. A database without the tracker's
+    `intern_pings` table is refused with LegacyImportError: it is not that bot's file.
+    """
+    tables = {row[0] for row in old.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "intern_pings" not in tables:
+        raise LegacyImportError("that database has no intern_pings table, so it is not the "
+                                "old tracker's stats.db")
+    return old.execute("SELECT user_id, categories, us_only FROM intern_pings").fetchall()
 
-    Runs on every start-up. INSERT OR IGNORE never overwrites a profile, and a
-    deleted user's legacy row went with them, so nobody comes back. The legacy
-    rows themselves are left for a rollback. No legacy table: nothing to do.
+
+def write_migrated(db: sqlite3.Connection, rows: Iterable[tuple], now: float, *,
+                   cursor: float) -> ImportCounts:
     """
-    if "intern_pings" not in _table_names(db):
-        return 0
-    have = {row[0] for row in db.execute("SELECT user_id FROM intern_profiles")}
-    legacy = db.execute("SELECT user_id, categories, us_only FROM intern_pings").fetchall()
-    start = _floored(db, cursor)
-    rows = [(uid, _json(legacy_fields(categories)), _json(legacy_locations(us_only)),
-             start, now, now, now, now)
-            for uid, categories, us_only in legacy if uid not in have]
-    if not rows:
-        return 0
+    Gives every legacy subscriber in `rows` (from `read_legacy`) a migrated profile in
+    users.db (spec 3.3), starting from `cursor` (pass intern_delivery.horizon(now)),
+    never below the bootstrap floor.
+
+    One transaction, all or nothing. INSERT OR IGNORE never overwrites a profile, so a
+    subscriber who already has one is counted, not written. Unless what was written
+    plus what was already there accounts for every row, nothing is kept and
+    LegacyImportError is raised. It runs once: the import is recorded under
+    LEGACY_IMPORT_KEY, and a second is refused, so nobody who has since deleted their
+    data comes back.
+    """
+    rows = list(rows)
     with db:
-        return db.executemany(_MIGRATE, rows).rowcount
+        if not db.in_transaction:
+            db.execute("BEGIN")
+        if get_meta(db, LEGACY_IMPORT_KEY) is not None:
+            raise LegacyImportError("the old tracker's subscribers were already imported into "
+                                    "this users.db; a second import could bring back someone "
+                                    "who has since deleted their data")
+        have = {row[0] for row in db.execute("SELECT user_id FROM intern_profiles")}
+        start = _floored(db, cursor)
+        fresh = [(uid, _json(legacy_fields(categories)), _json(legacy_locations(us_only)),
+                  start, now, now, now, now)
+                 for uid, categories, us_only in rows if uid not in have]
+        written = db.executemany(_MIGRATE, fresh).rowcount if fresh else 0
+        already = sum(1 for uid, *_ in rows if uid in have)
+        if written + already != len(rows):
+            raise LegacyImportError(f"{written} written and {already} already there do not "
+                                    f"account for all {len(rows)} legacy subscribers, so "
+                                    "nothing was imported")
+        db.execute(_SET_META, (LEGACY_IMPORT_KEY, float(written)))
+    return ImportCounts(legacy=len(rows), written=written, already=already)
 
 
 def _user_ids(db: sqlite3.Connection, where: str, params: tuple) -> list[int]:
@@ -563,5 +610,4 @@ def get_meta(db: sqlite3.Connection, key: str) -> float | None:
 
 def set_meta(db: sqlite3.Connection, key: str, value: float) -> None:
     with db:
-        db.execute("INSERT INTO intern_meta (key, value) VALUES (?, ?) "
-                   "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+        db.execute(_SET_META, (key, value))

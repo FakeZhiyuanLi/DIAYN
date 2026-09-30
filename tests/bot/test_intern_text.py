@@ -495,6 +495,16 @@ class Debug(unittest.TestCase):
         self.assertIsNone(re.search(r"\d{15,}", body))
         self.assertTrue(all(len(line) <= text.ALERT_MAX for line in lines))
 
+    def test_the_legacy_import_is_named_as_an_import(self):
+        imported = "\n".join(text.debug_lines(self.SUMMARY, self.REPORT, {}, pdf_ok=True,
+                                               migrated=4.0, now=NOW))
+        never = "\n".join(text.debug_lines(self.SUMMARY, self.REPORT, {}, pdf_ok=True,
+                                            migrated=None, now=NOW))
+
+        self.assertIn("legacy import: 4 subscribers imported", imported)
+        self.assertIn("legacy import: none", never)
+        self.assertNotIn("start-up", imported + never)
+
     def test_help_chunks_fit(self):
         chunks = text.help_text(pdf_ok=True, companies=412)
         self.assertEqual(len(chunks), 2)
