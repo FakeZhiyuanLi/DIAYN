@@ -17,7 +17,9 @@ settings, and the files opened here must be the ones they describe.
 opened read-only under the contract (`postings_source`), never created, and a
 file that is missing or wrong turns off the tracker, not the bot. users.db is
 the finder's own (`intern_store`): one that cannot be opened or made turns off
-the finder, and `/internships recent` and `info` still work.
+the finder, and with it the access grants it holds, so the bot answers only its
+owner. For the owner, `/internships recent` and `info`, which need no users.db,
+still work; everyone else is refused as if they had never been granted.
 
 **Two command groups**: the finder's `/internships`, and the owner's `/diayn`
 (`diayn_commands`), which grants and revokes access and carries the debug

@@ -41,7 +41,7 @@ STALE_SWEEPS = 3
 DEFAULT_DAY_TZ = "America/Los_Angeles"
 _COMPANY_AT, _SLUG_AT = 2, 1        # columns of a board row: platform, slug, company, sector
 
-#: The protocol, by name, for the test that holds both sources to all of it.
+#: The protocol, by name, for the test that holds ContractSource to all of it.
 SOURCE_MEMBERS = ("window_days", "sweep_interval_s", "sweeper_label", "db_path", "is_blocked",
                   "drop_blocked", "board_companies", "boards_count", "icims_hosts", "quota",
                   "moved")
