@@ -351,8 +351,9 @@ class Deploy(unittest.TestCase):
         # 3 is another sweeper holding the lock, and 78 Discord refusing the Server
         # Members Intent: restarting into either only loops, and a loop of refused
         # logins can get the bot's token reset.
-        self.assertIn(f"stop_exit_codes: [{poller.LOCK_HELD_EXIT}, {diayn.CONFIG_EXIT}]",
-                      self.deploy)
+        # The config line itself, not the prose that quotes it.
+        self.assertRegex(self.deploy, r"(?m)^\s+stop_exit_codes: \[%d, %d\],$"
+                         % (poller.LOCK_HELD_EXIT, diayn.CONFIG_EXIT))
 
     def test_systemd_runs_the_one_process(self):
         self.assertRegex(self.deploy, r"(?m)^ExecStart=/\S+/python /\S+/diayn\.py run$")
