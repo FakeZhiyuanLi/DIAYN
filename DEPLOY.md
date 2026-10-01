@@ -897,8 +897,8 @@ umask 077
 D=$HOME/DIAYN/data
 B=$HOME/diayn-backups
 day=$(date +%F)
-sqlite3 "file:$D/postings.db?mode=ro" ".backup '$B/postings-$day.db'"
-sqlite3 "file:$D/users.db?mode=ro" ".backup '$B/users-$day.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/postings.db?mode=ro" ".backup '$B/postings-$day.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/users.db?mode=ro" ".backup '$B/users-$day.db'"
 find "$B" \( -name 'postings-2*.db' -o -name 'users-2*.db' \) -mtime +14 -delete
 ```
 
@@ -913,6 +913,9 @@ and run it from cron at 04:15 (`crontab -e`):
   make each copy of `users.db` mode 644, readable by everyone on the box but
   for `$B`'s own mode.
 - `mode=ro`, so a wrong path fails instead of leaving an empty database behind.
+- `.timeout 5000`, so a copy that meets a commit waits for it, up to five
+  seconds, instead of failing with `database is locked` and leaving an empty
+  file.
 - The `-2*` patterns match only the dated daily copies, so a named copy such as
   `postings-pre-v1.1.0.db` stays until you delete it on purpose.
 - **Keep the retention short.** A copy of `users.db` still holds the profile of
@@ -980,8 +983,8 @@ git log --oneline "$PREV_TAG"..vX.Y.Z               # what changed
 Read the release's notes, then:
 
 ```sh
-sqlite3 "file:$D/postings.db?mode=ro" ".backup '$B/postings-pre-vX.Y.Z.db'"
-sqlite3 "file:$D/users.db?mode=ro" ".backup '$B/users-pre-vX.Y.Z.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/postings.db?mode=ro" ".backup '$B/postings-pre-vX.Y.Z.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/users.db?mode=ro" ".backup '$B/users-pre-vX.Y.Z.db'"
 git checkout --detach vX.Y.Z && git status --short         # clean
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m unittest discover -s tests             # must end OK, with nothing skipped
