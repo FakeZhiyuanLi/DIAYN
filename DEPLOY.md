@@ -174,7 +174,7 @@ create the application, press **Reset Token** for `DISCORD_TOKEN`, turn
 git clone https://github.com/FakeZhiyuanLi/DIAYN.git ~/DIAYN
 cd ~/DIAYN && git checkout --detach v1.0.0
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m unittest discover -s tests          # must end OK
+.venv/bin/python -m unittest discover -s tests          # must end OK, with nothing skipped
 cp example.env .env && chmod 600 .env                    # then fill it in
 .venv/bin/python diayn.py setup
 mkdir -p "$B" && chmod 700 "$B"
@@ -920,7 +920,7 @@ sqlite3 "file:$D/postings.db?mode=ro" ".backup '$B/postings-pre-vX.Y.Z.db'"
 sqlite3 "file:$D/users.db?mode=ro" ".backup '$B/users-pre-vX.Y.Z.db'"
 git checkout --detach vX.Y.Z && git status --short         # clean
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m unittest discover -s tests             # must end OK
+.venv/bin/python -m unittest discover -s tests             # must end OK, with nothing skipped
 ```
 
 Restart the service, run `.venv/bin/python diayn.py doctor`, and go through
