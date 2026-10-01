@@ -441,6 +441,15 @@ instead of pm2, and leave the other bot's pm2 alone.
   `filter_env` keeps every variable DIAYN reads out of it, and systemd hands
   DIAYN none of them. The log's `DIAYN is logged in as …` names the bot it
   logged in as.
+- **Nor in the shell you type DIAYN's commands in.** Every command loads the
+  `.env` the same way, so a variable your shell exports beats the file there
+  too: with the other bot's `DISCORD_TOKEN` exported, `setup` checks that
+  bot's token, and prints its name and its invite link. Run `setup`,
+  `doctor`, `grant`, `import-legacy` and `upgrade-db` from a shell that
+  exports none of the other bot's variables; with a separate `diayn` user,
+  that is a login shell as `diayn`, `sudo -iu diayn`. `config` shows the
+  paths and settings they would use, and `setup`'s `DISCORD_TOKEN` line names
+  the bot it checked: it must be DIAYN's.
 - **One service manager for DIAYN.** DIAYN under systemd beside another bot
   under pm2 is fine. DIAYN under both is two copies on one token.
 
