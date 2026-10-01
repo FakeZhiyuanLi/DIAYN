@@ -546,6 +546,10 @@ the commands below say `$OLD`.
    ls -A "$D"                                     # nothing
    ```
 
+   Until step 3 copies the ledger in, `doctor` fails on `postings.db: … does
+   not exist`, and before the `mkdir` above, on `data directory: … does not
+   exist` as well. Both lines name `setup` as the fix. Here they are expected:
+   do not run `setup` before step 8. Any other `fail` line is a real stop.
 3. **Copy the ledger with `.backup`**, never `cp`, and compare the two:
 
    ```sh
