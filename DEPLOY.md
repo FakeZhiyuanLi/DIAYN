@@ -558,10 +558,16 @@ the commands below say `$OLD`.
    first step of *Sharing the box with another bot* finds them):
 
    ```sh
+   pm2 report | grep -E 'pm2d version|local pm2'  # both 4.0.0 or newer, or see below
    pm2 stop <old-bot>                             # its name in pm2 list; never all
    pm2 list                                       # the old bot stopped, anything else as it was
    pm2 save                                       # so a reboot leaves it stopped
    ```
+
+   A pm2 older than 4.0.0 starts every saved app at boot, stopped or not. On
+   one, take the old bot out of the list instead,
+   `pm2 delete <old-bot> && pm2 save`, and at step 10 start it again from its
+   own config file.
 
    Under systemd, `sudo systemctl disable --now <old-bot>`, which also keeps it
    stopped across a reboot. Then check that nothing sweeps: the newest sweep in
