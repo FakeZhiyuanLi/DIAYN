@@ -40,6 +40,8 @@ bot, a coroutine that records what it saw, and need nothing installed. The ones
 that build the real client replace app.serve, and skip without discord.py.
 discord_portal.fetch_application, the REST check, is replaced in every test by a
 fake that says the token is good and the intent on, unless a test says otherwise.
+A name looked up in a test that runs `run` is refused, and fails the test, which
+names it: a sweep that gets through never reaches a job board.
 
 The scraper's .env is never read: load_env_file is replaced, and the scraper's
 variables are cleared from the environment, with DIAYN_DATA pointing at a
@@ -144,8 +146,35 @@ class FakeBot:
         self._stop.set()
 
 
+#: The names a test may look up: this machine's own.
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
+
+@contextlib.contextmanager
+def no_lookups():
+    """Refuses every name lookup but LOOPBACK's, and yields the names it refused. It
+    replaces socket.getaddrinfo, which aiohttp's resolver calls through loop.getaddrinfo
+    on an executor thread, so a lookup from there is caught too."""
+    refused, real = [], socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        if host in LOOPBACK:
+            return real(host, *args, **kwargs)
+        refused.append(host)
+        raise socket.gaierror(socket.EAI_NONAME, f"{host}: no lookups in this test")
+
+    with mock.patch.object(socket, "getaddrinfo", getaddrinfo):
+        yield refused
+
+
 class _RunCase(unittest.TestCase):
     def setUp(self):
+        # No test of run looks up a name, even one that fails: a sweep that gets through
+        # is refused before it reaches a job board, and the test fails, naming the hosts.
+        lookups = no_lookups()
+        refused = lookups.__enter__()           # enterContext is 3.11's, and CI runs 3.10
+        self.addCleanup(self._looked_up_nothing, refused)
+        self.addCleanup(lookups.__exit__, None, None, None)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.data = os.path.realpath(tmp.name)
@@ -164,6 +193,11 @@ class _RunCase(unittest.TestCase):
     def _restore(saved):
         poller.SETTINGS, poller.BOARDS, poller.STARTED_AT = saved
 
+    def _looked_up_nothing(self, refused):
+        if refused:
+            self.fail(f"looked up {', '.join(map(str, refused))}, and no test of run may "
+                      "look up a name")
+
     @contextlib.contextmanager
     def environment(self):
         env = {k: v for k, v in os.environ.items() if k not in SCRAPER_VARIABLES}
@@ -179,6 +213,23 @@ class _RunCase(unittest.TestCase):
                 contextlib.redirect_stderr(err):
             code = diayn.cmd_run(poller, list(argv), bot=bot, watch=watch)
         return code, out.getvalue(), err.getvalue()
+
+
+class EveryRunTest(unittest.TestCase):
+    def test_refuses_a_name_lookup_and_fails_naming_the_host(self):
+        host = "a-job-board.invalid"
+
+        class LooksUp(_RunCase):
+            def runTest(self):
+                with contextlib.suppress(socket.gaierror):
+                    socket.getaddrinfo(host, 443)
+
+        result = unittest.TestResult()
+        with no_lookups() as escaped:           # what got past the run test's own guard
+            LooksUp().run(result)
+        self.assertEqual(escaped, [])
+        self.assertEqual(len(result.failures), 1, result.errors)
+        self.assertIn(host, result.failures[0][1])
 
 
 class TheCommand(unittest.TestCase):
@@ -665,27 +716,6 @@ class ASweepCancelledFromOutside(unittest.TestCase):
         self.assertNotIn("sweep loop ended", err.getvalue())
 
 
-#: The names a test may look up: this machine's own.
-LOOPBACK = ("localhost", "127.0.0.1", "::1")
-
-
-@contextlib.contextmanager
-def no_lookups():
-    """Refuses every name lookup but LOOPBACK's, and yields the names it refused. It
-    replaces socket.getaddrinfo, which aiohttp's resolver calls through loop.getaddrinfo
-    on an executor thread, so a lookup from there is caught too."""
-    refused, real = [], socket.getaddrinfo
-
-    def getaddrinfo(host, *args, **kwargs):
-        if host in LOOPBACK:
-            return real(host, *args, **kwargs)
-        refused.append(host)
-        raise socket.gaierror(socket.EAI_NONAME, f"{host}: no lookups in this test")
-
-    with mock.patch.object(socket, "getaddrinfo", getaddrinfo):
-        yield refused
-
-
 class TheIntent(_RunCase):
     """Discord refusing the Server Members Intent, as the bot logs in."""
 
@@ -717,8 +747,7 @@ class TheIntent(_RunCase):
 
     def test_through_main_the_exit_code_is_78(self):
         # main() hands run the scraper's own cmd_watch, and the fixture is due a sweep at
-        # once, so it is faked, as the other tests fake it. Any name looked up is refused
-        # and fails the test, so a sweep that got through would not reach a job board.
+        # once, so it is faked, as the other tests fake it.
         v2_fixture(self.db)
 
         async def bot(settings):
@@ -728,13 +757,12 @@ class TheIntent(_RunCase):
             await forever()
 
         err = io.StringIO()
-        with no_lookups() as looked_up, self.environment(), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+        with self.environment(), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err), \
                 mock.patch.object(poller, "cmd_watch", cmd_watch), \
                 mock.patch.object(diayn, "discord_bot", return_value=bot):
             code = diayn.main(["run", "--interval", str(INTERVAL)])
         self.assertEqual(code, CONFIG, err.getvalue())
-        self.assertEqual(looked_up, [])
 
 
 #: The User-Agent the REST check carries: the one setup and doctor send.
@@ -868,16 +896,23 @@ class TheCheckBeforeLogin(_RunCase):
         self.assertEqual(self.portal.calls, [])
 
     def test_through_main_the_intent_off_exits_78_before_the_bot_starts(self):
+        # main() hands run the scraper's own cmd_watch, and the fixture is due a sweep at
+        # once, so it is faked, as the other tests fake it.
         v2_fixture(self.db)
         self.portal.app = application(members_intent=False)
-        bot, _, started = self.tasks()
+        bot, watch, started = self.tasks()
+
+        def cmd_watch(conn, interval, use_llm=False):
+            return watch(conn)
+
         err = io.StringIO()
         with self.environment(), contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(err), \
+                mock.patch.object(poller, "cmd_watch", cmd_watch), \
                 mock.patch.object(diayn, "discord_bot", return_value=bot):
             code = diayn.main(["run"])
         self.assertEqual(code, CONFIG, err.getvalue())
-        self.assertEqual(started["bot"], [])
+        self.assertEqual(started, {"bot": [], "sweep loop": []})
 
 
 class LoginFailure(Exception):
