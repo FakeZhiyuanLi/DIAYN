@@ -770,20 +770,23 @@ the commands below say `$OLD`.
    company:
 
    ```sh
-   sqlite3 "file:$D/postings.db?mode=ro" \
+   sqlite3 -header "file:$D/postings.db?mode=ro" \
      "ATTACH 'file:$OLD/postings.db?mode=ro' AS old; \
-      SELECT company, COUNT(*), (SELECT COUNT(*) FROM old.postings o WHERE o.company = p.company) \
+      SELECT company, COUNT(*) AS new_rows, (SELECT COUNT(*) FROM old.postings o WHERE o.company = p.company) AS old_rows \
       FROM postings p WHERE first_seen > (SELECT MAX(first_seen) FROM old.seen) AND unbounded = 0 \
       AND COALESCE(published, first_seen) >= strftime('%s', 'now') - 30 * 86400 \
-      GROUP BY company ORDER BY 2 DESC LIMIT 5;"
+      GROUP BY company ORDER BY old_rows > 0, new_rows DESC LIMIT 10;"
    ```
 
-   A catch-up is spread thin, a few roles a company, each with rows before.
-   A company with tens of new roles and none before is a board the old
-   tracker never swept: a flood. A tick offers nothing a sweep found until it
-   is 10 minutes old, and an imported subscriber is due hourly, first about
-   an hour after step 6: you have 10 minutes from that line at least, often
-   more. On a flood, stop DIAYN so that it stays stopped across a reboot,
+   An error saying `no such table: old.…` means the ATTACH failed: `$OLD` is
+   unset in this shell, or wrong, or the old file needs step 1's read-write
+   open. Companies with no rows before come first. One with tens of new roles
+   and none before is a board the old tracker never swept: a flood. A
+   catch-up has rows before, however many are new; a big employer's can be
+   tens. A tick offers nothing a sweep found until it is 10 minutes old, and
+   an imported subscriber is due hourly, first about an hour after step 6:
+   you have 10 minutes from that line at least, often more. On a flood, stop
+   DIAYN so that it stays stopped across a reboot,
    `sudo systemctl disable --now diayn` or `pm2 stop diayn && pm2 save`. What
    it found stays in the ledger as new to every imported subscriber, so any
    later start sends it. A board in `$D/boards.json` can be withheld: take it
