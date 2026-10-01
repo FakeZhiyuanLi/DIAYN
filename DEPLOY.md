@@ -994,8 +994,8 @@ and run it from cron at 04:15 (`crontab -e`):
   everyone who has since used `/internships delete`. Fourteen days bounds how
   long that lasts.
 
-The next morning, check that it ran: `ls -la "$B" | tail -3` shows today's two
-files, and neither is empty.
+The next morning, check that it ran: `ls -l "$B"/*-$(date +%F).db` shows
+today's two copies, `postings-` and `users-`, and neither is empty.
 
 ## Restoring
 
