@@ -62,6 +62,7 @@ import types
 import unittest
 from unittest import mock
 
+import aiohttp
 import diayn
 import discord_portal as portal
 import hints
@@ -69,6 +70,8 @@ import intern_clock
 import internship_poller as poller
 import postings_source
 from test_cli import v2_fixture
+from test_discord_portal import answers, made_here
+from test_discord_portal import application as application_answer
 from test_setup import FakePortal, application
 
 try:
@@ -736,6 +739,8 @@ class TheIntent(_RunCase):
 
 #: The User-Agent the REST check carries: the one setup and doctor send.
 AGENT = portal.user_agent(poller.PROJECT_URL, poller.__version__)
+#: The REST check itself, which every test replaces, for the test that puts it back.
+FETCH_APPLICATION = portal.fetch_application
 
 
 class TheCheckBeforeLogin(_RunCase):
@@ -835,6 +840,25 @@ class TheCheckBeforeLogin(_RunCase):
         code, _, err = self.run_diayn(bot=bot, watch=idle)
         self.assertEqual(code, 0, err)
         self.assertEqual(len(logins), 1)
+
+    def test_flags_that_do_not_parse_are_logged_and_the_bot_logs_in(self):
+        # The real REST check, with a fake session that answers the flags as false, so
+        # the parse and run's decision are pinned together.
+        v2_fixture(self.db)
+        own, made = made_here(answers(app=(200, application_answer(flags=False))), delay=0)
+        logins = []
+
+        async def bot(settings):
+            logins.append(settings)
+
+        with mock.patch.object(portal, "fetch_application", FETCH_APPLICATION), \
+                mock.patch.object(aiohttp, "ClientSession", own):
+            code, _, err = self.run_diayn(bot=bot, watch=idle)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(len(logins), 1)
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertIn("did not parse", err)
 
     def test_a_second_run_exits_3_without_asking_discord(self):
         v2_fixture(self.db)

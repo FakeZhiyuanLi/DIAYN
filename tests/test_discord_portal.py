@@ -272,6 +272,16 @@ class WhenDiscordSaysNo(unittest.TestCase):
                 text = self.refusal(FakeSession(answers(app=(200, body))))
                 self.assertIn("did not parse", text)
 
+    def test_flags_that_are_not_an_integer_do_not_parse(self):
+        # Not flags without the intent, which run exits 78 on: these did not parse, and run
+        # logs in. A bool is an int to Python, and false, "", [] and {} are falsy.
+        for flags in (False, True, "", [], {}, "32768", 32768.0):
+            with self.subTest(flags=flags):
+                with self.assertRaises(portal.PortalError) as caught:
+                    fetch(FakeSession(answers(app=(200, application(flags=flags)))))
+                self.assertNotIsInstance(caught.exception, portal.TokenRefused)
+                self.assertIn("did not parse", str(caught.exception))
+
 
 class TheDeadline(unittest.TestCase):
     def test_both_requests_together_must_finish_within_it(self):
