@@ -236,15 +236,30 @@ pm2 is fine where the box already runs its other apps under pm2, as a box
 shared with another bot may, and that pm2 belongs to the user DIAYN will run
 as: one tool for everything on the box. If another user's pm2 runs them, use
 systemd; *Sharing the box with another bot* says how to tell. pm2 has one
-caveat.
+caveat: it honours `stop_exit_codes` only from version 5.3.1, of January 2024.
+An older pm2 drops the key without a word, and restarts DIAYN on every exit,
+3 and 78 included. Two versions count: the `pm2` command that starts DIAYN
+reads the config, and the pm2 daemon that runs it handles each exit, and
+keeps the version it started with until `pm2 update` or a reboot. As the user
+whose pm2 runs DIAYN:
+
+```sh
+pm2 report | grep -E 'pm2d version|local pm2'   # the daemon's, then the command's: both 5.3.1 or newer
+```
+
+After upgrading pm2, run `pm2 update`: it saves the list and brings it back
+under a daemon of the new version. A DIAYN that an older pm2 started keeps
+running without the key, through `pm2 update` and every reboot: start it
+again from its config file, as *After a reboot* says.
 [pm2 issue #5601](https://github.com/Unitech/pm2/issues/5601) reports
 `stop_exit_codes` ignored after `pm2 resurrect`, which is how pm2 brings its
-apps back at boot, so after a reboot pm2 may restart DIAYN on exit 3 or 78.
-DIAYN stays safe: `run` asks Discord's REST API about the token and the Server
-Members Intent before it logs in, so a restart on 78 repeats that REST call and
-never a gateway login, unless the check itself could not be made, and a
-restart on 3 meets the lock again, exits 3 again, and backs off. Still, check
-`pm2 list`'s restart count after a reboot (*After a reboot*, below).
+apps back at boot; from 5.3.1 on, `pm2 save` keeps the key, and
+`pm2 resurrect` gives it back. DIAYN stays safe even where pm2 restarts it:
+`run` asks Discord's REST API about the token and the Server Members Intent
+before it logs in, so a restart on 78 repeats that REST call and never a
+gateway login, unless the check itself could not be made, and a restart on 3
+meets the lock again, exits 3 again, and backs off. Still, check `pm2 list`'s
+restart count after a reboot (*After a reboot*, below).
 
 ## Running it as a service
 
@@ -837,17 +852,19 @@ the list a reboot brings back; a systemd unit that step 1 disabled stays off.
 2. The restart count is not climbing: `systemctl show diayn -p NRestarts`, or
    the ↺ column of `pm2 list`, the same a minute apart. Under pm2, a count that
    climbs with exit 3 or 78 in the log is the caveat in *Choosing pm2 or
-   systemd*: `pm2 stop diayn`, fix what the log line names, then start it
-   again from its config file, with the other bot in `pm2 list` as it should
-   be, since the save takes the whole list:
+   systemd*: a pm2 older than 5.3.1, or a DIAYN one started. `pm2 stop diayn`,
+   fix what the log line names, and if `pm2 report` shows a pm2 older than
+   5.3.1, upgrade it and run `pm2 update`. Then start DIAYN again from its
+   config file, with the other bot in `pm2 list` as it should be, since the
+   save takes the whole list:
 
    ```sh
    pm2 delete diayn && pm2 start ~/diayn.config.cjs && pm2 save
    ```
 
-   Not `pm2 start diayn` or `pm2 restart diayn`: either keeps whatever options
-   `pm2 resurrect` gave it, the ignored `stop_exit_codes` among them, where a
-   start from the file gives it the file's own.
+   Not `pm2 start diayn` or `pm2 restart diayn`: either keeps the options DIAYN
+   was saved with, a missing `stop_exit_codes` among them, where a start from
+   the file gives it the file's own.
 3. `.venv/bin/python diayn.py doctor`, in `~/DIAYN`, ends
    `doctor: nothing to fix`.
 4. A `sweep: …` line in the log within 15 minutes of the start:
