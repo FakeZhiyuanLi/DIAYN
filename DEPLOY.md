@@ -611,6 +611,8 @@ the commands below say `$OLD`.
 
    ```sh
    pm2 report | grep -E 'pm2d version|local pm2'  # both 4.0.0 or newer, or see below
+   systemctl cat "pm2-$USER" | grep ExecStart     # ExecStart=<dir>/bin/pm2 resurrect: the pm2 a reboot starts, if any
+   grep '"version":' <dir>/package.json           # its version: 4.0.0 or newer too, or see below
    pm2 jlist | python3 -c 'import json, sys; [print({k: a["pm2_env"].get(k) for k in ("name", "pm_exec_path", "args", "exec_interpreter", "pm_cwd", "cron_restart")}) for l in sys.stdin if l[:2] == "[{" for a in json.loads(l)]'   # how each app starts; the old bot's cron_restart: None, or see below
    pm2 stop <old-bot>                             # its name in pm2 list; never all
    pm2 list                                       # the old bot stopped, anything else as it was
