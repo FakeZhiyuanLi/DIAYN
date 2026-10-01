@@ -561,6 +561,20 @@ the commands below say `$OLD`.
    ```
 
    Run it again 20 minutes later: the same time.
+
+   If this, or any later read of `$OLD`, fails with `attempt to write a
+   readonly database`, the old bot was killed in the middle of a write, as
+   pm2 kills an app that outlasts its `kill_timeout`, and left a hot journal:
+   a `-journal` file beside the database. Nothing is damaged. As the user who
+   owns the file, open it read-write once, which rolls the unfinished write
+   back, then run the step again:
+
+   ```sh
+   sqlite3 "file:$OLD/postings.db?mode=rw" 'PRAGMA quick_check;'    # ok, and postings.db-journal is gone
+   ```
+
+   The same for `stats.db`, when it is the one refused. `mode=rw`, like
+   `mode=ro`, makes no file where there is none.
 2. **Install DIAYN** as *Installing* says, up to and including the `.env`, and
    make `$B`, but do not run `setup` yet (step 8 says why). Then make the data
    directory, and check that it is empty:
