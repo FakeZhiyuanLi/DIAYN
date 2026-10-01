@@ -535,11 +535,25 @@ sudo adduser --disabled-password diayn    # Enter through its questions; no pass
 sudo -iu diayn                            # a shell as diayn, in /home/diayn
 ```
 
-Then everything from *Installing* on as `diayn`, with `/home/diayn` in the
-paths, except what needs `sudo`, which `diayn` does not have: do that from your
-own user. systemd suits it best: `User=diayn` in the unit, which you write and
-start with `sudo` from your own user, and no second pm2. The other bot's pm2
-belongs to another user, so the first step above says systemd too.
+In that shell, give `diayn` the two names, as *A fresh VPS* gives them to your
+own user:
+
+```sh
+cat >> ~/.bashrc <<'EOF'
+D=$HOME/DIAYN/data
+B=$HOME/diayn-backups
+EOF
+```
+
+Then `exit`, `sudo -iu diayn` again, and check that `echo "$D" "$B"` prints
+`/home/diayn/DIAYN/data /home/diayn/diayn-backups`. Everything from
+*Installing* on runs as `diayn`, in such a shell, with `/home/diayn` in the
+paths, except what needs `sudo`, which `diayn` does not have: the systemd
+unit, its log, and what a takeover reads of the old bot's files, which you run
+from your own user as that section says. systemd suits it best: `User=diayn`
+in the unit, which you write and start with `sudo` from your own user, and no
+second pm2. The other bot's pm2 belongs to another user, so the first step
+above says systemd too.
 
 Look at it as `diayn`, too. After `sudo -iu diayn`, in `~/DIAYN`, run
 `.venv/bin/python diayn.py doctor`, and, under pm2, `pm2 list` and
