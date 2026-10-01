@@ -4,8 +4,9 @@ DIAYN is a self-hosted Discord bot that finds internships: a scraper that
 sweeps public job boards into `postings.db`, and a bot that matches what it
 finds to each person's profile and DMs them. `.venv/bin/python diayn.py run`
 runs both, in one process. This file holds the rules. What the commands do is in
-[`README.md`](README.md), running it on a host is in [`DEPLOY.md`](DEPLOY.md),
-and what the bot may assume about `postings.db` is in
+[`README.md`](README.md), running it on a host, from a fresh VPS to one shared
+with another bot, is in [`DEPLOY.md`](DEPLOY.md), and what the bot may assume
+about `postings.db` is in
 [`CONTRACT.md`](CONTRACT.md). Follow DEPLOY.md in the order it gives: the order
 is load-bearing.
 
@@ -87,11 +88,17 @@ Three things are expected, and are not red:
   machine.
 - **Stop a process by PID, or with `pkill -f`.** Stop DIAYN through its service
   manager (`pm2 stop diayn`, `systemctl stop diayn`), which otherwise restarts
-  whatever you killed.
+  whatever you killed, and by its own name: never `pm2 stop all` or
+  `pm2 restart all`, which on a box shared with another bot reach that one too.
 - **Make a service manager restart `run` on exit 78.** It means Discord refused
-  the Server Members Intent: a portal toggle only the host can turn on, and a
-  loop of refused logins can get the bot's token reset. DEPLOY.md's units list
-  78 beside 3 as codes never to restart on; keep them there.
+  the Server Members Intent, a portal toggle only the host can turn on, or
+  `DISCORD_TOKEN`, which only the host can replace; a loop of refused logins
+  can get the bot's token reset. `run` asks Discord's REST API about both
+  before it logs in (`check_before_login`), so even a service manager that
+  restarts it anyway only repeats that REST call, never a gateway login,
+  unless the check itself could not be made; keep that check ahead of the
+  login. DEPLOY.md's units list 78 beside 3 as codes never to restart on; keep
+  them there.
 - **Load a `.env` from anywhere but `POLLER_ENV_FILE` or the checkout.** Never
   from the working directory or the data directory. Do not open, print or copy
   a `.env`; `diayn.py config` shows what took effect, and prints the Discord
@@ -166,6 +173,11 @@ description fetcher matches them with its own patterns.
   and never at import. Importing a module must stay inert: no file read, no
   change to `os.environ`, and `diayn.py` imports discord.py only for `run`.
   `tests/test_config.py` pins it for the scraper.
+- **A new setting has to be one DEPLOY.md's pm2 `filter_env` drops.** That
+  list keeps every variable DIAYN reads out of the environment pm2 hands it,
+  so another bot's exports never reach DIAYN. pm2 matches its entries anywhere
+  in a variable's name; a setting with a new prefix needs a new entry, and
+  `tests/test_docs.py` fails until it has one.
 
 ## Tests
 

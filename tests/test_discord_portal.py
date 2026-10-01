@@ -7,6 +7,12 @@ host's own application, and the link that invites its bot to a server.
 Nothing here reaches Discord. Every request goes to a fake session that
 answers from a table and records what it was asked, so the tests can check the
 token went only where it should, and never into what is printed.
+
+`diayn.py run` asks the same two questions before it logs in, and acts on two
+answers only: a token Discord refuses (TokenRefused, a 401), and flags that
+Discord reported without the Server Members Intent. Anything else it cannot
+confirm, it logs and logs in anyway, so those two must be told apart from
+every other failure here.
 """
 
 import asyncio
@@ -187,6 +193,26 @@ class WhatItReads(unittest.TestCase):
         del app["flags"]
         self.assertFalse(fetch(FakeSession(answers(app=(200, app)))).members_intent)
 
+    def test_missing_flags_are_not_reported_so_the_intent_is_not_clearly_off(self):
+        # run refuses to log in only on flags Discord reported without the intent.
+        for missing in ("absent", "null"):
+            with self.subTest(flags=missing):
+                app = application()
+                if missing == "absent":
+                    del app["flags"]
+                else:
+                    app["flags"] = None
+                found = fetch(FakeSession(answers(app=(200, app))))
+                self.assertFalse(found.intent_reported)
+                self.assertFalse(found.members_intent)
+
+    def test_flags_reported_without_the_intent_are_clearly_off(self):
+        for flags in (0, (1 << 12) | (1 << 18)):
+            with self.subTest(flags=flags):
+                found = fetch(FakeSession(answers(app=(200, application(flags=flags)))))
+                self.assertTrue(found.intent_reported)
+                self.assertFalse(found.members_intent)
+
     def test_a_public_bot_is_reported_as_public(self):
         self.assertTrue(fetch(FakeSession(answers(app=(200, application(public=True))))).public)
 
@@ -207,6 +233,22 @@ class WhenDiscordSaysNo(unittest.TestCase):
         text = self.refusal(FakeSession(answers(user=(401, {"message": "401: Unauthorized"}))))
         self.assertIn("401", text)
         self.assertIn("Reset Token", text)
+
+    def test_a_refused_token_is_told_apart_from_every_other_failure(self):
+        for where in ("user", "app"):
+            with self.subTest(refused_at=where), self.assertRaises(portal.TokenRefused) as caught:
+                fetch(FakeSession(answers(**{where: (401, {"message": "401: Unauthorized"})})))
+            self.assertIsInstance(caught.exception, portal.PortalError)    # setup's catch
+            self.assertNotIn(TOKEN, str(caught.exception))
+        others = {"429": answers(app=(429, {"retry_after": 3})),
+                  "503": answers(app=(503, {})),
+                  "no network": answers(user=OSError("unreachable")),
+                  "timeout": answers(user=asyncio.TimeoutError()),
+                  "unparsed": answers(app=(200, ["a", "list"]))}
+        for name, table in others.items():
+            with self.subTest(failure=name), self.assertRaises(portal.PortalError) as caught:
+                fetch(FakeSession(table))
+            self.assertNotIsInstance(caught.exception, portal.TokenRefused)
 
     def test_a_rate_limit_says_to_wait(self):
         text = self.refusal(FakeSession(answers(app=(429, {"retry_after": 3}))))

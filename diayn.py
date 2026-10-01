@@ -34,9 +34,14 @@ or a `watch` beside it, exits 3 before anything logs in to Discord. The bot
 reads postings.db only through the contract, on a read-only connection of its
 own; the sweep loop is the scraper's own `watch`, on the writer connection. If
 the sweep loop ever ends, the process exits 1, so that whatever runs it starts
-it again. If Discord refuses the Server Members Intent, it exits 78 (EX_CONFIG),
-which DEPLOY.md's units do not restart on. `internship_poller.py watch` still
-runs the sweep loop alone, for a host that wants the two apart.
+it again. Before either starts, once the lock is held, it asks Discord's REST
+API, as setup and doctor do, whether the token is good and the Server Members
+Intent on. A token Discord refuses, or the intent off, exits 78 (EX_CONFIG),
+which DEPLOY.md's units do not restart on, without a gateway login: a service
+manager that restarts it anyway repeats only that REST call. A check that
+cannot be made is logged, and the bot logs in as before; a refusal as it logs
+in exits 78 too. `internship_poller.py watch` still runs the sweep loop alone,
+for a host that wants the two apart.
 
     .venv/bin/python diayn.py setup
 
@@ -96,9 +101,11 @@ USAGE_EXIT = 2
 # A failure: the scraper's code for a refusal or a bad setting.
 FAILED_EXIT = 1
 # sysexits.h's EX_CONFIG: `run` exits with it when Discord refuses the Server Members
-# Intent. That is a toggle in the developer portal, which no restart changes, so
-# DEPLOY.md's pm2 and systemd units never restart on it: a loop of refused logins can
-# go on all day, and Discord resets the token of a bot that logs in too often.
+# Intent or the token. Those are a toggle in the developer portal and DISCORD_TOKEN in
+# .env, which no restart changes, so DEPLOY.md's pm2 and systemd units never restart on
+# it: a loop of refused logins can go on all day, and Discord resets the token of a bot
+# that logs in too often. `run` checks both over REST before it logs in, so a service
+# manager that restarts on 78 anyway repeats a REST call, not a gateway login.
 CONFIG_EXIT = 78
 # The gateway's close code for an intent the portal has not turned on.
 DISALLOWED_INTENTS = 4014
@@ -109,7 +116,13 @@ BOT_SHUTDOWN_S = 30
 
 
 class IntentRefused(Exception):
-    """Discord refused the Server Members Intent as the bot logged in."""
+    """Discord refused the Server Members Intent: its flags say it is off, or the gateway
+    refused it as the bot logged in."""
+
+
+class TokenRefused(Exception):
+    """Discord refused DISCORD_TOKEN: a 401 before the bot logs in, or discord.py's
+    LoginFailure as it does."""
 
 
 def scraper():
@@ -142,6 +155,13 @@ def access_module():
     _bot_path()
     import access
     return access
+
+
+def discord_portal():
+    """What setup and doctor ask Discord's REST API, imported on first use: it uses
+    3.10's syntax, and this module must parse on 3.9."""
+    import discord_portal
+    return discord_portal
 
 
 def usage(scraper_commands) -> str:
@@ -344,23 +364,67 @@ def discord_bot():
         except Exception as error:
             if refuses_intent(error, discord):
                 raise IntentRefused() from error
+            if refuses_token(error, discord):
+                raise TokenRefused() from error
             raise
     return serve
+
+
+def _raised_with(error):
+    """`error`, then each exception it was raised from or while handling, once each."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        yield error
+        error = error.__cause__ or error.__context__
 
 
 def refuses_intent(error, discord) -> bool:
     """Whether `error`, or anything it was raised from or while handling, is discord.py
     refusing a privileged intent: PrivilegedIntentsRequired, or the gateway closing
     with 4014, the code discord.py turns into it."""
-    seen = set()
-    while error is not None and id(error) not in seen:
-        seen.add(id(error))
-        if isinstance(error, discord.PrivilegedIntentsRequired):
-            return True
-        if isinstance(error, discord.ConnectionClosed) and error.code == DISALLOWED_INTENTS:
-            return True
-        error = error.__cause__ or error.__context__
-    return False
+    return any(isinstance(e, discord.PrivilegedIntentsRequired)
+               or (isinstance(e, discord.ConnectionClosed) and e.code == DISALLOWED_INTENTS)
+               for e in _raised_with(error))
+
+
+def refuses_token(error, discord) -> bool:
+    """Whether `error`, or anything it was raised from or while handling, is discord.py's
+    LoginFailure: Discord answered the login with 401, so the token is not one it takes."""
+    return any(isinstance(e, discord.LoginFailure) for e in _raised_with(error))
+
+
+async def check_before_login(poller, settings) -> None:
+    """
+    Asks Discord's REST API about the application, as setup and doctor do, before the
+    bot opens a gateway connection. Raises TokenRefused when Discord answers 401, and
+    IntentRefused when the flags it reports lack the Server Members Intent. A check that
+    cannot be made (no network, a timeout, a 5xx, a 429, an answer that does not parse)
+    is logged in one line and passed: the bot logs in as before, and a refusal then is
+    still caught as it logs in.
+    """
+    portal = discord_portal()
+    agent = portal.user_agent(poller.PROJECT_URL, poller.__version__)
+    try:
+        app = await portal.fetch_application(settings.discord_token, user_agent=agent)
+    except portal.TokenRefused:
+        raise TokenRefused() from None
+    except portal.PortalError as error:
+        poller.log(f"could not check the token and the Server Members Intent before logging "
+                   f"in ({error}); logging in anyway", file=sys.stderr)
+        return
+    if app.intent_reported and not app.members_intent:
+        raise IntentRefused()
+
+
+async def check_then_run(check, bot, sweep) -> int:
+    """
+    Awaits `check()`, then runs `bot()` and `sweep()` through run_together; returns its
+    exit code. Each is a function returning a coroutine, called only once the check has
+    passed, so a check that raises starts neither task and leaves no coroutine unawaited.
+    """
+    await check()
+    return await run_together(bot(), sweep())
 
 
 def _how_it_ended(task) -> str:
@@ -536,20 +600,33 @@ def _database_refusal(poller, error, path) -> str:
 
 
 def _serve_and_sweep(poller, settings, interval, bot, watch) -> int:
-    """Takes the lock for life, then opens the writer, then runs both tasks."""
+    """Takes the lock for life, then opens the writer, then asks Discord over REST
+    whether the bot may log in, and only then runs both tasks."""
     with poller.sweeper_lock(settings.postings_db):
         conn = poller.open_for_sweeping(init=False, interval=interval)
         try:
-            return run_until_stopped(run_together(bot(settings), watch(conn)))
+            return run_until_stopped(check_then_run(
+                lambda: check_before_login(poller, settings),
+                lambda: bot(settings), lambda: watch(conn)))
         finally:
             conn.close()
+
+
+def _config_refused(reason) -> int:
+    """Says, in one line, what only the host can fix, and returns CONFIG_EXIT."""
+    _refused(f"{reason} Then start DIAYN again. Exiting {CONFIG_EXIT}, which DEPLOY.md's "
+             "pm2 and systemd units do not restart on: a restart would be refused the "
+             "same way.", RUN)
+    return CONFIG_EXIT
 
 
 def cmd_run(poller, argv, bot=None, watch=None) -> int:
     """
     `run [--interval N] [--llm]`: the Discord bot and the sweep loop in one process, until
     stopped; returns the exit code. The settings are bound (the scraper's boot()) before
-    anything else, and the lock is taken before the bot is built or logs in.
+    anything else, and the lock is taken before the bot is built or logs in. Discord's
+    REST API is asked about the token and the intent before either task starts
+    (check_before_login), and a refusal of either, then or at login, exits CONFIG_EXIT.
 
     `bot`, a function of the settings returning the bot's coroutine, and `watch`, a
     function of the writer connection returning the sweep loop's, are for the tests.
@@ -583,11 +660,11 @@ def cmd_run(poller, argv, bot=None, watch=None) -> int:
     except poller.SchemaMismatch as e:
         return _refused(e, RUN)
     except IntentRefused:
-        _refused(f"Discord refused the Server Members Intent, and the bot cannot log in "
-                 f"without it. {hints.INTENT_HOW} Then start DIAYN again. Exiting "
-                 f"{CONFIG_EXIT}, which DEPLOY.md's pm2 and systemd units do not restart "
-                 "on: a restart would be refused the same way.", RUN)
-        return CONFIG_EXIT
+        return _config_refused(f"Discord refused the Server Members Intent, and the bot "
+                               f"cannot log in without it. {hints.INTENT_HOW}")
+    except TokenRefused:
+        return _config_refused(f"Discord refused DISCORD_TOKEN: it is not a bot token Discord "
+                               f"accepts. {hints.TOKEN_HOW}")
     except KeyboardInterrupt:
         print("\nstopped.")
         return 0
