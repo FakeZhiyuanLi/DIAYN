@@ -516,12 +516,11 @@ If the two files are in different directories, use each one's own path where
 the commands below say `$OLD`.
 
 1. **Stop the old bot first, entirely.** Stop its whole service, not only its
-   sweep, and keep it stopped until it runs a version with its tracker removed,
-   or with both its sweep and its alerts turned off. Two sweepers double the
-   traffic to every job board, since DIAYN's lock cannot see the old bot's,
-   and two bots alert the same people about the same roles. Stop it through
-   whatever runs it, by its own name. Under pm2, as the user whose pm2 runs it
-   (the first step of *Sharing the box with another bot* finds them):
+   sweep, and keep it stopped until step 10. Two sweepers double the traffic
+   to every job board, since DIAYN's lock cannot see the old bot's, and two
+   bots alert the same people about the same roles. Stop it through whatever
+   runs it, by its own name. Under pm2, as the user whose pm2 runs it (the
+   first step of *Sharing the box with another bot* finds them):
 
    ```sh
    pm2 stop <old-bot>                             # its name in pm2 list; never all
@@ -635,6 +634,21 @@ the commands below say `$OLD`.
    `pm2 save`, as in *Sharing the box with another bot*. Then go through
    *Checking it runs*. In Discord, `/diayn access` shows the servers you
    granted, by name, with the counts.
+10. **Bring the old bot back**, if it is to run on, only once DIAYN has passed
+    *Checking it runs*, and the old bot runs a version with its tracker
+    removed, or with both its sweep and its alerts turned off. An update that
+    removes its tracker may also announce the move to DIAYN, and that must not
+    go out before DIAYN runs. Under pm2, as the user whose pm2 runs it:
+
+    ```sh
+    pm2 restart <old-bot>                          # or however its own update starts it
+    pm2 list                                       # the old bot online, anything else as it was
+    pm2 save                                       # so a reboot brings it back
+    ```
+
+    Without that `pm2 save`, a reboot can bring it back stopped, as step 1
+    saved it. Under systemd, `sudo systemctl enable --now <old-bot>` brings it
+    back, and keeps it across a reboot.
 
 With a separate `diayn` user, `diayn` cannot read the old bot's files, and
 your own user cannot read `diayn`'s data directory. Run steps 3 and 4 from your
@@ -779,7 +793,10 @@ the list a reboot brings back; a systemd unit that step 1 disabled stays off.
 ## After a reboot
 
 1. `systemctl status diayn` shows it `active (running)`, or `pm2 list` shows it
-   `online`, and, on a shared box, the other bot back as you saved it.
+   `online`. On a shared box, the other bot is `online` too, in `pm2 list` as
+   the user whose pm2 runs it, unless a takeover still keeps it stopped
+   (*Taking over from an older tracker*, step 10). One that came back stopped
+   was saved stopped: as that user, `pm2 restart <other-bot> && pm2 save`.
 2. The restart count is not climbing: `systemctl show diayn -p NRestarts`, or
    the ↺ column of `pm2 list`, the same a minute apart. Under pm2, a count that
    climbs with exit 3 or 78 in the log is the caveat in *Choosing pm2 or
