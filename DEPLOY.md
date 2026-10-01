@@ -500,11 +500,23 @@ Under pm2, as the user whose pm2 already runs the other bot:
   run it only when the other bot may be restarted, agreed with whoever runs
   it (*Choosing pm2 or systemd*).
 - **`pm2 save` saves every app in `pm2 list`**, as the list stands, and a
-  reboot brings back exactly that. Check the list before saving:
+  reboot brings back what it saved. Check the list before saving:
 
   ```sh
   pm2 list                  # both bots, each online or stopped as it should be after a reboot
-  pm2 save
+  pm2 save                  # Successfully saved in …
+  ```
+
+  With no app left in the list, modules such as pm2-logrotate aside,
+  `pm2 save` saves nothing: it says `skipping save`, or `Nothing to save`
+  before pm2 4.0.0, and keeps the list it saved last, so a reboot brings
+  back an app deleted since. Once the last app is deleted, run
+  `pm2 cleardump` instead, which saves the empty list. Either way, see what
+  a reboot brings back, by name only: the saved list, `~/.pm2/dump.pm2`,
+  holds each app's environment too.
+
+  ```sh
+  python3 -c 'import json, sys; print([a["name"] for a in json.load(sys.stdin)])' < ~/.pm2/dump.pm2   # [] after pm2 cleardump
   ```
 
 - **`pm2 startup` once per user.** It writes the systemd unit, `pm2-<user>`,
@@ -591,9 +603,10 @@ the commands below say `$OLD`.
    ```
 
    A pm2 older than 4.0.0 starts every saved app at boot, stopped or not. On
-   one, take the old bot out of the list instead,
-   `pm2 delete <old-bot> && pm2 save`, and at step 10 start it again from its
-   own config file.
+   one, take the old bot out of the list instead: `pm2 delete <old-bot>`,
+   then `pm2 list`, and `pm2 save`, or `pm2 cleardump` if no app is left
+   (*Sharing the box with another bot* says why). At step 10, start it again
+   from its own config file.
 
    Under systemd, `sudo systemctl disable --now <old-bot>`, which also keeps it
    stopped across a reboot. Then check that nothing sweeps: the newest sweep in
@@ -779,8 +792,9 @@ the commands below say `$OLD`.
     back, and keeps it across a reboot.
 
     If it will not run on, take it out of what a reboot brings back instead:
-    as that user, `pm2 delete <old-bot>`, then `pm2 list` and `pm2 save`.
-    Under systemd, the unit step 1 disabled stays off.
+    as that user, `pm2 delete <old-bot>`, then `pm2 list`, and `pm2 save`, or
+    `pm2 cleardump` if no app is left, as in step 1. Under systemd, the unit
+    step 1 disabled stays off.
 
 With a separate `diayn` user, `diayn` cannot read the old bot's files, and
 your own user cannot read `diayn`'s data directory. Run steps 3 and 4 from your
@@ -886,8 +900,10 @@ copy stops in step 1, and stays stopped.
 
 Once it has run on the new host for a day, `rm -r ~/diayn-move` on both
 machines: the copies of `users.db` hold everyone's profile. Leave the old copy
-stopped for good. Under pm2, `pm2 delete diayn && pm2 save` takes it out of
-the list a reboot brings back; a systemd unit that step 1 disabled stays off.
+stopped for good. Under pm2, take it out of the list a reboot brings back:
+`pm2 delete diayn`, then `pm2 list`, and `pm2 save`, or `pm2 cleardump` if
+no app is left, as *Sharing the box with another bot* says. A systemd unit
+that step 1 disabled stays off.
 
 ## Checking it runs
 
@@ -930,9 +946,10 @@ the list a reboot brings back; a systemd unit that step 1 disabled stays off.
    *Taking over from an older tracker*, or for good if it will not run on.
    Look in `pm2 list` as the user whose pm2 runs it, or with
    `systemctl is-active <other-bot>`. An older tracker that came back online
-   during a takeover is red: stop it at once, so that it stays stopped, as
-   step 1 does. One meant to run that came back stopped was saved stopped, or
-   disabled: as that user, `pm2 restart <other-bot> && pm2 save`, or
+   while it is meant to be stopped is red: stop it at once, and under pm2
+   take it out of the list, as step 1 says, so that it stays stopped. One
+   meant to run that came back stopped was saved stopped, or disabled: as
+   that user, `pm2 restart <other-bot> && pm2 save`, or
    `sudo systemctl enable --now <other-bot>`.
 2. The restart count is not climbing: `systemctl show diayn -p NRestarts`, or
    the ↺ column of `pm2 list`, the same a minute apart. Under pm2, a count that
