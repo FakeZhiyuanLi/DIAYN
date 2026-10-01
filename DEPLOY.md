@@ -741,6 +741,10 @@ the commands below say `$OLD`.
     saved it. Under systemd, `sudo systemctl enable --now <old-bot>` brings it
     back, and keeps it across a reboot.
 
+    If it will not run on, take it out of what a reboot brings back instead:
+    as that user, `pm2 delete <old-bot>`, then `pm2 list` and `pm2 save`.
+    Under systemd, the unit step 1 disabled stays off.
+
 With a separate `diayn` user, `diayn` cannot read the old bot's files, and
 your own user cannot read `diayn`'s data directory. Run steps 3 and 4 from your
 own user instead, with `D=/home/diayn/DIAYN/data` and `sudo` before every
@@ -884,10 +888,15 @@ the list a reboot brings back; a systemd unit that step 1 disabled stays off.
 ## After a reboot
 
 1. `systemctl status diayn` shows it `active (running)`, or `pm2 list` shows it
-   `online`. On a shared box, the other bot is `online` too, in `pm2 list` as
-   the user whose pm2 runs it, unless a takeover still keeps it stopped
-   (*Taking over from an older tracker*, step 10). One that came back stopped
-   was saved stopped: as that user, `pm2 restart <other-bot> && pm2 save`.
+   `online`. On a shared box, the other bot is back as it was saved: `online`,
+   unless it is meant to be stopped, as an older tracker is until step 10 of
+   *Taking over from an older tracker*, or for good if it will not run on.
+   Look in `pm2 list` as the user whose pm2 runs it, or with
+   `systemctl is-active <other-bot>`. An older tracker that came back online
+   during a takeover is red: stop it at once, so that it stays stopped, as
+   step 1 does. One meant to run that came back stopped was saved stopped, or
+   disabled: as that user, `pm2 restart <other-bot> && pm2 save`, or
+   `sudo systemctl enable --now <other-bot>`.
 2. The restart count is not climbing: `systemctl show diayn -p NRestarts`, or
    the ↺ column of `pm2 list`, the same a minute apart. Under pm2, a count that
    climbs with exit 3 or 78 in the log is the caveat in *Choosing pm2 or
