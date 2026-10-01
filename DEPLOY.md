@@ -465,9 +465,11 @@ instead of pm2, and leave the other bot's pm2 alone.
   logged in as.
 - **Nor in the shell you type DIAYN's commands in.** Every command loads the
   `.env` the same way, so a variable your shell exports beats the file there
-  too: with the other bot's `DISCORD_TOKEN` exported, `setup` checks that
-  bot's token, and prints its name and its invite link. Run `setup`,
-  `doctor`, `grant`, `import-legacy` and `upgrade-db` from a shell that
+  too. With the other bot's `DISCORD_TOKEN` exported, `setup` checks that
+  bot's token, and prints its name and its invite link, and `run` would log
+  DIAYN in as that bot and replace its slash commands; with its
+  `GEMINI_API_KEY`, `list --llm` and `llm-diff` would spend that bot's quota.
+  Run every DIAYN command you type, the scraper's included, from a shell that
   exports none of the other bot's variables; with a separate `diayn` user,
   that is a login shell as `diayn`, `sudo -iu diayn`. `config` shows the
   paths and settings they would use, and `setup`'s `DISCORD_TOKEN` line names
