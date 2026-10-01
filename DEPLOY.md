@@ -597,16 +597,20 @@ the commands below say `$OLD`.
 
    ```sh
    pm2 report | grep -E 'pm2d version|local pm2'  # both 4.0.0 or newer, or see below
+   pm2 jlist | python3 -c 'import json, sys; [print({k: a["pm2_env"].get(k) for k in ("name", "cron_restart")}) for l in sys.stdin if l[:2] == "[{" for a in json.loads(l)]'   # the old bot's cron_restart: None, or see below
    pm2 stop <old-bot>                             # its name in pm2 list; never all
    pm2 list                                       # the old bot stopped, anything else as it was
    pm2 save                                       # so a reboot leaves it stopped
    ```
 
-   A pm2 older than 4.0.0 starts every saved app at boot, stopped or not. On
-   one, take the old bot out of the list instead: `pm2 delete <old-bot>`,
-   then `pm2 list`, and `pm2 save`, or `pm2 cleardump` if no app is left
-   (*Sharing the box with another bot* says why). At step 10, start it again
-   from its own config file.
+   `pm2 stop` holds the old bot only on a pm2 of 4.0.0 or newer, and only if
+   it has no `cron_restart`: an older pm2 starts every saved app at boot,
+   stopped or not, and pm2 keeps an app's cron restart through a stop, and
+   starts the app again at its next time, with no reboot. Otherwise, take it
+   out of the list instead: `pm2 delete <old-bot>`, then `pm2 list`, and
+   `pm2 save`, or `pm2 cleardump` if no app is left (*Sharing the box with
+   another bot* says why). At step 10, start it again from its own config
+   file.
 
    Under systemd, `sudo systemctl disable --now <old-bot>`, which also keeps it
    stopped across a reboot. Then check that nothing sweeps: the newest sweep in
