@@ -1749,7 +1749,7 @@ YC_ENDPOINTS = {
 }
 
 
-def yc_verify(company, plat, slug, jobs):
+def yc_verify(company, slug, jobs):
     """Return the evidence type if this board really belongs to `company`."""
     yc_name = _norm(company.get("name"))
     site = (company.get("website") or "").lower()
@@ -1827,7 +1827,7 @@ async def mine_yc(sess, limit=None, concurrency=6, recheck=False):
                 jobs = d if isinstance(d, list) else d.get("jobs", [])
                 if not jobs:
                     continue
-                ev = yc_verify(company, plat, slug, jobs)
+                ev = yc_verify(company, slug, jobs)
                 if ev:
                     result = [plat, slug, company.get("name") or slug, ev]
                     break

@@ -87,7 +87,7 @@ FINGERPRINTS = [
 ICIMS_API = "{origin}/api/jobs?page=1&limit={n}"
 
 
-async def _get(sess, url, as_json=False):
+async def _get(sess, url):
     try:
         async with sess.get(url, allow_redirects=True) as r:
             body = await r.text()
