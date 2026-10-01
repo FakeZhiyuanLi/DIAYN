@@ -53,6 +53,7 @@ import dataclasses
 import io
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -661,6 +662,27 @@ class ASweepCancelledFromOutside(unittest.TestCase):
         self.assertNotIn("sweep loop ended", err.getvalue())
 
 
+#: The names a test may look up: this machine's own.
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
+
+@contextlib.contextmanager
+def no_lookups():
+    """Refuses every name lookup but LOOPBACK's, and yields the names it refused. It
+    replaces socket.getaddrinfo, which aiohttp's resolver calls through loop.getaddrinfo
+    on an executor thread, so a lookup from there is caught too."""
+    refused, real = [], socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        if host in LOOPBACK:
+            return real(host, *args, **kwargs)
+        refused.append(host)
+        raise socket.gaierror(socket.EAI_NONAME, f"{host}: no lookups in this test")
+
+    with mock.patch.object(socket, "getaddrinfo", getaddrinfo):
+        yield refused
+
+
 class TheIntent(_RunCase):
     """Discord refusing the Server Members Intent, as the bot logs in."""
 
@@ -691,17 +713,25 @@ class TheIntent(_RunCase):
             pass
 
     def test_through_main_the_exit_code_is_78(self):
+        # main() hands run the scraper's own cmd_watch, and the fixture is due a sweep at
+        # once, so it is faked, as the other tests fake it. Any name looked up is refused
+        # and fails the test, so a sweep that got through would not reach a job board.
         v2_fixture(self.db)
 
         async def bot(settings):
             raise diayn.IntentRefused()
 
+        async def cmd_watch(conn, interval, use_llm=False):
+            await forever()
+
         err = io.StringIO()
-        with self.environment(), contextlib.redirect_stdout(io.StringIO()), \
-                contextlib.redirect_stderr(err), \
+        with no_lookups() as looked_up, self.environment(), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+                mock.patch.object(poller, "cmd_watch", cmd_watch), \
                 mock.patch.object(diayn, "discord_bot", return_value=bot):
             code = diayn.main(["run", "--interval", str(INTERVAL)])
         self.assertEqual(code, CONFIG, err.getvalue())
+        self.assertEqual(looked_up, [])
 
 
 #: The User-Agent the REST check carries: the one setup and doctor send.
