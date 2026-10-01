@@ -597,7 +597,7 @@ the commands below say `$OLD`.
 
    ```sh
    pm2 report | grep -E 'pm2d version|local pm2'  # both 4.0.0 or newer, or see below
-   pm2 jlist | python3 -c 'import json, sys; [print({k: a["pm2_env"].get(k) for k in ("name", "cron_restart")}) for l in sys.stdin if l[:2] == "[{" for a in json.loads(l)]'   # the old bot's cron_restart: None, or see below
+   pm2 jlist | python3 -c 'import json, sys; [print({k: a["pm2_env"].get(k) for k in ("name", "pm_exec_path", "args", "exec_interpreter", "pm_cwd", "cron_restart")}) for l in sys.stdin if l[:2] == "[{" for a in json.loads(l)]'   # how each app starts; the old bot's cron_restart: None, or see below
    pm2 stop <old-bot>                             # its name in pm2 list; never all
    pm2 list                                       # the old bot stopped, anything else as it was
    pm2 save                                       # so a reboot leaves it stopped
@@ -607,10 +607,12 @@ the commands below say `$OLD`.
    it has no `cron_restart`: an older pm2 starts every saved app at boot,
    stopped or not, and pm2 keeps an app's cron restart through a stop, and
    starts the app again at its next time, with no reboot. Otherwise, take it
-   out of the list instead: `pm2 delete <old-bot>`, then `pm2 list`, and
-   `pm2 save`, or `pm2 cleardump` if no app is left (*Sharing the box with
-   another bot* says why). At step 10, start it again from its own config
-   file.
+   out of the list instead. That leaves pm2 no record of how the old bot
+   starts, so first keep the line the `python3` command printed for it, and
+   the path of its config file if it was started from one: step 10 starts it
+   from them. Then `pm2 delete <old-bot>`, then `pm2 list`, and `pm2 save`,
+   or `pm2 cleardump` if no app is left (*Sharing the box with another bot*
+   says why).
 
    Under systemd, `sudo systemctl disable --now <old-bot>`, which also keeps it
    stopped across a reboot. Then check that nothing sweeps: the newest sweep in
@@ -792,8 +794,12 @@ the commands below say `$OLD`.
     ```
 
     Without that `pm2 save`, a reboot can bring it back stopped, as step 1
-    saved it. Under systemd, `sudo systemctl enable --now <old-bot>` brings it
-    back, and keeps it across a reboot.
+    saved it. If step 1 deleted it, `pm2 restart` cannot find it: start it
+    from what step 1 kept instead, `pm2 start <its config file>`, or
+    `pm2 start <pm_exec_path> --name <old-bot> --interpreter <exec_interpreter> --cwd <pm_cwd> -- <args>`,
+    with `--cron "<cron_restart>"` if it had one, then `pm2 list` and
+    `pm2 save`. Under systemd, `sudo systemctl enable --now <old-bot>` brings
+    it back, and keeps it across a reboot.
 
     If it will not run on, take it out of what a reboot brings back instead:
     as that user, `pm2 delete <old-bot>`, then `pm2 list`, and `pm2 save`, or
