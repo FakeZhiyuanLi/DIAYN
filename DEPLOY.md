@@ -247,10 +247,15 @@ whose pm2 runs DIAYN:
 pm2 report | grep -E 'pm2d version|local pm2'   # the daemon's, then the command's: both 5.3.1 or newer
 ```
 
-After upgrading pm2, run `pm2 update`: it saves the list and brings it back
-under a daemon of the new version. A DIAYN that an older pm2 started keeps
-running without the key, through `pm2 update` and every reboot: start it
-again from its config file, as *After a reboot* says.
+After upgrading pm2, check `pm2 list`, as before any save, and run
+`pm2 update`. It saves the list as it stands, stops every app this pm2 runs,
+as `pm2 kill` does, and starts them again from that list under a daemon of
+the new version: what was stopped stays stopped. On a box shared with another
+bot, that bot is stopped and started too: run it only when that bot may be
+restarted, agreed with whoever runs it. If it may not, run DIAYN under systemd
+instead of upgrading a pm2 the other bot depends on. A DIAYN that an older
+pm2 started keeps running without the key, through `pm2 update` and every
+reboot: start it again from its config file, as *After a reboot* says.
 [pm2 issue #5601](https://github.com/Unitech/pm2/issues/5601) reports
 `stop_exit_codes` ignored after `pm2 resurrect`, which is how pm2 brings its
 apps back at boot; from 5.3.1 on, `pm2 save` keeps the key, and
@@ -476,7 +481,9 @@ Under pm2, as the user whose pm2 already runs the other bot:
 - **DIAYN by name in every command:** `pm2 restart diayn`, `pm2 stop diayn`,
   `pm2 logs diayn`. Never `pm2 restart all` or `pm2 stop all`, which restart or
   stop the other bot too, and never `pm2 kill`, which stops pm2 itself and
-  every app it runs.
+  every app it runs. `pm2 update` stops them all too, then starts them again:
+  run it only when the other bot may be restarted, agreed with whoever runs
+  it (*Choosing pm2 or systemd*).
 - **`pm2 save` saves every app in `pm2 list`**, as the list stands, and a
   reboot brings back exactly that. Check the list before saving:
 
@@ -882,9 +889,10 @@ the list a reboot brings back; a systemd unit that step 1 disabled stays off.
    climbs with exit 3 or 78 in the log is the caveat in *Choosing pm2 or
    systemd*: a pm2 older than 5.3.1, or a DIAYN one started. `pm2 stop diayn`,
    fix what the log line names, and if `pm2 report` shows a pm2 older than
-   5.3.1, upgrade it and run `pm2 update`. Then start DIAYN again from its
-   config file, with the other bot in `pm2 list` as it should be, since the
-   save takes the whole list:
+   5.3.1, upgrade it and run `pm2 update`, which restarts the other bot too:
+   on a shared box, only as *Choosing pm2 or systemd* says. Then start DIAYN
+   again from its config file, with the other bot in `pm2 list` as it should
+   be, since the save takes the whole list:
 
    ```sh
    pm2 delete diayn && pm2 start ~/diayn.config.cjs && pm2 save
