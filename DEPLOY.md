@@ -242,8 +242,9 @@ caveat: it honours `stop_exit_codes` only from version 5.3.1, of January 2024.
 An older pm2 drops the key without a word, and restarts DIAYN on every exit,
 3 and 78 included. Two versions count: the `pm2` command that starts DIAYN
 reads the config, and the pm2 daemon that runs it handles each exit, and
-keeps the version it started with until `pm2 update` or a reboot. As the user
-whose pm2 runs DIAYN:
+keeps the version it started with until `pm2 update`, or until a reboot
+starts the pm2 that `pm2 startup` wrote into the `pm2-<user>` unit. As the
+user whose pm2 runs DIAYN:
 
 ```sh
 pm2 report | grep -E 'pm2d version|local pm2'   # the daemon's, then the command's: both 5.3.1 or newer
@@ -255,9 +256,13 @@ as `pm2 kill` does, and starts them again from that list under a daemon of
 the new version: what was stopped stays stopped. On a box shared with another
 bot, that bot is stopped and started too: run it only when that bot may be
 restarted, agreed with whoever runs it. If it may not, run DIAYN under systemd
-instead of upgrading a pm2 the other bot depends on. A DIAYN that an older
-pm2 started keeps running without the key, through `pm2 update` and every
-reboot: start it again from its config file, as *After a reboot* says.
+instead of upgrading a pm2 the other bot depends on. If the upgrade put pm2
+at another path, with nvm or a new Node, that unit still runs the old path
+at every boot: run `pm2 startup` again, and the command it prints, which
+rewrites the unit, then check `pm2 report` after the next reboot. A DIAYN
+that an older pm2 started keeps running without the key, through
+`pm2 update` and every reboot: start it again from its config file, as
+*After a reboot* says.
 [pm2 issue #5601](https://github.com/Unitech/pm2/issues/5601) reports
 `stop_exit_codes` ignored after `pm2 resurrect`, which is how pm2 brings its
 apps back at boot; from 5.3.1 on, `pm2 save` keeps the key, and
@@ -498,7 +503,8 @@ Under pm2, as the user whose pm2 already runs the other bot:
 
 - **`pm2 startup` once per user.** It writes the systemd unit, `pm2-<user>`,
   that brings pm2 and its saved apps back at boot. If the other bot set it up,
-  it is done: do not run it again.
+  it is done: do not run it again, unless an upgrade moved pm2 to another
+  path (*Choosing pm2 or systemd*).
 
   ```sh
   systemctl is-enabled "pm2-$USER"          # enabled: already set up
