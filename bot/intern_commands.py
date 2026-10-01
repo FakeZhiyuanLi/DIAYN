@@ -67,7 +67,6 @@ _LEVEL_LABELS = {value: name for name, value in _LEVEL_CHOICES}
 intern_delivery_loop = intern_alert_views.intern_delivery_loop
 member_left = intern_alert_views.member_left
 member_joined = intern_alert_views.member_joined
-DELIVERY_MINUTES = intern_alert_views.DELIVERY_MINUTES
 
 
 def persistent_views() -> list[discord.ui.View]:
