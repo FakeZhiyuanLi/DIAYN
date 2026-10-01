@@ -333,7 +333,13 @@ module.exports = {
   either, and a loop of refused logins can get the bot's token reset. `run`
   asks Discord's REST API about both before it logs in, so even a service
   manager that restarts it on 78 anyway only repeats that cheap REST call,
-  never a gateway login, unless the check itself could not be made. The log
+  never a gateway login, unless the check itself could not be made. After 3
+  or 78, `pm2 list` shows DIAYN `waiting restart`, and pm2's log says it will
+  restart in 2000ms or more, but it does not: pm2 sets that status and writes
+  that line on every exit, and `stop_exit_codes` only keeps the restart from
+  happening. A `pm2 save` made then saves `waiting restart`, so the next
+  `pm2 resurrect`, at boot or inside `pm2 update`, starts DIAYN once more, to
+  meet the same refusal; `pm2 stop diayn && pm2 save` keeps it down. The log
   line says what to fix; then `pm2 restart diayn`.
 - **`kill_timeout`.** pm2 stops a process with SIGINT, which `run` treats as
   Ctrl-C, on every supported Python: it logs out of Discord and exits 0. This gives it ten seconds before
