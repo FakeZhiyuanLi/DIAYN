@@ -673,33 +673,47 @@ the commands below say `$OLD`.
    ```
 
    or, under pm2, `pm2 start ~/diayn.config.cjs`, then `pm2 list` and
-   `pm2 save`, as in *Sharing the box with another bot*. Then go through
-   *Checking it runs*. In Discord, `/diayn access` shows the servers you
-   granted, by name, with the counts. Then watch two things *Checking it
-   runs* does not:
+   `pm2 save`, as in *Sharing the box with another bot*.
 
-   - **Who is left without access.** The delivery tick runs as DIAYN starts
-     and every 5 minutes after, and `/diayn debug`'s `without access:` counts
-     the profiles whose owner no grant covers. An imported subscriber is
-     covered by a granted server that DIAYN's bot has joined. One who is not
-     gets no alerts, and 30 days on their profile is deleted, so a count near
-     the `legacy import:` line's means a grant or the invite is missing. Once
-     it is in place, the next tick takes them off the count.
-   - **No flood.** The first sweep logs `sweep: … N new …`, and N should be
-     near what the old tracker's own sweeps found, which the copied ledger
-     keeps:
+   **Look for a flood first.** The first sweep runs at once, and records as
+   new everything posted since the old tracker's last sweep, the whole time
+   both were stopped. So its `sweep: … N new …` line can hold several of the
+   old tracker's sweeps' worth: a catch-up, expected, and no reason to stop.
+   A flood is a board the old tracker never swept (step 4) arriving whole. As
+   soon as that line appears, before *Checking it runs*, see what the sweep
+   found, by company:
 
-     ```sh
-     sqlite3 "file:$D/postings.db?mode=ro" \
-       "SELECT datetime(started, 'unixepoch'), new_rows FROM sweeps ORDER BY started DESC LIMIT 5;"
-     ```
+   ```sh
+   sqlite3 "file:$D/postings.db?mode=ro" \
+     "SELECT company, COUNT(*) FROM postings WHERE is_intern AND is_tech AND \
+      first_seen >= (SELECT value FROM scraper_meta WHERE key = 'started_at') \
+      GROUP BY company ORDER BY 2 DESC LIMIT 5;"
+   ```
 
-     Many times more is a flood on its way, such as a board the old tracker
-     did not poll (step 4): stop DIAYN at once, `sudo systemctl stop diayn`
-     or `pm2 stop diayn`, and find out why. A tick offers what a sweep found
-     only once it is 10 minutes old, and an imported subscriber is first due
-     an hour after step 6. From then, `/diayn debug`'s `last delivery tick:`
-     line counts what each tick sent, at most 50 a tick.
+   A catch-up is spread thin, a few roles a company. One or two companies
+   with tens of roles each is a flood. A tick offers nothing a sweep found
+   until it is 10 minutes old, and an imported subscriber is due hourly,
+   first about an hour after step 6: you have 10 minutes from that line at
+   least, often more. On a flood, stop DIAYN so that it stays stopped across
+   a reboot, `sudo systemctl disable --now diayn` or
+   `pm2 stop diayn && pm2 save`. What it found stays in the ledger as new to
+   every imported subscriber, so any later start sends it. To withhold it,
+   take that board out of `$D/boards.json`, copy the ledger from the old
+   tracker again, steps 3 and 5, and bring DIAYN back:
+   `sudo systemctl enable --now diayn`, or `pm2 restart diayn && pm2 save`.
+   Left to go out, a flood is one alert to each person it matches, five roles
+   at most and the rest counted, and none of it is offered again.
+
+   Then go through *Checking it runs*. In Discord, `/diayn access` shows the
+   servers you granted, by name, with the counts. Then watch one thing
+   *Checking it runs* does not: who is left without access. The delivery
+   tick runs as DIAYN starts and every 5 minutes after, and `/diayn debug`'s
+   `without access:` counts the profiles whose owner no grant covers. An
+   imported subscriber is covered by a granted server that DIAYN's bot has
+   joined. One who is not gets no alerts, and 30 days on their profile is
+   deleted, so a count near the `legacy import:` line's means a grant or the
+   invite is missing. Once it is in place, the next tick takes them off the
+   count.
 10. **Bring the old bot back**, if it is to run on, only once DIAYN has passed
     *Checking it runs*, and the old bot runs a version with its tracker
     removed, or with both its sweep and its alerts turned off. An update that
