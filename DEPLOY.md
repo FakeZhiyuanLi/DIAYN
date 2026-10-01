@@ -637,7 +637,31 @@ the commands below say `$OLD`.
    or, under pm2, `pm2 start ~/diayn.config.cjs`, then `pm2 list` and
    `pm2 save`, as in *Sharing the box with another bot*. Then go through
    *Checking it runs*. In Discord, `/diayn access` shows the servers you
-   granted, by name, with the counts.
+   granted, by name, with the counts. Then watch two things *Checking it
+   runs* does not:
+
+   - **Who is left without access.** The delivery tick runs as DIAYN starts
+     and every 5 minutes after, and `/diayn debug`'s `without access:` counts
+     the profiles whose owner no grant covers. An imported subscriber is
+     covered by a granted server that DIAYN's bot has joined. One who is not
+     gets no alerts, and 30 days on their profile is deleted, so a count near
+     the `legacy import:` line's means a grant or the invite is missing. Once
+     it is in place, the next tick takes them off the count.
+   - **No flood.** The first sweep logs `sweep: … N new …`, and N should be
+     near what the old tracker's own sweeps found, which the copied ledger
+     keeps:
+
+     ```sh
+     sqlite3 "file:$D/postings.db?mode=ro" \
+       "SELECT datetime(started, 'unixepoch'), new_rows FROM sweeps ORDER BY started DESC LIMIT 5;"
+     ```
+
+     Many times more is a flood on its way, such as a board the old tracker
+     did not poll (step 4): stop DIAYN at once, `sudo systemctl stop diayn`
+     or `pm2 stop diayn`, and find out why. A tick offers what a sweep found
+     only once it is 10 minutes old, and an imported subscriber is first due
+     an hour after step 6. From then, `/diayn debug`'s `last delivery tick:`
+     line counts what each tick sent, at most 50 a tick.
 10. **Bring the old bot back**, if it is to run on, only once DIAYN has passed
     *Checking it runs*, and the old bot runs a version with its tracker
     removed, or with both its sweep and its alerts turned off. An update that
