@@ -763,29 +763,36 @@ the commands below say `$OLD`.
    both were stopped. So its `sweep: … N new …` line can hold several of the
    old tracker's sweeps' worth: a catch-up, expected, and no reason to stop.
    A flood is a board the old tracker never swept (step 4) arriving whole. As
-   soon as that line appears, before *Checking it runs*, see what the sweep
-   found, by company:
+   soon as that line appears, before *Checking it runs*, count by company
+   what the bot can send of all DIAYN has found since the old ledger's newest
+   row, whatever the title, beside the rows the old ledger holds for that
+   company:
 
    ```sh
    sqlite3 "file:$D/postings.db?mode=ro" \
-     "SELECT company, COUNT(*) FROM postings WHERE is_intern AND is_tech AND \
-      first_seen >= (SELECT value FROM scraper_meta WHERE key = 'started_at') \
+     "ATTACH 'file:$OLD/postings.db?mode=ro' AS old; \
+      SELECT company, COUNT(*), (SELECT COUNT(*) FROM old.postings o WHERE o.company = p.company) \
+      FROM postings p WHERE first_seen > (SELECT MAX(first_seen) FROM old.seen) AND unbounded = 0 \
+      AND COALESCE(published, first_seen) >= strftime('%s', 'now') - 30 * 86400 \
       GROUP BY company ORDER BY 2 DESC LIMIT 5;"
    ```
 
-   A catch-up is spread thin, a few roles a company. One or two companies
-   with tens of roles each is a flood. A tick offers nothing a sweep found
-   until it is 10 minutes old, and an imported subscriber is due hourly,
-   first about an hour after step 6: you have 10 minutes from that line at
-   least, often more. On a flood, stop DIAYN so that it stays stopped across
-   a reboot, `sudo systemctl disable --now diayn` or
-   `pm2 stop diayn && pm2 save`. What it found stays in the ledger as new to
-   every imported subscriber, so any later start sends it. To withhold it,
-   take that board out of `$D/boards.json`, copy the ledger from the old
-   tracker again, steps 3 and 5, and bring DIAYN back:
-   `sudo systemctl enable --now diayn`, or `pm2 restart diayn && pm2 save`.
-   Left to go out, a flood is one alert to each person it matches, five roles
-   at most and the rest counted, and none of it is offered again.
+   A catch-up is spread thin, a few roles a company, each with rows before.
+   A company with tens of new roles and none before is a board the old
+   tracker never swept: a flood. A tick offers nothing a sweep found until it
+   is 10 minutes old, and an imported subscriber is due hourly, first about
+   an hour after step 6: you have 10 minutes from that line at least, often
+   more. On a flood, stop DIAYN so that it stays stopped across a reboot,
+   `sudo systemctl disable --now diayn` or `pm2 stop diayn && pm2 save`. What
+   it found stays in the ledger as new to every imported subscriber, so any
+   later start sends it. A board in `$D/boards.json` can be withheld: take it
+   out of that file, copy the ledger from the old tracker again, steps 3 and
+   5, bring DIAYN back, `sudo systemctl enable --now diayn`, or
+   `pm2 restart diayn && pm2 save`, and run the query again when the next
+   `sweep:` line appears. A seed board cannot: DIAYN adds back every seed
+   board `boards.json` does not list. Left to go out, a flood is one alert to
+   each person it matches, five roles at most and the rest counted, and none
+   of it is offered again.
 
    Then go through *Checking it runs*. In Discord, `/diayn access` shows the
    servers you granted, by name, with the counts. Then watch one thing
@@ -823,9 +830,9 @@ the commands below say `$OLD`.
     step 1 disabled stays off.
 
 With a separate `diayn` user, `diayn` cannot read the old bot's files, and
-your own user cannot read `diayn`'s data directory. Run steps 3 and 4 from your
-own user instead, with `D=/home/diayn/DIAYN/data` and `sudo` before every
-command in them, inside the parentheses for the copy
+your own user cannot read `diayn`'s data directory. Run steps 3 and 4, and
+step 9's query, from your own user instead, with `D=/home/diayn/DIAYN/data`
+and `sudo` before every command in them, inside the parentheses for the copy
 (`(umask 077 && sudo sqlite3 …)`). Then give the copies to `diayn`:
 
 ```sh
