@@ -125,10 +125,11 @@ def _application(app: object, bot_name: str) -> Application:
     if not isinstance(app, dict):
         raise _unparsed(APPLICATION_PATH)
     app_id, reported = app.get("id"), app.get("flags")
-    flags = reported or 0
+    # type(), not isinstance(): a bool is an int, and false is not the intent off.
     if not (isinstance(app_id, str) and app_id.isascii() and app_id.isdigit()
-            and isinstance(flags, int)):
+            and (reported is None or type(reported) is int)):
         raise _unparsed(APPLICATION_PATH)
+    flags = reported or 0
     return Application(id=app_id, name=str(app.get("name") or ""), bot_name=bot_name,
                        members_intent=bool(flags & MEMBERS_INTENT_FLAGS),
                        public=bool(app.get("bot_public")),

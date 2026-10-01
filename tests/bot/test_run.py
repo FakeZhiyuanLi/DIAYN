@@ -40,6 +40,8 @@ bot, a coroutine that records what it saw, and need nothing installed. The ones
 that build the real client replace app.serve, and skip without discord.py.
 discord_portal.fetch_application, the REST check, is replaced in every test by a
 fake that says the token is good and the intent on, unless a test says otherwise.
+A name looked up in a test that runs `run` is refused, and fails the test, which
+names it: a sweep that gets through never reaches a job board.
 
 The scraper's .env is never read: load_env_file is replaced, and the scraper's
 variables are cleared from the environment, with DIAYN_DATA pointing at a
@@ -53,6 +55,7 @@ import dataclasses
 import io
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -61,6 +64,7 @@ import types
 import unittest
 from unittest import mock
 
+import aiohttp
 import diayn
 import discord_portal as portal
 import hints
@@ -68,6 +72,8 @@ import intern_clock
 import internship_poller as poller
 import postings_source
 from test_cli import v2_fixture
+from test_discord_portal import answers, made_here
+from test_discord_portal import application as application_answer
 from test_setup import FakePortal, application
 
 try:
@@ -140,8 +146,35 @@ class FakeBot:
         self._stop.set()
 
 
+#: The names a test may look up: this machine's own.
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
+
+@contextlib.contextmanager
+def no_lookups():
+    """Refuses every name lookup but LOOPBACK's, and yields the names it refused. It
+    replaces socket.getaddrinfo, which aiohttp's resolver calls through loop.getaddrinfo
+    on an executor thread, so a lookup from there is caught too."""
+    refused, real = [], socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        if host in LOOPBACK:
+            return real(host, *args, **kwargs)
+        refused.append(host)
+        raise socket.gaierror(socket.EAI_NONAME, f"{host}: no lookups in this test")
+
+    with mock.patch.object(socket, "getaddrinfo", getaddrinfo):
+        yield refused
+
+
 class _RunCase(unittest.TestCase):
     def setUp(self):
+        # No test of run looks up a name, even one that fails: a sweep that gets through
+        # is refused before it reaches a job board, and the test fails, naming the hosts.
+        lookups = no_lookups()
+        refused = lookups.__enter__()           # enterContext is 3.11's, and CI runs 3.10
+        self.addCleanup(self._looked_up_nothing, refused)
+        self.addCleanup(lookups.__exit__, None, None, None)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.data = os.path.realpath(tmp.name)
@@ -160,6 +193,11 @@ class _RunCase(unittest.TestCase):
     def _restore(saved):
         poller.SETTINGS, poller.BOARDS, poller.STARTED_AT = saved
 
+    def _looked_up_nothing(self, refused):
+        if refused:
+            self.fail(f"looked up {', '.join(map(str, refused))}, and no test of run may "
+                      "look up a name")
+
     @contextlib.contextmanager
     def environment(self):
         env = {k: v for k, v in os.environ.items() if k not in SCRAPER_VARIABLES}
@@ -175,6 +213,23 @@ class _RunCase(unittest.TestCase):
                 contextlib.redirect_stderr(err):
             code = diayn.cmd_run(poller, list(argv), bot=bot, watch=watch)
         return code, out.getvalue(), err.getvalue()
+
+
+class EveryRunTest(unittest.TestCase):
+    def test_refuses_a_name_lookup_and_fails_naming_the_host(self):
+        host = "a-job-board.invalid"
+
+        class LooksUp(_RunCase):
+            def runTest(self):
+                with contextlib.suppress(socket.gaierror):
+                    socket.getaddrinfo(host, 443)
+
+        result = unittest.TestResult()
+        with no_lookups() as escaped:           # what got past the run test's own guard
+            LooksUp().run(result)
+        self.assertEqual(escaped, [])
+        self.assertEqual(len(result.failures), 1, result.errors)
+        self.assertIn(host, result.failures[0][1])
 
 
 class TheCommand(unittest.TestCase):
@@ -691,14 +746,20 @@ class TheIntent(_RunCase):
             pass
 
     def test_through_main_the_exit_code_is_78(self):
+        # main() hands run the scraper's own cmd_watch, and the fixture is due a sweep at
+        # once, so it is faked, as the other tests fake it.
         v2_fixture(self.db)
 
         async def bot(settings):
             raise diayn.IntentRefused()
 
+        async def cmd_watch(conn, interval, use_llm=False):
+            await forever()
+
         err = io.StringIO()
         with self.environment(), contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(err), \
+                mock.patch.object(poller, "cmd_watch", cmd_watch), \
                 mock.patch.object(diayn, "discord_bot", return_value=bot):
             code = diayn.main(["run", "--interval", str(INTERVAL)])
         self.assertEqual(code, CONFIG, err.getvalue())
@@ -706,6 +767,8 @@ class TheIntent(_RunCase):
 
 #: The User-Agent the REST check carries: the one setup and doctor send.
 AGENT = portal.user_agent(poller.PROJECT_URL, poller.__version__)
+#: The REST check itself, which every test replaces, for the test that puts it back.
+FETCH_APPLICATION = portal.fetch_application
 
 
 class TheCheckBeforeLogin(_RunCase):
@@ -806,6 +869,25 @@ class TheCheckBeforeLogin(_RunCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(len(logins), 1)
 
+    def test_flags_that_do_not_parse_are_logged_and_the_bot_logs_in(self):
+        # The real REST check, with a fake session that answers the flags as false, so
+        # the parse and run's decision are pinned together.
+        v2_fixture(self.db)
+        own, made = made_here(answers(app=(200, application_answer(flags=False))), delay=0)
+        logins = []
+
+        async def bot(settings):
+            logins.append(settings)
+
+        with mock.patch.object(portal, "fetch_application", FETCH_APPLICATION), \
+                mock.patch.object(aiohttp, "ClientSession", own):
+            code, _, err = self.run_diayn(bot=bot, watch=idle)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(len(logins), 1)
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertIn("did not parse", err)
+
     def test_a_second_run_exits_3_without_asking_discord(self):
         v2_fixture(self.db)
         with poller.sweeper_lock(self.db):
@@ -814,16 +896,23 @@ class TheCheckBeforeLogin(_RunCase):
         self.assertEqual(self.portal.calls, [])
 
     def test_through_main_the_intent_off_exits_78_before_the_bot_starts(self):
+        # main() hands run the scraper's own cmd_watch, and the fixture is due a sweep at
+        # once, so it is faked, as the other tests fake it.
         v2_fixture(self.db)
         self.portal.app = application(members_intent=False)
-        bot, _, started = self.tasks()
+        bot, watch, started = self.tasks()
+
+        def cmd_watch(conn, interval, use_llm=False):
+            return watch(conn)
+
         err = io.StringIO()
         with self.environment(), contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(err), \
+                mock.patch.object(poller, "cmd_watch", cmd_watch), \
                 mock.patch.object(diayn, "discord_bot", return_value=bot):
             code = diayn.main(["run"])
         self.assertEqual(code, CONFIG, err.getvalue())
-        self.assertEqual(started["bot"], [])
+        self.assertEqual(started, {"bot": [], "sweep loop": []})
 
 
 class LoginFailure(Exception):

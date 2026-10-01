@@ -81,7 +81,8 @@ Everything the bot needs from Discord is set on the application's pages:
   uses it to notice when someone has left every server it shares with them, and
   to tell, in a DM, whether someone belongs to a server that has access. It
   cannot log in without it: Discord refuses the connection. `setup` stops and
-  `doctor` fails until it is on.
+  `doctor` fails until it is on. An answer from Discord that leaves the
+  application's flags out is only a warning, and `run` logs in.
 - **Presence Intent and Message Content Intent: off.** The bot has no use for
   either: every command is a slash command.
 - **Bot → Public Bot: off**, unless other people should be able to add the bot
@@ -210,7 +211,8 @@ order, stopping at the first failure, it:
   without it, and warns without pypdf, which reads PDF resumes; either way it
   says how to install them for the Python running it;
 - checks `DISCORD_TOKEN` with Discord, and that the Server Members Intent is
-  on: nothing is made until both are;
+  on: nothing is made until both are, though an answer without the
+  application's flags is only a warning;
 - makes the data directory at mode 700. One that is there already, and that
   other users on the box can read, it tightens to 700, and `users.db` and
   `postings.db`, with their `-journal`, `-wal` and `-shm`, to 600, and says

@@ -48,7 +48,7 @@ import hints  # noqa: E402
 import host_checks  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import v2_fixture  # noqa: E402
-from test_setup import TOKEN, FakePortal, application  # noqa: E402
+from test_setup import TOKEN, FakePortal, application, real_fetch, without_flags  # noqa: E402
 
 FAILED = 1
 NOW = 1_790_000_000.0
@@ -332,6 +332,18 @@ class WhatIsWorthAWarning(_DoctorCase):
         self.assertEqual(code, 0)
         self.assertEqual(lines(out)["POLL_CONTACT"], "warn")
         self.assertIn("never a personal address", out)
+
+    def test_flags_discord_did_not_report_are_a_warning(self):
+        # run logs in on such an answer: the intent is unknown, not off.
+        self.healthy()
+        for how in ("absent", "null"):
+            with self.subTest(flags=how):
+                self.portal = real_fetch(without_flags(how))
+                code, out, err = self.doctor_holding_the_lock()
+                self.assertEqual(code, 0, err)
+                self.assertEqual(lines(out)["Server Members Intent"], "warn")
+                self.assertEqual(lines(err), {})                # no fail line
+                self.assertIn("doctor: nothing to fix, 1 warning.", out)
 
 
 class PythonAndPlatform(unittest.TestCase):

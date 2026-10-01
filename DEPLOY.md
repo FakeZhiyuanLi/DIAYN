@@ -174,11 +174,13 @@ create the application, press **Reset Token** for `DISCORD_TOKEN`, turn
 git clone https://github.com/FakeZhiyuanLi/DIAYN.git ~/DIAYN
 cd ~/DIAYN && git checkout --detach v1.0.0
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m unittest discover -s tests          # must end OK
+.venv/bin/python -m unittest discover -s tests          # as DIAYN's user: must end OK, with nothing skipped
 cp example.env .env && chmod 600 .env                    # then fill it in
 .venv/bin/python diayn.py setup
 mkdir -p "$B" && chmod 700 "$B"
 ```
+
+As root, three permission tests skip by design; `-v` names every skip.
 
 Then invite the bot to your server with the link `setup` printed.
 
@@ -236,15 +238,54 @@ pm2 is fine where the box already runs its other apps under pm2, as a box
 shared with another bot may, and that pm2 belongs to the user DIAYN will run
 as: one tool for everything on the box. If another user's pm2 runs them, use
 systemd; *Sharing the box with another bot* says how to tell. pm2 has one
-caveat.
+caveat: it honours `stop_exit_codes` only from version 5.3.1, of January 2024.
+An older pm2 drops the key without a word, and restarts DIAYN on every exit,
+3 and 78 included. Two versions count: the `pm2` command that starts DIAYN
+reads the config, and the pm2 daemon that runs it handles each exit, and
+keeps the version it started with until `pm2 update`, or until the
+`pm2-<user>` unit, at a reboot or a restart, starts the pm2 that
+`pm2 startup` wrote into it. As the user whose pm2 runs DIAYN:
+
+```sh
+pm2 report | grep -E 'pm2d version|local pm2'   # the daemon's, then the command's: both 5.3.1 or newer
+systemctl is-active "pm2-$USER"                 # active: that unit runs this pm2
+```
+
+After upgrading pm2, restart it, which stops every app this pm2 runs and
+starts them again from the saved list under the new version: what was
+stopped stays stopped. On a box shared with another bot, that bot is stopped
+and started too: do it only when that bot may be restarted, agreed with
+whoever runs it. If it may not, run DIAYN under systemd instead of upgrading
+a pm2 the other bot depends on. Where the unit is `active`, restart the unit:
+
+```sh
+pm2 list                                        # every app as it should be after a reboot
+pm2 save                                        # Successfully saved in …
+pm2 startup                                     # only if the upgrade put pm2 at another path, with nvm or a new Node: run the command it prints
+sudo systemctl restart "pm2-$USER"              # stops every app, then starts the saved list under the unit's pm2
+pm2 report | grep -E 'pm2d version|local pm2'   # both the new version
+pm2 list                                        # every app as saved
+```
+
+Not `pm2 update` there: it ends the daemon the unit started, so systemd runs
+the unit's stop, `pm2 kill`, which can stop every app the update has just
+started again ([pm2 issue #5000](https://github.com/Unitech/pm2/issues/5000)).
+Where the unit is not `active`, check `pm2 list` and run `pm2 update`, which
+saves the list as it stands and does the same under a new daemon; if the
+upgrade put pm2 at another path, run `pm2 startup` again too, and the command
+it prints, so that a reboot starts the new one, and check `pm2 report` after
+the next reboot. A DIAYN that an older pm2 started keeps running without the
+key through either, and every reboot: start it again from its config file,
+as *After a reboot* says.
 [pm2 issue #5601](https://github.com/Unitech/pm2/issues/5601) reports
 `stop_exit_codes` ignored after `pm2 resurrect`, which is how pm2 brings its
-apps back at boot, so after a reboot pm2 may restart DIAYN on exit 3 or 78.
-DIAYN stays safe: `run` asks Discord's REST API about the token and the Server
-Members Intent before it logs in, so a restart on 78 repeats that REST call and
-never a gateway login, unless the check itself could not be made, and a
-restart on 3 meets the lock again, exits 3 again, and backs off. Still, check
-`pm2 list`'s restart count after a reboot (*After a reboot*, below).
+apps back at boot; from 5.3.1 on, `pm2 save` keeps the key, and
+`pm2 resurrect` gives it back. DIAYN stays safe even where pm2 restarts it:
+`run` asks Discord's REST API about the token and the Server Members Intent
+before it logs in, so a restart on 78 repeats that REST call and never a
+gateway login, unless the check itself could not be made, and a restart on 3
+meets the lock again, exits 3 again, and backs off. Still, check `pm2 list`'s
+restart count after a reboot (*After a reboot*, below).
 
 ## Running it as a service
 
@@ -306,7 +347,13 @@ module.exports = {
   either, and a loop of refused logins can get the bot's token reset. `run`
   asks Discord's REST API about both before it logs in, so even a service
   manager that restarts it on 78 anyway only repeats that cheap REST call,
-  never a gateway login, unless the check itself could not be made. The log
+  never a gateway login, unless the check itself could not be made. After 3
+  or 78, `pm2 list` shows DIAYN `waiting restart`, and pm2's log says it will
+  restart in 2000ms or more, but it does not: pm2 sets that status and writes
+  that line on every exit, and `stop_exit_codes` only keeps the restart from
+  happening. A `pm2 save` made then saves `waiting restart`, so the next
+  `pm2 resurrect`, at boot or inside `pm2 update`, starts DIAYN once more, to
+  meet the same refusal; `pm2 stop diayn && pm2 save` keeps it down. The log
   line says what to fix; then `pm2 restart diayn`.
 - **`kill_timeout`.** pm2 stops a process with SIGINT, which `run` treats as
   Ctrl-C, on every supported Python: it logs out of Discord and exits 0. This gives it ten seconds before
@@ -441,6 +488,17 @@ instead of pm2, and leave the other bot's pm2 alone.
   `filter_env` keeps every variable DIAYN reads out of it, and systemd hands
   DIAYN none of them. The log's `DIAYN is logged in as …` names the bot it
   logged in as.
+- **Nor in the shell you type DIAYN's commands in.** Every command loads the
+  `.env` the same way, so a variable your shell exports beats the file there
+  too. With the other bot's `DISCORD_TOKEN` exported, `setup` checks that
+  bot's token, and prints its name and its invite link, and `run` would log
+  DIAYN in as that bot and replace its slash commands; with its
+  `GEMINI_API_KEY`, `list --llm` and `llm-diff` would spend that bot's quota.
+  Run every DIAYN command you type, the scraper's included, from a shell that
+  exports none of the other bot's variables; with a separate `diayn` user,
+  that is a login shell as `diayn`, `sudo -iu diayn`. `config` shows the
+  paths and settings they would use, and `setup`'s `DISCORD_TOKEN` line names
+  the bot it checked: it must be DIAYN's.
 - **One service manager for DIAYN.** DIAYN under systemd beside another bot
   under pm2 is fine. DIAYN under both is two copies on one token.
 
@@ -452,18 +510,33 @@ Under pm2, as the user whose pm2 already runs the other bot:
 - **DIAYN by name in every command:** `pm2 restart diayn`, `pm2 stop diayn`,
   `pm2 logs diayn`. Never `pm2 restart all` or `pm2 stop all`, which restart or
   stop the other bot too, and never `pm2 kill`, which stops pm2 itself and
-  every app it runs.
+  every app it runs. Restarting pm2 after an upgrade stops them all too, then
+  starts them again: do it only when the other bot may be restarted, agreed
+  with whoever runs it, as *Choosing pm2 or systemd* says.
 - **`pm2 save` saves every app in `pm2 list`**, as the list stands, and a
-  reboot brings back exactly that. Check the list before saving:
+  reboot brings back what it saved. Check the list before saving:
 
   ```sh
   pm2 list                  # both bots, each online or stopped as it should be after a reboot
-  pm2 save
+  pm2 save                  # Successfully saved in …
+  ```
+
+  With no app left in the list, modules such as pm2-logrotate aside,
+  `pm2 save` saves nothing: it says `skipping save`, or `Nothing to save`
+  before pm2 4.0.0, and keeps the list it saved last, so a reboot brings
+  back an app deleted since. Once the last app is deleted, run
+  `pm2 cleardump` instead, which saves the empty list. Either way, see what
+  a reboot brings back, by name only: the saved list, `~/.pm2/dump.pm2`,
+  holds each app's environment too.
+
+  ```sh
+  python3 -c 'import json, sys; print([a["name"] for a in json.load(sys.stdin)])' < ~/.pm2/dump.pm2   # [] after pm2 cleardump
   ```
 
 - **`pm2 startup` once per user.** It writes the systemd unit, `pm2-<user>`,
   that brings pm2 and its saved apps back at boot. If the other bot set it up,
-  it is done: do not run it again.
+  it is done: do not run it again, unless an upgrade moved pm2 to another
+  path (*Choosing pm2 or systemd*).
 
   ```sh
   systemctl is-enabled "pm2-$USER"          # enabled: already set up
@@ -488,11 +561,25 @@ sudo adduser --disabled-password diayn    # Enter through its questions; no pass
 sudo -iu diayn                            # a shell as diayn, in /home/diayn
 ```
 
-Then everything from *Installing* on as `diayn`, with `/home/diayn` in the
-paths, except what needs `sudo`, which `diayn` does not have: do that from your
-own user. systemd suits it best: `User=diayn` in the unit, which you write and
-start with `sudo` from your own user, and no second pm2. The other bot's pm2
-belongs to another user, so the first step above says systemd too.
+In that shell, give `diayn` the two names, as *A fresh VPS* gives them to your
+own user:
+
+```sh
+cat >> ~/.bashrc <<'EOF'
+D=$HOME/DIAYN/data
+B=$HOME/diayn-backups
+EOF
+```
+
+Then `exit`, `sudo -iu diayn` again, and check that `echo "$D" "$B"` prints
+`/home/diayn/DIAYN/data /home/diayn/diayn-backups`. Everything from
+*Installing* on runs as `diayn`, in such a shell, with `/home/diayn` in the
+paths, except what needs `sudo`, which `diayn` does not have: the systemd
+unit, its log, and what a takeover reads of the old bot's files, which you run
+from your own user as that section says. systemd suits it best: `User=diayn`
+in the unit, which you write and start with `sudo` from your own user, and no
+second pm2. The other bot's pm2 belongs to another user, so the first step
+above says systemd too.
 
 Look at it as `diayn`, too. After `sudo -iu diayn`, in `~/DIAYN`, run
 `.venv/bin/python diayn.py doctor`, and, under pm2, `pm2 list` and
@@ -516,18 +603,33 @@ If the two files are in different directories, use each one's own path where
 the commands below say `$OLD`.
 
 1. **Stop the old bot first, entirely.** Stop its whole service, not only its
-   sweep, and keep it stopped until it runs a version with its tracker removed,
-   or with both its sweep and its alerts turned off. Two sweepers double the
-   traffic to every job board, since DIAYN's lock cannot see the old bot's,
-   and two bots alert the same people about the same roles. Stop it through
-   whatever runs it, by its own name. Under pm2, as the user whose pm2 runs it
-   (the first step of *Sharing the box with another bot* finds them):
+   sweep, and keep it stopped until step 10. Two sweepers double the traffic
+   to every job board, since DIAYN's lock cannot see the old bot's, and two
+   bots alert the same people about the same roles. Stop it through whatever
+   runs it, by its own name. Under pm2, as the user whose pm2 runs it (the
+   first step of *Sharing the box with another bot* finds them):
 
    ```sh
+   pm2 report | grep -E 'pm2d version|local pm2'  # both 4.2.0 or newer, or see below
+   systemctl cat "pm2-$USER" | grep ExecStart     # ExecStart=<dir>/bin/pm2 resurrect: the pm2 a reboot starts, if any
+   grep '"version":' <dir>/package.json           # its version: 4.2.0 or newer too, or see below
+   pm2 jlist | python3 -c 'import json, sys; [print({k: a["pm2_env"].get(k) for k in ("name", "pm_exec_path", "args", "exec_interpreter", "pm_cwd", "cron_restart")}) for l in sys.stdin if l[:2] == "[{" for a in json.loads(l)]'   # how each app starts; the old bot's cron_restart: None, or see below
    pm2 stop <old-bot>                             # its name in pm2 list; never all
    pm2 list                                       # the old bot stopped, anything else as it was
    pm2 save                                       # so a reboot leaves it stopped
    ```
+
+   `pm2 stop` holds the old bot only on a pm2 of 4.2.0 or newer, and only if
+   it has no `cron_restart`: a pm2 older than 4.0.0 starts every saved app at
+   boot, stopped or not, one older than 4.2.0 can restart it on a cron job a
+   deleted app left behind, and pm2 keeps an app's own cron restart through a
+   stop, and starts the app again at its next time, with no reboot.
+   Otherwise, take it out of the list instead. That leaves pm2 no record of
+   how the old bot starts, so first keep the line the `python3` command
+   printed for it, and the path of its config file if it was started from
+   one: step 10 starts it from them. Then `pm2 delete <old-bot>`, then
+   `pm2 list`, and `pm2 save`, or `pm2 cleardump` if no app is left
+   (*Sharing the box with another bot* says why).
 
    Under systemd, `sudo systemctl disable --now <old-bot>`, which also keeps it
    stopped across a reboot. Then check that nothing sweeps: the newest sweep in
@@ -538,6 +640,25 @@ the commands below say `$OLD`.
    ```
 
    Run it again 20 minutes later: the same time.
+
+   If this, or any later read of `$OLD`, fails with `attempt to write a
+   readonly database`, the old bot was killed in the middle of a write, as
+   pm2 kills an app that outlasts its `kill_timeout`, and left a hot journal:
+   a `-journal` file beside the database. The file and its journal together
+   are whole: the journal holds the only copy of what the killed write
+   overwrote. Never delete or move the `-journal`, and never copy the file
+   without it: the file alone is damaged for good. As the user the old bot
+   runs as, who can write the file, its `-journal` and their directory, open
+   it read-write once, which rolls the unfinished write back, then run the
+   step again:
+
+   ```sh
+   sqlite3 "file:$OLD/postings.db?mode=rw" 'PRAGMA quick_check;'    # ok, and postings.db-journal is gone
+   ```
+
+   If it prints anything but `ok`, stop. The same for `stats.db`, when it is
+   the one refused. `mode=rw`, like `mode=ro`, makes no file where there is
+   none.
 2. **Install DIAYN** as *Installing* says, up to and including the `.env`, and
    make `$B`, but do not run `setup` yet (step 8 says why). Then make the data
    directory, and check that it is empty:
@@ -547,6 +668,10 @@ the commands below say `$OLD`.
    ls -A "$D"                                     # nothing
    ```
 
+   Until step 3 copies the ledger in, `doctor` fails on `postings.db: … does
+   not exist`, and before the `mkdir` above, on `data directory: … does not
+   exist` as well. Both lines name `setup` as the fix. Here they are expected:
+   do not run `setup` before step 8. Any other `fail` line is a real stop.
 3. **Copy the ledger with `.backup`**, never `cp`, and compare the two:
 
    ```sh
@@ -632,14 +757,86 @@ the commands below say `$OLD`.
    ```
 
    or, under pm2, `pm2 start ~/diayn.config.cjs`, then `pm2 list` and
-   `pm2 save`, as in *Sharing the box with another bot*. Then go through
-   *Checking it runs*. In Discord, `/diayn access` shows the servers you
-   granted, by name, with the counts.
+   `pm2 save`, as in *Sharing the box with another bot*.
+
+   **Look for a flood first.** The first sweep runs at once, and records as
+   new everything posted since the old tracker's last sweep, the whole time
+   both were stopped. So its `sweep: … N new …` line can hold several of the
+   old tracker's sweeps' worth: a catch-up, expected, and no reason to stop.
+   A flood is a board the old tracker never swept (step 4) arriving whole. As
+   soon as that line appears, before *Checking it runs*, count by company
+   what the bot can send of all DIAYN has found since the old ledger's newest
+   row, whatever the title, beside the rows the old ledger holds for that
+   company:
+
+   ```sh
+   sqlite3 -header "file:$D/postings.db?mode=ro" \
+     "ATTACH 'file:$OLD/postings.db?mode=ro' AS old; \
+      SELECT company, COUNT(*) AS new_rows, (SELECT COUNT(*) FROM old.postings o WHERE o.company = p.company) AS old_rows \
+      FROM postings p WHERE first_seen > (SELECT MAX(first_seen) FROM old.seen) AND unbounded = 0 \
+      AND COALESCE(published, first_seen) >= strftime('%s', 'now') - 30 * 86400 \
+      GROUP BY company ORDER BY old_rows > 0, new_rows DESC LIMIT 10;"
+   ```
+
+   An error saying `no such table: old.…` means the ATTACH failed: `$OLD` is
+   unset in this shell, or wrong, or the old file needs step 1's read-write
+   open. Companies with no rows before come first. One with tens of new roles
+   and none before is a board the old tracker never swept: a flood. A
+   catch-up has rows before, however many are new; a big employer's can be
+   tens. A tick offers nothing a sweep found until it is 10 minutes old, and
+   an imported subscriber is due hourly, first about an hour after step 6:
+   you have 10 minutes from that line at least, often more. On a flood, stop
+   DIAYN so that it stays stopped across a reboot,
+   `sudo systemctl disable --now diayn` or `pm2 stop diayn && pm2 save`. What
+   it found stays in the ledger as new to every imported subscriber, so any
+   later start sends it. A board in `$D/boards.json` can be withheld: take it
+   out of that file, copy the ledger from the old tracker again, steps 3 and
+   5, bring DIAYN back, `sudo systemctl enable --now diayn`, or
+   `pm2 restart diayn && pm2 save`, and run the query again when the next
+   `sweep:` line appears. A seed board cannot: DIAYN adds back every seed
+   board `boards.json` does not list. Left to go out, a flood is one alert to
+   each person it matches, five roles at most and the rest counted, and none
+   of it is offered again.
+
+   Then go through *Checking it runs*. In Discord, `/diayn access` shows the
+   servers you granted, by name, with the counts. Then watch one thing
+   *Checking it runs* does not: who is left without access. The delivery
+   tick runs as DIAYN starts and every 5 minutes after, and `/diayn debug`'s
+   `without access:` counts the profiles whose owner no grant covers. An
+   imported subscriber is covered by a granted server that DIAYN's bot has
+   joined. One who is not gets no alerts, and 30 days on their profile is
+   deleted, so a count near the `legacy import:` line's means a grant or the
+   invite is missing. Once it is in place, the next tick takes them off the
+   count.
+10. **Bring the old bot back**, if it is to run on, only once DIAYN has passed
+    *Checking it runs*, and the old bot runs a version with its tracker
+    removed, or with both its sweep and its alerts turned off. An update that
+    removes its tracker may also announce the move to DIAYN, and that must not
+    go out before DIAYN runs. Under pm2, as the user whose pm2 runs it:
+
+    ```sh
+    pm2 restart <old-bot>                          # or however its own update starts it
+    pm2 list                                       # the old bot online, anything else as it was
+    pm2 save                                       # so a reboot brings it back
+    ```
+
+    Without that `pm2 save`, a reboot can bring it back stopped, as step 1
+    saved it. If step 1 deleted it, `pm2 restart` cannot find it: start it
+    from what step 1 kept instead, `pm2 start <its config file>`, or
+    `pm2 start <pm_exec_path> --name <old-bot> --interpreter <exec_interpreter> --cwd <pm_cwd> -- <args>`,
+    with `--cron "<cron_restart>"` if it had one, then `pm2 list` and
+    `pm2 save`. Under systemd, `sudo systemctl enable --now <old-bot>` brings
+    it back, and keeps it across a reboot.
+
+    If it will not run on, take it out of what a reboot brings back instead:
+    as that user, `pm2 delete <old-bot>`, then `pm2 list`, and `pm2 save`, or
+    `pm2 cleardump` if no app is left, as in step 1. Under systemd, the unit
+    step 1 disabled stays off.
 
 With a separate `diayn` user, `diayn` cannot read the old bot's files, and
-your own user cannot read `diayn`'s data directory. Run steps 3 and 4 from your
-own user instead, with `D=/home/diayn/DIAYN/data` and `sudo` before every
-command in them, inside the parentheses for the copy
+your own user cannot read `diayn`'s data directory. Run steps 3 and 4, and
+step 9's query, from your own user instead, with `D=/home/diayn/DIAYN/data`
+and `sudo` before every command in them, inside the parentheses for the copy
 (`(umask 077 && sudo sqlite3 …)`). Then give the copies to `diayn`:
 
 ```sh
@@ -740,8 +937,10 @@ copy stops in step 1, and stays stopped.
 
 Once it has run on the new host for a day, `rm -r ~/diayn-move` on both
 machines: the copies of `users.db` hold everyone's profile. Leave the old copy
-stopped for good. Under pm2, `pm2 delete diayn && pm2 save` takes it out of
-the list a reboot brings back; a systemd unit that step 1 disabled stays off.
+stopped for good. Under pm2, take it out of the list a reboot brings back:
+`pm2 delete diayn`, then `pm2 list`, and `pm2 save`, or `pm2 cleardump` if
+no app is left, as *Sharing the box with another bot* says. A systemd unit
+that step 1 disabled stays off.
 
 ## Checking it runs
 
@@ -779,11 +978,23 @@ the list a reboot brings back; a systemd unit that step 1 disabled stays off.
 ## After a reboot
 
 1. `systemctl status diayn` shows it `active (running)`, or `pm2 list` shows it
-   `online`, and, on a shared box, the other bot back as you saved it.
+   `online`. On a shared box, the other bot is back as it was saved: `online`,
+   unless it is meant to be stopped, as an older tracker is until step 10 of
+   *Taking over from an older tracker*, or for good if it will not run on.
+   Look in `pm2 list` as the user whose pm2 runs it, or with
+   `systemctl is-active <other-bot>`. An older tracker that came back online
+   while it is meant to be stopped is red: stop it at once, and under pm2
+   take it out of the list, as step 1 says, so that it stays stopped. One
+   meant to run that came back stopped was saved stopped, or disabled: as
+   that user, `pm2 restart <other-bot> && pm2 save`, or
+   `sudo systemctl enable --now <other-bot>`.
 2. The restart count is not climbing: `systemctl show diayn -p NRestarts`, or
    the ↺ column of `pm2 list`, the same a minute apart. Under pm2, a count that
    climbs with exit 3 or 78 in the log is the caveat in *Choosing pm2 or
-   systemd*: `pm2 stop diayn`, fix what the log line names, then start it
+   systemd*: a pm2 older than 5.3.1, or a DIAYN one started. `pm2 stop diayn`,
+   fix what the log line names, and if `pm2 report` shows a pm2 older than
+   5.3.1, upgrade it and restart its `pm2-<user>` unit, which restarts the
+   other bot too: only as *Choosing pm2 or systemd* says. Then start DIAYN
    again from its config file, with the other bot in `pm2 list` as it should
    be, since the save takes the whole list:
 
@@ -791,9 +1002,9 @@ the list a reboot brings back; a systemd unit that step 1 disabled stays off.
    pm2 delete diayn && pm2 start ~/diayn.config.cjs && pm2 save
    ```
 
-   Not `pm2 start diayn` or `pm2 restart diayn`: either keeps whatever options
-   `pm2 resurrect` gave it, the ignored `stop_exit_codes` among them, where a
-   start from the file gives it the file's own.
+   Not `pm2 start diayn` or `pm2 restart diayn`: either keeps the options DIAYN
+   was saved with, a missing `stop_exit_codes` among them, where a start from
+   the file gives it the file's own.
 3. `.venv/bin/python diayn.py doctor`, in `~/DIAYN`, ends
    `doctor: nothing to fix`.
 4. A `sweep: …` line in the log within 15 minutes of the start:
@@ -812,8 +1023,8 @@ umask 077
 D=$HOME/DIAYN/data
 B=$HOME/diayn-backups
 day=$(date +%F)
-sqlite3 "file:$D/postings.db?mode=ro" ".backup '$B/postings-$day.db'"
-sqlite3 "file:$D/users.db?mode=ro" ".backup '$B/users-$day.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/postings.db?mode=ro" ".backup '$B/postings-$day.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/users.db?mode=ro" ".backup '$B/users-$day.db'"
 find "$B" \( -name 'postings-2*.db' -o -name 'users-2*.db' \) -mtime +14 -delete
 ```
 
@@ -828,14 +1039,17 @@ and run it from cron at 04:15 (`crontab -e`):
   make each copy of `users.db` mode 644, readable by everyone on the box but
   for `$B`'s own mode.
 - `mode=ro`, so a wrong path fails instead of leaving an empty database behind.
+- `.timeout 5000`, so a copy that meets a commit waits for it, up to five
+  seconds, instead of failing with `database is locked` and leaving an empty
+  file.
 - The `-2*` patterns match only the dated daily copies, so a named copy such as
   `postings-pre-v1.1.0.db` stays until you delete it on purpose.
 - **Keep the retention short.** A copy of `users.db` still holds the profile of
   everyone who has since used `/internships delete`. Fourteen days bounds how
   long that lasts.
 
-The next morning, check that it ran: `ls -la "$B" | tail -3` shows today's two
-files, and neither is empty.
+The next morning, check that it ran: `ls -l "$B"/*-$(date +%F).db` shows
+today's two copies, `postings-` and `users-`, and neither is empty.
 
 ## Restoring
 
@@ -895,11 +1109,11 @@ git log --oneline "$PREV_TAG"..vX.Y.Z               # what changed
 Read the release's notes, then:
 
 ```sh
-sqlite3 "file:$D/postings.db?mode=ro" ".backup '$B/postings-pre-vX.Y.Z.db'"
-sqlite3 "file:$D/users.db?mode=ro" ".backup '$B/users-pre-vX.Y.Z.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/postings.db?mode=ro" ".backup '$B/postings-pre-vX.Y.Z.db'"
+sqlite3 -cmd ".timeout 5000" "file:$D/users.db?mode=ro" ".backup '$B/users-pre-vX.Y.Z.db'"
 git checkout --detach vX.Y.Z && git status --short         # clean
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m unittest discover -s tests             # must end OK
+.venv/bin/python -m unittest discover -s tests             # as DIAYN's user: must end OK, with nothing skipped
 ```
 
 Restart the service, run `.venv/bin/python diayn.py doctor`, and go through

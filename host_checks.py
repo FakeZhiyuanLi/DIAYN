@@ -18,7 +18,8 @@ invite link, and `diayn.py doctor`, which checks it again at any time.
    for it, to notice someone leaving every server it shares with them and to
    tell in a DM who is a member of a granted server, and Discord refuses the
    login of a bot that asks for an intent its portal toggle has off. Nothing
-   is made until it is on.
+   is made until it is on. An answer without the application's flags cannot
+   show it either way: setup then warns and goes on, as `run` logs in.
 3. **The data directory**, DIAYN_DATA, made at mode 700. One that exists, and
    that others on the box can read, is tightened to 700, and so are users.db
    and postings.db, with their -journal, -wal and -shm, to 600: grant or
@@ -137,6 +138,10 @@ def discord_findings(poller, settings, fetch_application=None):
                      f"of the application {app.name!r}.")]
     if app.members_intent:
         found.append(Finding(OK, "Server Members Intent", "on."))
+    elif not app.intent_reported:
+        found.append(Finding(WARN, "Server Members Intent", "not checked, since Discord did "
+                             "not report the application's flags. `run` logs in anyway, and "
+                             "Discord refuses the login if the intent is not on. " + INTENT_HOW))
     else:
         found.append(Finding(FAIL, "Server Members Intent", "off, and the bot cannot log in "
                              "without it: Discord refuses the connection, and `run` stops "

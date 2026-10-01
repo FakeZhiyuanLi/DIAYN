@@ -13,6 +13,8 @@ here:
 - nothing is made until the token checks out;
 - the Server Members Intent being off is a failure, naming the portal toggle,
   and nothing is made: the bot cannot log in without it;
+- an answer without the application's flags is a warning that the intent was
+  not checked, never that it is off, and setup goes on, as `run` logs in;
 - an existing postings.db is never bootstrapped again, and one with an empty
   ledger is left alone and refused, pointing at `sweep --init`;
 - a first sweep that records nothing, or fails, is a failure;
@@ -56,6 +58,8 @@ import host_checks  # noqa: E402
 import internship_poller as poller  # noqa: E402
 from test_cli import v2_fixture  # noqa: E402
 from test_contract import canned_fetch, posting  # noqa: E402
+from test_discord_portal import FakeSession, answers  # noqa: E402
+from test_discord_portal import application as application_answer  # noqa: E402
 from test_private_files import (POSIX_MODES, PRIVATE_DIRECTORY, PRIVATE_FILE,  # noqa: E402
                                 loose_umask, mode_of)
 
@@ -81,6 +85,25 @@ class FakePortal:
         if self.error is not None:
             raise self.error
         return self.app
+
+
+def without_flags(how) -> dict:
+    """Discord's answer for the application, with its flags left out ("absent") or null."""
+    app = application_answer()
+    if how == "absent":
+        del app["flags"]
+    else:
+        app["flags"] = None
+    return app
+
+
+def real_fetch(app):
+    """discord_portal.fetch_application itself, asking a fake session that answers `app` for
+    the application, so the answer is read as it is on a host."""
+    async def fetch(token, *, user_agent):
+        return await portal.fetch_application(token, user_agent=user_agent,
+                                              session=FakeSession(answers(app=(200, app))))
+    return fetch
 
 
 def fetch_nothing_allowed():
@@ -271,6 +294,20 @@ class TheIntent(_SetupCase):
     def test_the_members_intent_on_is_no_warning(self):
         _, out, _ = self.setup()
         self.assertNotIn("warn", out)
+
+    def test_flags_discord_did_not_report_are_a_warning_and_setup_goes_on(self):
+        # run logs in on such an answer: the intent is unknown, not off.
+        for how in ("absent", "null"):
+            with self.subTest(flags=how):
+                self.portal = real_fetch(without_flags(how))
+                code, out, err = self.setup()
+                self.assertEqual(code, 0, err)
+                said = next(ln for ln in out.splitlines() if "Server Members Intent" in ln)
+                self.assertRegex(said, r"^warn\s+Server Members Intent: not checked")
+                self.assertNotRegex(said, r"\boff\b|stops")
+                self.assertIn(hints.INTENT_HOW, said)
+                self.assertNotRegex(out + err, r"(?m)^fail")
+                self.assertIn(portal.invite_url(APP_ID), out)
 
     def test_a_public_bot_is_pointed_out(self):
         self.portal.app = application(public=True)
